@@ -13,6 +13,11 @@ Documents are read by agents: they cost tokens and rot. The extension's document
 - **ARCHITECTURE.md** — the strict guideline: binding rules and their enforcement, no behavioral narrative.
 - **README.md** — what the extension is, how to install and configure it, operational notes. Nothing else.
 - **CHANGELOG.md** — release history (Keep a Changelog; released sections immutable).
+  Documentation-only changes to REPO docs (README, EXAMPLES.md, AGENTS.md) get NO
+  CHANGELOG entries — only behavior changes are recorded. The delegate skill
+  (`skills/delegate/`) is different: it ships inside the versioned pi package
+  (`pi.skills` in package.json), so changes to it are recorded like any other
+  shipped-artifact change.
 
 Everything else is garbage — do NOT create it in this repo: no plans, TL;DRs, acceptance records, session instructions, stage guides, notes, design logs/chronicles or decision archaeology. Agent-to-agent artifacts (briefs, reports, plans) go to the exchange dir, never the repo. Documents carry ONLY current truth and plans: no rejected approaches, no interim states, no who-decided-what — history lives in git commits and CHANGELOG. Do not write rottable status prose into living docs; prefer the code's own state. A new `.md` file requires the operator's explicit decision.
 

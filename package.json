@@ -1,5 +1,10 @@
 {
-  "name": "@local/pi-delegate",
+  "name": "pi-delegate",
+  "description": "Multi-agent orchestration harness for pi: spawn delegate workers, collect schema-validated reports.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Evreke/delegate.git"
+  },
   "version": "1.17.0",
   "keywords": [
     "pi-package",
@@ -12,6 +17,9 @@
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills/delegate"
     ]
   },
   "exports": {

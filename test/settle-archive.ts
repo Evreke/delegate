@@ -169,7 +169,7 @@ try {
 	// within minutes (live-reproduced 2026-09-05: probe, probe-retry,
 	// fresh-probe-x all flipped), so a late watcher sees only idle and can never
 	// observe working/done — it spun the FULL timeout, then false-reported
-	// neverStarted while the pane showed a passed smoke gate. Disambiguation:
+	// neverStarted while the console showed a passed smoke gate. Disambiguation:
 	// session JSONL assistant reply = already finished.
 	// -------------------------------------------------------------------------
 	const sessDir = mkdtempSync(join(tmpdir(), "qa-sess-"));

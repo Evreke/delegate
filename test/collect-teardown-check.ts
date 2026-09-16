@@ -7,7 +7,7 @@
  * (test/collect-teardown-driver.ts, a child bun process per scenario so the
  * collect config resolves against a temp $HOME — bun caches os.homedir()).
  * Locked user decisions: default ON, grace 0, only on VALID collect, probes
- * keep their panes, foreign fleets never touched (collect is own-fleet by
+ * keep their consoles, foreign fleets never touched (collect is own-fleet by
  * construction).
  *
  *   C1  Config tolerance (child $HOME runs): missing → default TRUE;
@@ -147,14 +147,14 @@ function drive(scenario: string, configJson?: string): DriverOut {
 	check("C2.3 collectedAt stamped before teardown", valid.collectedStamped);
 	check(
 		"C2.4 audit trail: plan + done lines, commands.ts format + auto marker",
-		/plan: teardown worker=\S+ kind=\S+ workspace=\S+ pane=\S+ \(auto-after-collect\)/.test(valid.teardownLog) &&
+		/plan: teardown worker=\S+ kind=\S+ workspace=\S+ legacy-id=\S+ \(auto-after-collect\)/.test(valid.teardownLog) &&
 			/done: teardown worker=\S+ ok \(auto-after-collect\)/.test(valid.teardownLog),
 		valid.teardownLog,
 	);
 
 	const invalid = drive("invalid");
 	check(
-		"C2.5 invalid report → E_REPORT_INVALID, pane kept (no teardown)",
+		"C2.5 invalid report → E_REPORT_INVALID, console kept (no teardown)",
 		!invalid.ok && invalid.code === "E_REPORT_INVALID" && invalid.teardownCalls === 0 && !invalid.collectedStamped,
 		`ok=${invalid.ok} code=${invalid.code} calls=${invalid.teardownCalls}`,
 	);
@@ -168,7 +168,7 @@ function drive(scenario: string, configJson?: string): DriverOut {
 
 	const probe = drive("probe");
 	check(
-		"C2.7 probe → terminal probe result, pane kept (no teardown, no stamp)",
+		"C2.7 probe → terminal probe result, console kept (no teardown, no stamp)",
 		probe.probe === "fail" && probe.teardownCalls === 0 && !probe.collectedStamped,
 		`probe=${probe.probe} calls=${probe.teardownCalls}`,
 	);
@@ -214,12 +214,12 @@ function drive(scenario: string, configJson?: string): DriverOut {
 		`ok=${refused.ok} code=${refused.code}`,
 	);
 	check(
-		"C5.2 no phantom entry: THIS call's pane (pane-1) has no manifest row",
+		"C5.2 no phantom entry: THIS call's console (pane-1) has no manifest row",
 		!refused.workers.some((w) => w.paneId === "pane-1"),
 		JSON.stringify(refused.workers),
 	);
 	check(
-		"C5.3 pre-existing same-name worker (own pane + sessionPath) survives — rollback is scoped to name+paneId, not name-only",
+		"C5.3 pre-existing same-name worker (own console + sessionPath) survives — rollback is scoped to name+paneId, not name-only",
 		refused.workers.length === 1 &&
 			refused.workers[0].paneId === "pane-old" &&
 			refused.workers[0].hasSession === true &&
@@ -237,7 +237,7 @@ function drive(scenario: string, configJson?: string): DriverOut {
 	const src = readFileSync(resolve(ROOT, "src/spawn.ts"), "utf8");
 	check(
 		"C4.1 the hook skips probes, config-off and pending questions — in that order",
-		/if \(isProbe\) return ""; \/\/ probes keep their panes this wave/.test(src) &&
+		/if \(isProbe\) return ""; \/\/ probes keep their consoles this wave/.test(src) &&
 			/!resolveCollectConfig\(\)\.teardownAfterCollect/.test(src) &&
 			/readQuestion\(questionPathFor\(manifestDir, canonical\)\)/.test(src),
 	);

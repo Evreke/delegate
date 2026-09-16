@@ -36,7 +36,10 @@ spawn-and-baby-sit ritual.
 ### Prerequisites
 
 - [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) — the host harness.
-- **herdr** on `PATH` — hard requirement, the only production backend (`herdr --version` to check).
+- A worker-host backend, selected by the config's `"host"` key:
+  - `"herdr"` (default) — **herdr** on `PATH` is a hard requirement (`herdr --version` to check);
+  - `"rpc"` — herdr-free: workers run as headless `pi --mode rpc` child processes of the
+    orchestrator session (plain git worktrees for isolation; see the config section below).
 - On Windows — herdr for Windows; beyond the exchange/path layer Windows is not certified.
 - A configured model tier in `~/.pi/agent/pi-delegate.config.json` — see the
   [installation guide](#installation-guide); unconfigured → `E_TIER`.
@@ -76,8 +79,10 @@ a **validated JSON report** is on disk — never when the agent status says done
   `$extends` inheritance and a schema library.
 - **Budgets & gauges.** Output-token caps per worker (`E_BUDGET` on breach), live `ctx%`
   and token counters, restart before compaction eats the worker.
-- **Isolation.** Git worktree per worker (own checkout + branch) or shared tab — sub-
-  orchestrators structurally cannot create worktrees.
+- **Isolation.** Git worktree per worker (own checkout + branch) or shared placement
+  (`mode: "shared"` — placement in the shared checkout without isolation; the older
+  `mode: "tab"` spelling stays valid as a deprecated alias) — sub-orchestrators
+  structurally cannot create worktrees.
 - **Clean teardown.** Interactive `/delegate-teardown`, auto-cleanup after a collected
   report, full audit in `teardown.log`.
 - **Honest errors.** Every refusal is a structured code with a recovery hint:
@@ -174,8 +179,8 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
 **Step 1 — prerequisites.**
 
 - A working [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) installation.
-- `herdr` on `PATH` (hard requirement — the extension has no other production backend).
-  Check with `herdr --version`.
+- `herdr` on `PATH` (required when `"host"` is `"herdr"` — the default; the alternative
+  `"host": "rpc"` backend needs no herdr at all). Check with `herdr --version`.
 
 **Step 2 — install the extension.**
 
@@ -239,6 +244,28 @@ What each section does:
 
 Optional extras (all have safe defaults; see the operational notes above):
 
+- **Profiles** — named config presets. Put a preset with the SAME shape as the
+  base config (host / contextWindow / defaults / tiers / watch) into
+  `~/.pi/agent/pi-delegate.d/<name>.json` and select it either by the
+  `PI_DELEGATE_PROFILE` environment variable (per-terminal) or by the base
+  config's `"profile": "<name>"` key (persistent); the env var wins. A section
+  present in the profile replaces the base section WHOLESALE (no partial
+  merging inside tiers/defaults/watch); sections absent from the profile fall
+  through to the base. No profile selected → the base config as-is. A selected
+  profile that is missing or unparseable is an error, never a silent fallback:
+  delegate calls fail with a structured `E_START` naming the file (the
+  watcher/fleet/status surfaces degrade to defaults instead — they are
+  advisory). The host is bound once at session start: mid-session profile
+  edits change tiers/defaults/budget/watch on the next delegate call, never
+  the running backend.
+- `"host": "herdr" | "rpc"` — the worker-host backend. `"herdr"` (default) places workers
+  in herdr workspaces/panes and requires the herdr CLI. `"rpc"` runs workers as headless
+  `pi --mode rpc` child processes of the orchestrator session — no herdr anywhere:
+  worktree placement is a plain `git worktree add` under `~/.pi/agent/worktrees/`, prompts
+  go over the worker's stdin, and settle is proven by pi's own `agent_settled` rpc event
+  (no status polling). Known limitation: rpc workers live as long as the orchestrator
+  process — after it exits they finish their current task and exit (stdin EOF), so a LATER
+  session sees their reports/mailbox files but cannot nudge them.
 - `watch` — watcher tuning: `intervalMs` (poll period, floor 1 s), `settleGateMs` (the
   default blocking window of a call, floor applies too) and `releaseOn` — `"settle"`
   (default) blocks the full window unless the worker settles inline; `"started"` enables
@@ -255,7 +282,7 @@ Optional extras (all have safe defaults; see the operational notes above):
 Start a pi session. A quick smoke test is a probe-style delegate call with a tiny brief in
 the exchange layout (`/tmp/exchange/<task>/brief-<name>.md` on Linux/macOS). If the config
 did not resolve, the call returns a structured error (`E_TIER`) with a recovery hint; if
-`herdr` is missing, the tools refuse up front.
+`herdr` is missing while `"host"` is `"herdr"`, the tools refuse up front.
 
 The `/delegate-teardown` command and the fleet overlay/`delegate_status` tool become
 available immediately after the session starts.
@@ -278,8 +305,10 @@ available immediately after the session starts.
 ### Требования
 
 - [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) — харнесс, в котором живёт расширение.
-- **herdr** на `PATH` — жёсткое требование, единственный production-бэкенд (проверка:
-  `herdr --version`).
+- Бэкенд воркеров, выбирается ключом `"host"` в конфиге:
+  - `"herdr"` (по умолчанию) — на `PATH` нужен **herdr** (проверка: `herdr --version`);
+  - `"rpc"` — без herdr: воркеры — headless-процессы `pi --mode rpc`, дети сессии
+    оркестратора (изоляция — обычные git worktrees; см. раздел про конфиг).
 - На Windows — herdr for Windows; за пределами exchange/path-слоя Windows не
   сертифицирован.
 - Настроенный тир модели в `~/.pi/agent/pi-delegate.config.json` — см. [инструкцию по
@@ -317,8 +346,10 @@ done/idle.
   `$extends` и библиотекой схем.
 - **Бюджеты и градусники.** Лимиты output-токенов (`E_BUDGET` при превышении), живые
   `ctx%` и счётчики токенов, рестарт до того, как компакшен съест воркера.
-- **Изоляция.** Git worktree на воркера (свой чекаут + ветка) или общий tab — суб-
-  оркестратор структурно не может создать worktree.
+- **Изоляция.** Git worktree на воркера (свой чекаут + ветка) или shared-плейсмент
+  (`mode: "shared"` — placement в общем чекауте без изоляции; старый `mode: "tab"`
+  остаётся валидным deprecated-алиасом) — суб-оркестратор структурно не может
+  создать worktree.
 - **Чистая уборка.** Интерактивный `/delegate-teardown`, автоборка после собранного
   отчёта, полный аудит в `teardown.log`.
 - **Честные ошибки.** Каждый отказ — структурный код с подсказкой:
@@ -414,8 +445,8 @@ done/idle.
 **Шаг 1 — требования.**
 
 - Рабочая установка [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
-- `herdr` на `PATH` (жёсткое требование — другого production-бэкенда у расширения нет).
-  Проверка: `herdr --version`.
+- `herdr` на `PATH` (нужен при `"host": "herdr"` — значении по умолчанию; альтернативный
+  бэкенд `"host": "rpc"` в herdr не нуждается вообще). Проверка: `herdr --version`.
 
 **Шаг 2 — установка расширения.**
 
@@ -480,6 +511,29 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
 Необязательные дополнения (у всех безопасные значения по умолчанию; см. эксплуатационные
 заметки выше):
 
+- **Профили** — именованные пресеты конфигурации. Положите пресет той же формы,
+  что и базовый конфиг (host / contextWindow / defaults / tiers / watch), в
+  `~/.pi/agent/pi-delegate.d/<имя>.json` и выберите его либо переменной
+  окружения `PI_DELEGATE_PROFILE` (на терминал), либо ключом
+  `"profile": "<имя>"` в базовом конфиге (постоянно); переменная окружения
+  сильнее. Секция, присутствующая в профиле, заменяет секцию базы ЦЕЛИКОМ
+  (частичного слияния внутри tiers/defaults/watch нет); секции, которых в
+  профиле нет, берутся из базы. Профиль не выбран → базовый конфиг как есть.
+  Выбранный, но отсутствующий/битый профиль — это ошибка, а не тихий откат:
+  вызовы delegate падают со структурной `E_START` с именем файла (вотчер/
+  флот/статус вместо этого откатываются к значениям по умолчанию — они
+  консультативные). Хост привязывается один раз на старте сессии: правки
+  профиля в работающей сессии меняют tiers/defaults/budget/watch на следующем
+  вызове delegate, но не работающий бэкенд.
+- `"host": "herdr" | "rpc"` — бэкенд воркеров. `"herdr"` (по умолчанию) размещает
+  воркеров в workspaces/панелях herdr и требует CLI herdr. `"rpc"` запускает воркеров
+  как headless-процессы `pi --mode rpc`, дети сессии оркестратора, — herdr не нужен
+  вовсе: worktree-плейсмент — обычный `git worktree add` под
+  `~/.pi/agent/worktrees/`, промпты уходят в stdin воркера, а оседание доказывается
+  собственным rpc-событием pi `agent_settled` (без опроса статусов). Известное
+  ограничение: rpc-воркеры живут вместе с процессом оркестратора — после его выхода
+  они завершают текущую задачу и выходят (EOF в stdin), поэтому более поздняя сессия
+  видит их отчёты/файлы почтового ящика, но не может их подтолкнуть (nudge).
 - `watch` — настройка вотчера: `intervalMs` (период опроса, минимум 1 с), `settleGateMs`
   (окно блокировки вызова по умолчанию) и `releaseOn` — `"settle"` (по умолчанию)
   блокирует всё окно, если воркер не осел раньше; `"started"` включает раннее
@@ -498,7 +552,7 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
 Стартуйте сессию pi. Быстрая проверка — probe-вызов `delegate` с крошечным брифом в
 exchange layout (`/tmp/exchange/<task>/brief-<имя>.md` на Linux/macOS). Если конфиг не
 разрешился, вызов вернёт структурную ошибку (`E_TIER`) с подсказкой; если `herdr`
-отсутствует, инструменты откажут сразу.
+отсутствует при `"host": "herdr"`, инструменты откажут сразу.
 
 Команда `/delegate-teardown`, оверлей флота и инструмент `delegate_status` доступны сразу
 после старта сессии.

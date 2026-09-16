@@ -39,6 +39,22 @@ One rule: **"worktree" names the isolation mechanism, "checkout" names the path.
 - Session cwd inside a wt-workspace → **sub-orchestrator**: worktree placement/teardown rejected (transport guards); tabs only.
 - Guard lives in the herdr adapter `src/herdr/host.ts` (`capabilities()`, `isSubOrchestratorCwd()`, `placeInner()`, `teardownInner()`).
 
+## Command & check discipline — mandatory, fail-fast is basic
+
+Every agent in this repo (workers and orchestrators alike) follows these rules. They exist because a check script that can block forever once hung an agent for 35 minutes (2026-09-15).
+
+1. **Fail-fast is a basic property of every test/check.** A check script must never await anything unbounded: every wait has a deadline, and the script carries a top-level watchdog that exits non-zero (e.g. after 20s) no matter what. A hanging check is a bug IN the check — fix the check, never raise the timeout to tolerate it.
+2. **Run the suite only through the runner** (`test/run-checks.sh`): it auto-discovers `test/*.ts` and bounds every check with a per-check timeout (`CHECK_TIMEOUT`, default 30s) plus structured FAIL/ENV-FAIL reporting. NEVER invoke a check script directly without an explicit `timeout` wrapper.
+3. **Bound every long-running command.** Test runs, builds, installs — anything that can exceed a few seconds — go through an explicit `timeout <s> <command>`.
+4. **When a command hangs, kill the child, not the session.** The hung process is killed; the agent continues from the tool failure and fixes the cause (usually a missing deadline in the check or the code under test).
+
+## Round discipline — merge opens the field trial, never the next round
+
+1. A round ends in three stages, in order: worker report verified against the brief → merge → **field trial** by the operator against an explicit acceptance list (the behaviors the round promised, exercised in the real environment — browser, live sessions, ports — not in the check suite).
+2. The next round on the same surface starts only after the field trial passes, or its findings become that round's brief. A passing check suite is the start of acceptance, not its end.
+3. Field findings accumulate and batch into rounds; each round's brief may cover several findings at once.
+4. Priorities live outside the repo — GitHub issues on `origin`, grouped under the fleet-dashboard milestone. Re-deriving priorities per session from the freshest complaint is the failure mode this section exists to prevent.
+
 ## Frozen surface — never rename
 
 True INSIDE the herdr adapter (`src/herdr/host.ts`); the seam above it is backend-neutral. `herdr worktree <verb>` CLI strings · herdr JSON fields (`workspace.worktree.*`, `is_linked_worktree`) · `not_linked_worktree` token · manifest `kind: "worktree"` value · journal events (`delegate-fleet`, `spawn`/`collect`) · `/delegate-*` command names · tool names/params.

@@ -23,11 +23,27 @@
  * backend status is an advisory sensor, never the criterion. W4 refactor:
  * verbatim concatenation of the
  * old src/tools/mailbox.ts (leaf, first) and src/tools/delegate.ts. The
- * ~1140-line execute() closure is kept AS-IS by design (user decision): its
+ * ~1300-line execute() closure is kept AS-IS by design (user decision): its
  * closure-scoped mutables (sessionPath, manifestWarning, reportPath,
  * tierWarning, questionDetected, lastBeat, settleAbort) ARE the shared phase
  * state — no splitting into phase files, no ctx object; only zero-closure-
  * state pure helpers may ever be extracted.
+ * Extraction state (Law 5, the wave-3 line — the rule above is what makes it
+ * legal): every phase that reads NONE of the seven mutables is a pure
+ * function over explicit args with a discriminated result the closure
+ * consumes — tier/provider/model resolution and brief report-schema
+ * resolution (module-level below), the pre-placement name/brief validation
+ * and the dual-gauge governor (src/pre-placement.ts), the tier-mismatch
+ * detection, the brief-reportSchema violation note and the last-live-worker
+ * nudge (module-level below). What stays closure-bound is (a) the code that
+ * reads or writes one of the seven — the gauge summary, detach, the settle
+ * proof, probe salvage, the strict collect, the success-result builder, the
+ * heartbeat + mailbox-question interrupt, the probe verdict (every branch of
+ * it ends with the manifestWarning note), the manifest writes and the
+ * timeout/release-window computation (its shape is pinned by
+ * test/watcher-check.ts W1.3/W1.4); and (b) the collect-time auto-teardown,
+ * which reads none but whose source text is pinned to this file by
+ * test/collect-teardown-check.ts C4.
  * Dependencies: ./host.ts (the Transport seam + E_* taxonomy + briefPrompt),
  * exchange.ts (manifest/report/mailbox lifecycle + archive), usage.ts
  * (session-JSONL gauges), observe.ts (watch/collect config resolution),
@@ -108,7 +124,6 @@ import {
 	aggregateTaskUsage,
 	applyFleetTaskFields,
 	describeFleet,
-	ensureExchangeDir,
 	exchangeRoot,
 	isProbeDir,
 	persistTaskUsageSnapshot,
@@ -128,10 +143,8 @@ import {
 	contextPct,
 	formatBudgetLine,
 	formatGaugeLine,
-	overContext,
 	overOutputBudget,
 	parseSessionUsage,
-	resolveContextWindow,
 	resolvePiSessionCandidates,
 	resolveSpawnDefaults,
 	resolveTierTable,
@@ -165,7 +178,12 @@ import { registerMailboxTool } from "./mailbox-tool.ts";
 // Wave 3 decomposition (step 4.2): the clock port moved verbatim to
 // src/clock.ts — the grace loop deps keep consuming it through the import.
 import { type ClockPort, systemClock } from "./clock.ts";
-import { probeDirPathFor, TEARDOWN_LOG_NAME } from "./expaths.ts";
+import { TEARDOWN_LOG_NAME } from "./expaths.ts";
+// Wave 3 decomposition (Law 5 continuation): the pre-placement validation region
+// — name guard, brief → exchange-dir resolution, the dual-gauge governor —
+// moved verbatim to src/pre-placement.ts; execute() consumes the discriminated
+// results.
+import { applyGaugeGovernor, validateNameAndBrief } from "./pre-placement.ts";
 import { clampLines } from "./ui-text.ts";
 import { notifyFleetIdle, renderDelegateLines } from "./fleet-widget.ts";
 import {
@@ -173,7 +191,6 @@ import {
 	CONTEXT_TURNS_WARN,
 	CONTEXT_WARN_PCT,
 	DEFAULT_BUDGET_TOKENS,
-	WORKER_NAME_RE,
 	briefPrompt,
 	DelegateErrorImpl,
 	type AgentStatusName,
@@ -242,13 +259,6 @@ const PROBE_TIMEOUT_MS = 120_000;
  *  timeoutMs must never hold the session hostage — folded into waitMs capped
  *  here AND clamped again in execute()'s wait computation. ONE spelling. */
 const WAIT_CAP_MS = 120_000;
-/** Exchange dir for probe runs — no brief/task, but placements must stay
- *  teardown- and status-visible (manifestStore.scan() covers every manifest under
- *  the exchange root). Derived from exchangeRoot() so sandboxed tests
- *  ($PI_DELEGATE_EXCHANGE_ROOT) never touch the live /tmp/exchange root. */
-function probeExchangeDir(): string {
-	return probeDirPathFor(exchangeRoot());
-}
 /** Fixed probe prompt. */
 const PROBE_PROMPT = "Reply with exactly: OUTPUT: OK";
 /** Settle-vs-report race grace window: settle can fire before the report file
@@ -406,8 +416,16 @@ import { appendWatcherAudit } from "./watcher.ts";
 // report-schema resolution. NOT a rewrite of execute(): each phase keeps its
 // exact decision logic, E_* texts and details payloads verbatim; only the
 // phase boundary becomes a discriminated result the closure returns (E_TIER/
-// E_BRIEF) or consumes. The remaining execute() closure shrink is the
-// written next-cycle plan (README "Future work").
+// E_BRIEF) or consumes.
+// Wave 3 continuation (the "remaining execute() closure shrink" this banner
+// planned — same rule, same verbatim discipline): the pre-placement name/
+// brief validation and the dual-gauge governor moved to src/pre-placement.ts
+// (E_NAME/E_BRIEF/E_CONTEXT/E_BUDGET became discriminated results), and the
+// tier-mismatch detection, the brief-reportSchema violation note and the
+// last-live-worker nudge became module-level functions below. A phase that
+// reads one of the seven closure mutables stays in the closure — the
+// MODULE_CONTRACT carries the extraction state; the structural edges are
+// pinned by test/spawn-shrink-check.ts.
 // ===========================================================================
 
 /** Explicit inputs of the tier-resolution phase (no closure state). */
@@ -570,6 +588,147 @@ function resolveBriefReportSchema(input: SchemaResolutionInput): {
 		resolvedSchema: resolved.schema,
 		...(degradedWarning !== undefined ? { degradedWarning } : {}),
 	};
+}
+
+/** Explicit inputs of the tier-mismatch detection phase (no closure state). */
+interface TierMismatchInput {
+	/** Resolved brief path (empty for probes). */
+	briefPath: string;
+	/** The resolved worker model — the E_TIER guard above guarantees it is set. */
+	model: string;
+	/** Probes carry no brief → the guard never fires. */
+	isProbe: boolean;
+}
+
+/**
+ * The tier-mismatch guard as a PURE function (verbatim decision logic and the
+ * verbatim warning text from the execute closure). The closure keeps the
+ * tierWarning mutable it feeds — this phase only COMPUTES the advisory line,
+ * the same shape as the wave-3 schema resolution returning degradedWarning.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: briefPath (resolved), model (resolved), isProbe
+ * Output: the warning line ("brief declares <declared> tier but worker runs
+ *   <model> — tier mismatch"), or "" when the brief declares no tier, the
+ *   declared tier matches the model, the brief is unreadable, or this is a
+ *   probe run
+ * Guarantees:
+ *   - advisory by contract: an unreadable brief yields "" and never blocks
+ *     the run (the read failure is swallowed here, exactly as inline before);
+ *   - reads NO closure mutable and takes none as a parameter
+ * Raises: never
+ * EXTERNAL_DEPENDENCY: filesystem — the brief file.
+ */
+async function detectBriefTierMismatch(input: TierMismatchInput): Promise<string> {
+	const { briefPath, model, isProbe } = input;
+	if (isProbe) return "";
+	try {
+		const briefText = await readFile(briefPath, "utf8");
+		const tierMatch = briefText.match(/frontier tier|flash tier|execution tier/i);
+		if (tierMatch) {
+			const declared = /frontier/i.test(tierMatch[0]) ? "frontier" : "flash";
+			const modelStr = model as string; // guaranteed by the E_TIER guard above
+			const ok = declared === "frontier" ? /frontier/i.test(modelStr) : /flash|glm/i.test(modelStr);
+			if (!ok) return `brief declares ${declared} tier but worker runs ${modelStr} — tier mismatch`;
+		}
+	} catch {
+		// unreadable brief → guard is advisory, never blocks the run
+	}
+	return "";
+}
+
+/** Explicit inputs of the brief-reportSchema violation note (no closure state). */
+interface SchemaViolationNoteInput {
+	/** True when the report file is missing — nothing was validated then. */
+	missing: boolean;
+	/** The path the collect attempt actually read. */
+	usedReportPath: string;
+	/** The canonical worker name (validateReport's name expectation). */
+	canonical: string;
+	/** The merged fragment the report was held to (null = base-schema only). */
+	resolvedSchema: Record<string, unknown> | null;
+	/** The schema resolution provenance chain. */
+	schemaProvenance: string[];
+}
+
+/**
+ * The v1.2/v1.5 brief-reportSchema violation note as a PURE function
+ * (verbatim decision logic, guidance text, fragment quote and provenance
+ * chain from the execute closure).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: missing, usedReportPath, canonical, resolvedSchema, schemaProvenance
+ * Output: the dedicated guidance note ("" when the report is missing, when
+ *   the BASE schema itself rejects the report, or when the base schema passes
+ *   and there is nothing to distinguish)
+ * Guarantees:
+ *   - the note is appended to the E_REPORT_INVALID text by the caller — it
+ *     never changes the code or the verdict, only the guidance;
+ *   - "base passes, fragment rejects" is the ONLY case that produces the
+ *     violation prose (unchanged);
+ *   - pure except validateReport's own documented report read
+ * Raises: never
+ * EXTERNAL_DEPENDENCY: filesystem — the report file (via validateReport).
+ */
+function briefSchemaViolationNote(input: SchemaViolationNoteInput): string {
+	const { missing, usedReportPath, canonical, resolvedSchema, schemaProvenance } = input;
+	let schemaNote = "";
+	if (!missing) {
+		const base = validateReport(usedReportPath, canonical);
+		if (base.ok) {
+			schemaNote =
+				"\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — " +
+				"either the worker or the schema fragment is wrong; compare evidence, then fix the brief or re-brief.";
+			// v1.5: the audit trail answers "what schema was this
+			// report held to" — quote the merged fragment (truncated) + provenance.
+			if (resolvedSchema) {
+				const fragmentJson = JSON.stringify(resolvedSchema);
+				schemaNote +=
+					`\nschema held: ${fragmentJson.length > 300 ? `${fragmentJson.slice(0, 300)}…` : fragmentJson}`;
+			}
+			if (schemaProvenance.length > 0) {
+				schemaNote += `\nschema provenance: ${schemaProvenance.join(" → ")}`;
+			}
+		}
+	}
+	return schemaNote;
+}
+
+/** Explicit inputs of the last-live-worker nudge (no closure state). */
+interface FleetIdleInput {
+	/** The injected Transport seam (the live-worker sensor). */
+	transport: Transport;
+	/** The tool context (notifyFleetIdle's UI handle). */
+	ctx: import("@earendil-works/pi-coding-agent").ExtensionContext;
+	/** The task dir whose manifest holds the worker count. */
+	manifestDir: string;
+}
+
+/**
+ * The last-live-worker nudge as a PURE-over-its-args function (verbatim logic
+ * from the execute closure): when no worker is live (working/blocked) anymore
+ * after this collect, fire notifyFleetIdle with the task manifest's worker
+ * count. Advisory — never affects outcomes.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: transport, ctx, manifestDir (all explicit — no closure state)
+ * Output: resolves when the (skippable) nudge attempt is done
+ * Guarantees:
+ *   - fires only when zero workers are working/blocked; any failure
+ *     (herdr unreachable) is swallowed — advisory only
+ * Raises: never
+ */
+async function maybeNotifyFleetIdle(input: FleetIdleInput): Promise<void> {
+	const { transport, ctx, manifestDir } = input;
+	try {
+		const statuses = await transport.listStatuses();
+		const live = statuses.filter((s) => s.status === "working" || s.status === "blocked");
+		if (live.length === 0) {
+			notifyFleetIdle(ctx, manifestStore.read(manifestDir)?.workers.length ?? 1);
+		}
+	} catch {
+		// advisory only — herdr unreachable → skip the nudge
+	}
 }
 
 /**
@@ -740,59 +899,28 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const branch = params.branch ?? `delegate/${params.name}`;
 			const briefPath = isProbe ? "" : resolve(ctx.cwd, params.briefPath.replace(/^@/, ""));
 
-			// 1. Validate name + brief (fail fast, before touching herdr).
-			if (!WORKER_NAME_RE.test(params.name)) {
-				return fail(
-					"E_NAME",
-					`E_NAME — invalid worker name "${params.name}". ` +
-						"Names must match [a-z][a-z0-9_-]{0,31}; use the canonical name (read back at start) when retrying.",
-				);
-			}
-
-			let exchangeDir: string | null = null;
-			if (!isProbe) {
-				try {
-					exchangeDir = ensureExchangeDir(briefPath).dir;
-				} catch (err) {
-					const de = asDelegateError(err);
-					const guidance =
-						de?.guidance ?? `Write the brief file under ${exchangeRoot()}/<task>/ first, then call delegate again.`;
-					return fail("E_BRIEF", `E_BRIEF — ${errText(err)}\n${guidance}`, {
-						briefPath,
-						name: params.name,
-					});
-				}
-			}
-			const manifestDir = exchangeDir ?? probeExchangeDir();
-
-			// Dual-gauge governor: refuse to re-spawn a worker whose
-			// recorded session tripped EITHER gauge — context % (primary, pi's own
-			// formula) or output budget (secondary, when set).
-			const maxPct = params.maxContextPct ?? CONTEXT_WARN_PCT;
-			const contextWindow = resolveContextWindow(model);
-			const priorWorker = manifestStore.read(manifestDir)?.workers.find(
-				(w) => w.name === params.name && typeof w.sessionPath === "string" && w.sessionPath.length > 0,
-			);
-			if (priorWorker?.sessionPath) {
-				const priorUsage = parseSessionUsage(priorWorker.sessionPath);
-				if (overContext(priorUsage, contextWindow, maxPct)) {
-					const pct = contextPct(priorUsage, contextWindow);
-					return fail(
-						"E_CONTEXT",
-						`E_CONTEXT — worker session near compaction (ctx ${pct}% ≥ ${maxPct}%): its next prompt would compact and lose the brief. ` +
-							"Start a NEW worker name (diagnosed retry = new brief + fresh context).",
-						{ usage: priorUsage, contextWindow, maxPct, sessionPath: priorWorker.sessionPath, name: params.name },
-					);
-				}
-				if (overOutputBudget(priorUsage, params.budgetTokens)) {
-					return fail(
-						"E_BUDGET",
-						`E_BUDGET — worker over OUTPUT budget (${priorUsage.output} > ${params.budgetTokens} tokens). ` +
-							"Pick a NEW worker name or pass an explicit higher budgetTokens; budget decline across diagnosed retries is orchestrator policy.",
-						{ usage: priorUsage, budget: params.budgetTokens, sessionPath: priorWorker.sessionPath, name: params.name },
-					);
-				}
-			}
+			// 1. Validate name + brief, then the dual-gauge governor (fail fast,
+			// before touching herdr). Wave 3 decomposition (Law 5 continuation): the
+			// region is TWO pure functions over explicit args
+			// (src/pre-placement.ts) — the decision logic, the E_NAME/E_BRIEF/
+			// E_CONTEXT/E_BUDGET texts and details payloads are verbatim; only the
+			// phase boundary became a discriminated result the closure returns.
+			const nameBrief = validateNameAndBrief({
+				name: params.name,
+				briefPath,
+				isProbe,
+			});
+			if (!nameBrief.ok) return nameBrief.failure;
+			const manifestDir = nameBrief.manifestDir;
+			const governor = applyGaugeGovernor({
+				name: params.name,
+				model,
+				manifestDir,
+				maxContextPct: params.maxContextPct,
+				budgetTokens: params.budgetTokens,
+			});
+			if (!governor.ok) return governor.failure;
+			const { maxPct, contextWindow } = governor;
 
 			// v1.5: resolve the brief's report schema — inline
 			// fragment or named library type — once, BEFORE place(): a bad schema must
@@ -1079,21 +1207,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// Tier-mismatch guard: when the brief text declares a
 			// tier ("frontier tier"/"flash tier"/"execution tier") and the spawned
 			// model contradicts it, surface a warning on every terminal result.
-			let tierWarning = "";
-			if (!isProbe) {
-				try {
-					const briefText = await readFile(briefPath, "utf8");
-					const tierMatch = briefText.match(/frontier tier|flash tier|execution tier/i);
-					if (tierMatch) {
-						const declared = /frontier/i.test(tierMatch[0]) ? "frontier" : "flash";
-						const modelStr = model as string; // guaranteed by the E_TIER guard above
-						const ok = declared === "frontier" ? /frontier/i.test(modelStr) : /flash|glm/i.test(modelStr);
-						if (!ok) tierWarning = `brief declares ${declared} tier but worker runs ${modelStr} — tier mismatch`;
-					}
-				} catch {
-					// unreadable brief → guard is advisory, never blocks the run
-				}
-			}
+			// Wave 3 decomposition (Law 5 continuation): the detection is a pure
+			// module-level function over explicit args (verbatim logic + text); the
+			// closure keeps the tierWarning phase state it feeds.
+			const tierWarning = await detectBriefTierMismatch({ briefPath, model, isProbe });
 
 			// Canonical differs: reconcile the manifest record so audit/teardown and
 			// report collection use the canonical name + report path. Also records the
@@ -1206,28 +1323,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				);
 			};
 
-			//
-			// FUNCTION_CONTRACT:
-			// Input: none (closure: transport, manifestDir, ctx)
-			// Output: resolves when the (skippable) nudge attempt is done
-			// Guarantees:
-			//   - fires only when zero workers are working/blocked; any failure
-			//     (herdr unreachable) is swallowed — advisory only
-			// Raises: never
-			// Last-live-worker nudge: when no worker is live
-			// (working/blocked) anymore after this collect, fire notifyFleetIdle with
-			// the task manifest's worker count. Advisory — never affects outcomes.
-			const maybeNotifyFleetIdle = async (): Promise<void> => {
-				try {
-					const statuses = await transport.listStatuses();
-					const live = statuses.filter((s) => s.status === "working" || s.status === "blocked");
-					if (live.length === 0) {
-						notifyFleetIdle(ctx, manifestStore.read(manifestDir)?.workers.length ?? 1);
-					}
-				} catch {
-					// advisory only — herdr unreachable → skip the nudge
-				}
-			};
+			// Last-live-worker nudge (wave 3 decomposition, Law 5 continuation):
+			// moved verbatim to the module-level maybeNotifyFleetIdle above — it
+			// reads no closure state, only the injected transport, ctx and the
+			// manifest dir passed at each call site.
 
 			//
 			// FUNCTION_CONTRACT:
@@ -1378,7 +1477,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				const collectedStampNote = collectedNote ? `\nWarning: ${collectedNote}` : "";
 				journal(pi, "collect", canonical, report.status, archivePath ?? undefined);
 				// Last live worker settled → teardown nudge.
-				void maybeNotifyFleetIdle();
+				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 				// v1.12.1: the collect is DONE here (report valid, collectedAt
 				// stamped) — the auto-teardown below can only append an advisory
 				// note, never change this result's verdict.
@@ -1491,7 +1590,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const probeSalvage = (): ToolResult | null => {
 				if (!isProbe) return null;
 				if (!sessionPath || parseSessionUsage(sessionPath).turns === 0) return null;
-				void maybeNotifyFleetIdle();
+				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 				return textResult(
 					`probe OK (detached after settle) — smoke gate passed before the abort (agent ${canonical}, smoke reply in session). ` +
 						"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
@@ -1769,7 +1868,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// probe is probe FAIL — never let the console status produce a spurious
 				// 'probe OK' (the original spurious-pass bug half-survived here).
 				if (settle.kind === "never-started") {
-					void maybeNotifyFleetIdle();
+					void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 					return fail(
 						"E_START",
 						`probe FAIL — worker never started (prompt never consumed) for ${canonical}; ` +
@@ -1801,7 +1900,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				}
 				const markerSeen = typeof consoleText === "string" && /OUTPUT:\s*OK/i.test(consoleText);
 				if (markerSeen) {
-					void maybeNotifyFleetIdle();
+					void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 					return textResult(
 						`probe OK — smoke reply verified in worker output ("OUTPUT: OK", agent ${canonical}, status ${live}). ` +
 							"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
@@ -1824,7 +1923,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					typeof consoleText === "string" && consoleText.trim().length > 0
 						? ` Console tail: …${consoleText.trim().slice(-300)}`
 						: " Console readback unavailable — verdict from status only.";
-				void maybeNotifyFleetIdle();
+				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 				if (live === "idle" || live === "done") {
 					return fail(
 						"E_START",
@@ -1991,29 +2090,19 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// v1.2: distinguish a brief-reportSchema violation — base
 			// schema passes but the declared fragment rejects. The fragment error is
 			// already quoted verbatim in `what`; add dedicated guidance.
-			let schemaNote = "";
-			if (!missing) {
-				const base = validateReport(collected.usedPath, canonical);
-				if (base.ok) {
-					schemaNote =
-						"\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — " +
-						"either the worker or the schema fragment is wrong; compare evidence, then fix the brief or re-brief.";
-					// v1.5: the audit trail answers "what schema was this
-					// report held to" — quote the merged fragment (truncated) + provenance.
-					if (resolvedSchema) {
-						const fragmentJson = JSON.stringify(resolvedSchema);
-						schemaNote +=
-							`\nschema held: ${fragmentJson.length > 300 ? `${fragmentJson.slice(0, 300)}…` : fragmentJson}`;
-					}
-					if (schemaProvenance.length > 0) {
-						schemaNote += `\nschema provenance: ${schemaProvenance.join(" → ")}`;
-					}
-				}
-			}
+			// Wave 3 decomposition (Law 5 continuation): the violation note is built
+			// by a pure module-level function over explicit args (verbatim texts).
+			const schemaNote = briefSchemaViolationNote({
+				missing,
+				usedReportPath: collected.usedPath,
+				canonical,
+				resolvedSchema,
+				schemaProvenance,
+			});
 			const b = gaugeSummary();
 			// A settle (even a failed one) that empties the fleet still fires the
 			// teardown nudge.
-			void maybeNotifyFleetIdle();
+			void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
 			return fail(
 				code,
 				`${code} — worker ${canonical} settled but ${what}.\n` +

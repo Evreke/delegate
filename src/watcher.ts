@@ -94,7 +94,7 @@ export function formatEventBatch(events: WatchEvent[]): string {
  * re-derive exactly which key was committed.
  * <p>
  * The word "sent" (never "fail"/"error") is deliberate: the production sink
- * (makeWatcherLogSink) surfaces only error-shaped lines to the pane, so a
+ * (makeWatcherLogSink) surfaces only error-shaped lines to the console, so a
  * routine success lands in the audit FILE only (routine deliver must not
  * spam the TUI; the audit file — yes).
  * <p>
@@ -250,7 +250,7 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
  * Placement note: this runs BEFORE the batch send so the suffix can reach the
  * wake text. If the send then fails, the batch's dedup keys roll back and the
  * next tick re-fires the event → the steer is posted AGAIN (an extra a-file
- * rewrite with identical text, one extra pane prompt). Accepted residual: the
+ * rewrite with identical text, one extra console prompt). Accepted residual: the
  * alternative (nudge after send) cannot carry the suffix in the delivered
  * message, and a duplicate steer is advisory noise, not a lost or wrong fix.
  * <p>
@@ -263,13 +263,13 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
  * Output: none (mutates `events` messages in place when the nudge posted)
  * Guarantees:
  *   - only report-invalid events for LIVE workers (w.live — herdr still knows
- *     the pane; a vanished agent cannot be nudged) trigger a steer
+ *     the console; a vanished agent cannot be nudged) trigger a steer
  *   - the steer goes through postSteerAndNudge — the ONE posting core shared
  *     with the delegate_mailbox tool (Law 9); its failure path is the
  *     EXISTING nudge-failed marker machinery, never a new channel
  *   - fully advisory: any throw is logged and never affects the tick's
  *     delivery or its durable commit
- * Residual (accepted): the pane-nudge phase (bounded retries) is awaited
+ * Residual (accepted): the console-nudge phase (bounded retries) is awaited
  *   before the batch send, so a broken herdr socket delays this tick's wake
  *   by up to the nudge budget (~3 × MAILBOX_NUDGE_TIMEOUT_MS). The alternative
  *   — detaching the nudge — cannot put the suffix into the delivered wake
@@ -297,7 +297,7 @@ async function autoHealNudge(
 			});
 			log(
 				`auto fix nudge for ${e.worker} (${e.dir}): steer at ${res.answerPath}` +
-					(res.nudged ? ", pane nudged" : res.note),
+					(res.nudged ? ", console nudged" : res.note),
 			);
 		} catch (err) {
 			log(`auto fix nudge FAILED for ${e.worker} (${e.dir}) (${errText(err)}) — guidance-only delivery`);
@@ -707,8 +707,8 @@ export function makeSender(
  * The production watcher log sink (UX fix, 2026-09-10), extracted for
  * behavioral testing (migration stage 3, audit step 10 — replaces the
  * static-check source-text pins T4.1/T4.2): every line goes to the audit
- * file (append-only, best-effort); the pane shows ONLY lines that need a
- * human — errors and anomalies ("already gone" — the pane vanished before
+ * file (append-only, best-effort); the console shows ONLY lines that need a
+ * human — errors and anomalies ("already gone" — the console vanished before
  * the TTL close, the agent may still be alive detached; see
  * resolveLiveTabId's drift guard).
  * <p>
@@ -719,8 +719,8 @@ export function makeSender(
  *   - every line is appended to ~/.pi/agent/delegate-watch.log with an ISO
  *     timestamp prefix; append failures are swallowed (advisory)
  *   - lines matching /\berror\b|\bfail|already gone|unavailable/i are ALSO
- *     surfaced to the pane via console.error with the [pi-delegate watch]
- *     prefix; routine bookkeeping never reaches the pane
+ *     surfaced to the console via console.error with the [pi-delegate watch]
+ *     prefix; routine bookkeeping never reaches the console
  * Raises: never
  * EXTERNAL_DEPENDENCY: ~/.pi/agent/delegate-watch.log (append-only audit
  *   file under pi's agent dir); pi's getAgentDir() (honors

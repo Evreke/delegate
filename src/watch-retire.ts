@@ -1,6 +1,6 @@
 /**
  * pi-delegate — watch-retire: the §23 retire engine (extension-side
- * auto-teardown of drained worker panes) — extracted verbatim from
+ * auto-teardown of drained worker consoles) — extracted verbatim from
  * observe.ts (Wave 3, audit Law 5: modules are responsibilities).
  * <p>
  * RETIRABLE = valid report (base + brief fragment) AND drained mailbox AND
@@ -40,7 +40,7 @@ import { updateWatchStamps, watcherKeyFor } from "./watch-store.ts";
 import type { Transport } from "./host.ts";
 
 // ---------------------------------------------------------------------------
-// §23 retire — extension-side auto-teardown of drained worker panes.
+// §23 retire — extension-side auto-teardown of drained worker consoles.
 // RETIRABLE = valid report (base + brief fragment) AND drained mailbox AND
 // herdr status done/idle. CLOSE on ACK (release-<name>.json) or TTL
 // (watch.retireTtlMs since retirable). EXCEPTIONS: invalid/missing report,
@@ -237,7 +237,7 @@ export async function retirePass(
 	log: (m: string) => void = () => {},
 ): Promise<RetireDecision[]> {
 	// §23 MASTER SWITCH (default FALSE): with the feature off the pass is a
-	// NO-OP — panes never close, no retirableSince is ever stamped (manifest
+	// NO-OP — consoles never close, no retirableSince is ever stamped (manifest
 	// or satellite), and
 	// behavior is byte-identical to pre-§23. evaluateRetire stays pure; the
 	// gate lives here (and in the mailbox release action).
@@ -308,7 +308,7 @@ export async function retirePass(
 					alreadyGone = res?.alreadyGone === true;
 				} catch (err) {
 					// BUG_FIX_CONTEXT: symptom — the retire pass spammed "retire pass
-					// error … tab_not_found" every tick when the pane had ALREADY been
+					// error … tab_not_found" every tick when the console had ALREADY been
 					// closed elsewhere (herdr, user, another session): the failed close
 					// never stamped retiredAt, so the decision re-fired forever.
 					// Why not fixed in the transport: teardown is also the interactive
@@ -353,7 +353,7 @@ export async function retirePass(
 					// marker cleanup is advisory — the retiredAt stamp already guards the history
 				}
 				log(
-					`retired worker ${w.name} (${outcome.decision.reason}${alreadyGone ? ", pane was already gone — idempotent close" : ""}) — ` +
+					`retired worker ${w.name} (${outcome.decision.reason}${alreadyGone ? ", console was already gone — idempotent close" : ""}) — ` +
 						"herdr name freed for a same-name retry",
 				);
 				decisions.push(outcome.decision);

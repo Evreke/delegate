@@ -14,15 +14,16 @@
  * implementation — the transport is injected here): ARCHITECTURE.md Law 4.
  */
 
-import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildWorkerView, type SelfIdentity } from "./src/fleet.ts";
 import { registerCommands } from "./src/commands.ts";
 import { registerStatusTool } from "./src/status-tool.ts";
 import { mountSessionWatcher } from "./src/compose.ts";
-import { buildWidgetRows, disposeFleetUI, mountFleetUI, type FleetWidgetRow as FleetRow, type FleetUIDeps } from "./src/fleet.ts";
+import { disposeFleetUI, mountFleetUI, type FleetWidgetRow as FleetRow, type FleetUIDeps } from "./src/fleet.ts";
 import { createHerdrTransport } from "./src/herdr/host.ts";
-import { BUDGET_CONFIG_PATH, DelegateErrorImpl, type Transport } from "./src/host.ts";
+import { createRpcTransport } from "./src/host/rpc.ts";
+import { DelegateErrorImpl, type Transport } from "./src/host.ts";
+import { loadDelegateConfig } from "./src/profile.ts";
 import { registerDelegateTool } from "./src/spawn.ts";
 // Wave 3 decomposition: the mailbox tool lives in src/mailbox-tool.ts.
 import { registerMailboxTool } from "./src/mailbox-tool.ts";
@@ -41,36 +42,42 @@ import { registerMailboxTool } from "./src/mailbox-tool.ts";
  * <p>
  * FUNCTION_CONTRACT:
  * Input: none (reads the config file — EXTERNAL_DEPENDENCY below)
- * Output: the active host name ("herdr" unless configured otherwise)
+ * Output: the active host name ("herdr" unless configured otherwise;
+ *   "rpc" selects the herdr-free `pi --mode rpc` child-process backend)
  * Guarantees:
  *   - missing/corrupt config → "herdr" (default, never throws)
  *   - unknown value → structured DelegateErrorImpl (E_START — the extension
  *     cannot start on an unserveable backend), message names the value + the
  *     supported set
  * Raises:
- *   - DelegateErrorImpl E_START for an unknown/non-string host value
- * EXTERNAL_DEPENDENCY: ~/.pi/agent/pi-delegate.config.json (same file +
- *   tolerant-read convention as resolveSpawnDefaults in src/usage.ts).
+ *   - DelegateErrorImpl E_START for an unknown/non-string host value, and for
+ *     a selected profile that is missing/unparseable (operator intent — the
+ *     extension must not start on unserved config)
+ * EXTERNAL_DEPENDENCY: the merged config view from src/profile.ts (base
+ *   ~/.pi/agent/pi-delegate.config.json ⊕ the selected
+ *   ~/.pi/agent/pi-delegate.d/<name>.json profile).
  */
-function resolveConfiguredHost(): "herdr" {
-	let raw: string;
-	try {
-		raw = readFileSync(BUDGET_CONFIG_PATH, "utf8");
-	} catch {
-		return "herdr"; // no config → default host
-	}
+function resolveConfiguredHost(): "herdr" | "rpc" {
+	// Profiles (gap 0): the merged view (base ⊕ selected profile) decides the
+	// host — still a SESSION-START-only decision (this runs once at extension
+	// load; mid-session profile edits never rebind the adapter). A broken
+	// NAMED profile throws E_START from loadDelegateConfig — the extension
+	// must not start on config the operator explicitly asked for and that
+	// cannot be served.
 	let host: unknown;
 	try {
-		host = (JSON.parse(raw) as { host?: unknown }).host;
-	} catch {
-		return "herdr"; // corrupt config → default host (same tolerance as tiers)
+		const cfg = loadDelegateConfig() as { host?: unknown };
+		host = cfg.host;
+	} catch (err) {
+		if (err instanceof DelegateErrorImpl) throw err; // operator-intent profile error — loud
+		return "herdr"; // no/corrupt base config → default host
 	}
 	if (host === undefined) return "herdr";
-	if (host !== "herdr" || typeof host !== "string") {
+	if (host !== "herdr" && host !== "rpc") {
 		throw new DelegateErrorImpl(
 			"E_START",
-			`pi-delegate config: unknown host ${JSON.stringify(host)} — this build ships only the "herdr" backend`,
-			`Set "host": "herdr" in ~/.pi/agent/pi-delegate.config.json (the only supported value) or remove the key.`,
+			`pi-delegate config: unknown host ${JSON.stringify(host)} — supported values: "herdr", "rpc"`,
+			`Set "host": "herdr" (herdr-backed placement) or "host": "rpc" (herdr-free pi --mode rpc child processes) in ~/.pi/agent/pi-delegate.config.json, or remove the key.`,
 		);
 	}
 	return host;
@@ -88,10 +95,11 @@ function resolveConfiguredHost(): "herdr" {
 function createConfiguredHost(): Transport {
 	const host = resolveConfiguredHost();
 	if (host === "herdr") return createHerdrTransport();
+	if (host === "rpc") return createRpcTransport();
 	throw new DelegateErrorImpl(
 		"E_START",
 		`pi-delegate: unhandled host "${host}" — no adapter bound`,
-		"This build ships only the \"herdr\" backend; fix the config's host key.",
+		"Supported hosts: herdr, rpc — fix the config's host key.",
 	);
 }
 
@@ -168,6 +176,7 @@ let currentSession: SessionLifecycle | null = null;
  */
 export default function (pi: ExtensionAPI) {
 	const transport = createConfiguredHost();
+
 	registerDelegateTool(pi, transport);
 	registerStatusTool(pi, transport);
 	registerMailboxTool(pi, transport);

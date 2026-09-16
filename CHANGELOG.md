@@ -6,6 +6,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Version numbers align with the iteration numbering in DESIGN.md (v1.x sections).
 
+## [Unreleased]
+
+## [1.17.1] — 2026-09-16
+### Added
+
+- **`streamConsole` explicit unsubscribe.** The seam method's return type now
+  carries optional `unsubscribe()` — consumers that stop consuming early (a
+  closed stream consumer) must call it: a bare for-await break does not
+  unregister the subscriber. Contract documented in src/host.ts; pinned by
+  `test/stream-seam-check.ts` (unsubscribe spy over a real `FidelityStore`).
+- **Named config profiles (gap 0).** Config presets live at
+  `~/.pi/agent/pi-delegate.d/<name>.json` (same shape as the base config) and
+  are selected by `PI_DELEGATE_PROFILE` (env) or the base config's `"profile"`
+  key (env wins). Sections replace the base wholesale; absent sections fall
+  through. A selected-but-missing/corrupt profile is a structured `E_START`
+  on delegate calls (advisory surfaces degrade to defaults). All config
+  readers now route through the single merged view (`src/profile.ts`); with
+  no profile selected behavior is byte-identical to before. Regression:
+  `test/profile-check.ts`.
+
+- **`"rpc"` worker-host backend (herdr-free delegation).** New config key `"host": "rpc"`
+  binds `src/host/rpc.ts` — workers run as headless `pi --mode rpc` child processes of the
+  orchestrator session, no herdr anywhere. Worktree placement is a plain `git worktree add`
+  under `~/.pi/agent/worktrees/` (sub-orchestrator authority guard mirrors the herdr
+  adapter's); prompts go over the worker's stdin (mid-stream submits re-sent as `steer`);
+  settle is proven by pi's own `agent_settled` rpc event — event-driven, zero polling, and
+  immune to the herdr-era sensor gaps (§19.1b/§19.1c); worker session JSONL is captured via
+  `get_state` for the budget gauges; `readConsole` is assembled from captured rpc output
+  (assistant text + tool activity) and bound at construction (spawn.ts's probe flow extracts
+  it unbound — herdr's `this`-free readConsole survived, this one initially did not);
+  extension-UI dialogs are auto-cancelled so a headless worker cannot deadlock. Known
+  limitation: rpc workers live with the orchestrator process — after it exits they finish
+  and exit (stdin EOF); a later session reads their reports but cannot nudge them. POSIX-only
+  for now (bare `pi` spawn, no Windows shim).
+  Regression: `test/rpc-host-check.ts` + `test/rpc-host-unit-check.ts` (deterministic, no pi
+  subprocess) + `test/host-parity-check.ts` rpc leg (real pi, never prompted — no LLM
+  traffic) + `test/rpc-host-e2e-check.ts` (live, opt-in via `RPC_E2E=1`).
+
+- **Full-fidelity worker console streaming (`streamConsole` seam method, rpc backend).**
+  New OPTIONAL `Transport` method `streamConsole?(name, opts?: { afterSeq? }): AsyncIterable<ConsoleEvent>`
+  (src/host.ts) — same optionality pattern as `readConsole`: implementations without an event
+  store omit it (herdr adapter and the fake host do) and callers probe with
+  `typeof transport.streamConsole === "function"` and degrade to `readConsole` polling. The
+  envelope is `ConsoleEvent` (workerName, seq, timestamp, kind, payload — raw text, no
+  re-encoding). The rpc adapter implements it: its stdout pump (single writer) mirrors every
+  parsed rpc record into a new per-host `FidelityStore` (src/stream-seam/) — drop-oldest ring
+  capped at 20,000 events per worker (~4.6 MB/worker at realistic payload sizes, ~235 MB at 50
+  workers), replay-from-cursor exact and gap-free within the retained window, seq numbers
+  monotonic across eviction, a backlog truncated by eviction opens with a `gap` marker naming
+  the first retained seq (the `readConsole` last-maxChars snapshot stays the fallback beyond
+  the window), and slow subscribers get drop-with-gap-marker backpressure (one merged marker
+  naming the recovery cursor; per-subscriber memory O(bufferLimit)). Subscribers attach via
+  `afterSeq`; teardown releases the worker's ring. Zero new data sources — fidelity
+  preservation of the stream the pump already received. Regression: `test/stream-seam-check.ts`
+  + the rpc leg `test/rpc-stream-check.ts`.
+
+- **Dialog-relay policy flag (rpc backend, additive, default OFF).** New rpc adapter option
+  `dialogRelay` (default false — behavior byte-identical to the auto-cancel default: blocking
+  extension-UI dialogs are answered `cancelled: true` over stdin exactly as before, proven by
+  the byte-identical stdin-write assertion in `test/rpc-stream-check.ts`). When enabled, a
+  blocking dialog offer is relayed onto the console stream as a `dialog` ConsoleEvent and stays
+  pending (status honestly reads `blocked`); the consumer answers via the adapter-level
+  `answerDialog()` method, which writes the same raw `extension_ui_response` stdin command the
+  auto-cancel path writes (the `rpcCommand` correlation wrapper would clobber the dialog's wire
+  id). Fire-and-forget UI records (setWidget/notify/…) mirror as `ui` ConsoleEvents only when
+  the flag is on. Regression: `test/rpc-stream-check.ts` (S4–S6).
+### Changed
+### Removed
 ## [1.17.0] — 2026-09-12
 
 The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned into law and executed across waves 0–4 (see STABILIZATION.md and the new ARCHITECTURE.md).
@@ -21,6 +89,7 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
 
 ### Changed
 
+- **Fleet UI is registry-driven (Law 9).** The ambient fleet widget and the `/delegate-fleet` overlay render from the fleet registry read-model (`snapshot()`/`tree()`/`subscribe()`) instead of each running its own `manifestStore` scan + `listStatuses` poll; the widget additionally refreshes on the registry's advisory events. Row assembly is one implementation (`buildWorkerViewsFromSource` → `buildWidgetRows`); liveness comes from the registry's status poll (a `retiredAt` worker reads done — console closed). Advisory invariants unchanged (failed reads keep the last snapshot; spawn/collect untouched); ownership glyphs, fold, mega-fold and width clamps unchanged. The shared text helpers moved to the leaf `src/ui-text.ts` (one implementation for widget, overlay and detail pane). Regression: `test/fleet-source-check.ts` (registry↔legacy parity, event-driven refresh, degradation, dispose teardown).
 - **placementRef-only seam (Law 4).** `workspaceId`/`paneId` are now optional compatibility fields on `Placement`; `placementRef` is the only required handle — a second backend (tmux) no longer must fake herdr-shaped ids. Parity pinned by `test/host-parity-check.ts`.
 - **Decomposition to layout v3 (Law 5).** The exchange/observe/spawn god-modules split into single-responsibility modules (archive, manifest-store, report-schema, mailbox-store, watch-store; watch-config, watch-detect, watcher, watch-retire, status-tool, commands; tool-result, clock, grace, mailbox-tool) with the duplicate helper clusters deduplicated (fs-probe, text-cap, one mailbox-state reader, one audit sink). Verbatim moves; the user-visible surface (tool names, params, commands, E_* codes) is unchanged.
 - **Cheaper watcher tick.** Satellite stamp layers are mtime-cached per mount and the session-JSONL tail parse is fingerprint-gated — no more up-to-1MB re-reads per worker per tick. Regression: `test/watch-tick-cost-check.ts`.
@@ -73,6 +142,21 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
 
 ### Changed
 
+- **Herdr vocabulary retired in favor of backend-neutral terms.** The worker's
+  output/readback surface is now the **worker console**: the transport seam method
+  `readPane` is `readConsole`, and prose, guidance strings and comments say
+  "console read", "console readback" and "Worker console not at prompt". The
+  shared-checkout placement is now **shared placement**: the `delegate` tool's `mode`
+  parameter accepts `"shared"` — "placement in the shared checkout without
+  isolation" — and the existing `"tab"` value keeps working as a deprecated alias,
+  normalized to the same placement (the on-disk manifest `kind` value stays `"tab"`,
+  frozen while older sessions read those manifests). The herdr-shaped legacy id
+  fields keep their names and are described as "legacy alternate id
+  (herdr-shaped)"; consumers keep preferring `placementRef`. The herdr backend itself
+  is untouched: herdr CLI strings, the JSON field names parsed from herdr output,
+  manifest `kind` values, journal event names, tool names/params, the
+  `not_linked_worktree` token and every `E_*` error code stay byte-identical.
+
 - **An orchestrator session running in a directory where a worker once ran
   again receives wake-ups (stage C mount-gate fix).** The mount gate
   (`isWorkerSession`) used to classify any session whose cwd equals a worker
@@ -81,8 +165,8 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
   watcher and lost every child wake-up (reproduced in live acceptance
   testing). Worker identity on the mount side is now proven ONLY by the
   entry's own `sessionPath` (the worker session's JSONL path); the
-  checkoutPath === cwd branch is removed as ambiguous by construction (tab
-  workers always share the orchestrator's checkout, and a historical entry
+  checkoutPath === cwd branch is removed as ambiguous by construction (shared-
+  placement workers always share the orchestrator's checkout, and a historical entry
   poisoned the gate for every future session in that cwd). Unproven reads as
   "not a worker" and the session mounts — safe because delivery stays
   fail-closed (watcher stage A): a mounted watcher without a proven identity

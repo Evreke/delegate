@@ -5,7 +5,10 @@
 > missing/broken). When the tool exists, spawning/prompting/collecting through
 > these commands is a bug — use `delegate` / `delegate_status` / `delegate_mailbox`.
 > Topologies (§Reference) and anti-patterns (§Reference) are universal — they hold
-> with the tool too.
+> with the tool too. Vocabulary note: below, "pane" and "tab" name herdr's own
+> objects (its CLI strings and JSON fields are frozen); with the `delegate` tool the
+> same concepts are the **worker console** (output/readback surface) and **shared
+> placement** (`mode: "shared"`, placement in the shared checkout).
 
 The contract: you are the orchestrator. You decompose, brief, spawn, collect, verify, merge. Execution lives in worker sessions — separate pi processes in herdr panes, each with a fresh context. Tier routing: the decision tier (frontier-class) briefs, reviews, and synthesizes; the execution tier (flash-class) implements, fixes, enumerates, verifies. Prompt the execution tier tight and structured — it is a small model.
 
@@ -24,13 +27,13 @@ Clock check: `journalctl --no-pager --since '-5 min' | grep -c 'Clock change'`. 
    `%LOCALAPPDATA%\pi\exchange` on Windows; the `PI_DELEGATE_EXCHANGE_ROOT` environment
    variable overrides it. Use the native path form of the running platform in every
    command below — the examples show the POSIX form.
-4. For a fan-out of ≥3 workers, run a smoke test first: one probe worker prompted to reply exactly `OUTPUT: OK` (catches dead panes, wrong flags, overloaded tiers). A probe's reply is the final verdict — a probe never writes a report file.
+4. For a fan-out of ≥3 workers, run a smoke test first: one probe worker prompted to reply exactly `OUTPUT: OK` (catches dead worker consoles, wrong flags, overloaded tiers). A probe's reply is the final verdict — a probe never writes a report file.
 
 Completion: every planned worker has a name, tier, budget, and brief path. Names match `[a-z][a-z0-9_-]{0,31}`, unique among live agents.
 
 ## 2. Brief
 
-One brief file per worker in the exchange dir (`brief-<name>.md`). The prompt sent to the pane is one line pointing at it — long prompts wrap and mangle in narrow panes.
+One brief file per worker in the exchange dir (`brief-<name>.md`). The prompt sent to the worker console is one line pointing at it — long prompts wrap and mangle in a narrow console.
 
 - **ROLE** — one line: tier, read/write scope ("You are facts-worker F1, read-only").
 - **TASK** — bounded, single outcome. Verbatim artifacts (exact fix shape, exact text) for risky changes; equivalence argument for rewrites.
@@ -102,7 +105,7 @@ The report file is the result. `herdr agent read` is for status and short answer
 
 1. For each worker, read the agreed report file with the `read` tool. `ENOENT` = the worker produced nothing: treat as a failed spawn, not an empty result.
 2. Poll instead of blocking when running other work: `herdr agent list`, or `herdr agent get <name>` per worker; status vocabulary `idle | working | blocked | done | unknown`. `done` means the turn ended — the report file is the completion criterion, not the status.
-3. `blocked` = an approval or question UI. Read the pane, answer the question (or `send-keys <name> esc` to decline and re-brief).
+3. `blocked` = an approval or question UI. Read the worker console, answer the question (or `send-keys <name> esc` to decline and re-brief).
 4. Cross-check conflicting worker reports by spawning one tie-breaker verifier with both reports as CONTEXT, or resolve it yourself from source.
 
 Completion: every worker has a report file on disk, read by you.
@@ -131,7 +134,7 @@ Completion: DoD verified (tests/acceptance criteria), all changes accounted for,
 
 - Stuck interactive worker: `herdr agent send-keys <name> ctrl+c`, then re-brief. Headless liveness: `nohup … &` + `ps -p $!` check, `pgrep -af "pi .*-p"`.
 - Mid-run correction to a working worker: send a short steering prompt (state + instruction), e.g. "STEP 0 resolved upstream — do not cherry-pick, continue with STEP 1".
-- A resumed session can sit inside a worker pane: `herdr agent start … -- --session <path-to.jsonl>`.
+- A resumed session can sit inside a worker's herdr pane: `herdr agent start … -- --session <path-to.jsonl>`.
 - Tier overload: re-delegate to a different tier (e.g. flash → chat/beta) rather than queuing behind an overloaded one.
 
 ## Reference — topologies
@@ -143,17 +146,17 @@ Completion: DoD verified (tests/acceptance criteria), all changes accounted for,
 | Axis fan-out | one reviewer per review axis → synthesize under your recommendation | code review, audits |
 | Hypothesis fan-out | ≥3 independent workers on orthogonal hypotheses; hold the superposition until evidence collapses it | diagnosis, ToT investigations |
 | Role chain | investigator → planner → developer → verifier → narrator over one artifact | feature delivery with human-facing report |
-| Two-tier swarm | root → per-repo/tech-lead orchestrators → workers | multi-repo epics (cap depth at 3; workers that delegate are the exception, not the rule). Root owns all worktree create/remove; sub-orchestrators spawn tabs inside their own worktree |
+| Two-tier swarm | root → per-repo/tech-lead orchestrators → workers | multi-repo epics (cap depth at 3; workers that delegate are the exception, not the rule). Root owns all worktree create/remove; sub-orchestrators place workers inside their own worktree (herdr tabs here; with the tool, `mode: "shared"`) |
 
 ## Reference — anti-patterns
 
 - Brief pasted into the prompt → put it in a file; the prompt points at it.
-- Long result read from the pane → read the report file.
+- Long result read from the worker console → read the report file.
 - `done` trusted as completion → the report file exists is the criterion.
 - Failed prompt retried verbatim → diagnosed retry with root cause + fix shape.
 - Workers merging or pushing → orchestrator is the merge gate; workers commit in scope only.
 - Manual `rm` of herdr-managed state (`~/.herdr/`, a repo with open worktree workspaces) → herdr commands are the only lifecycle API; delete a repo only after its worktree workspaces are closed.
 - Parallel builds in one worktree → one build runner at a time; file-disjoint scopes.
-- Interactive tools with rich TUI inside worker panes → workers answer questions in files; you poll and answer.
+- Interactive tools with rich TUI inside worker consoles → workers answer questions in files; you poll and answer.
 - Unbounded fan-out → smoke test first, cap concurrency, budget per tier.
 - Briefs that omit the exchange dir or report path → the loop has no collection point; always OUTPUT first.

@@ -146,7 +146,7 @@ rmSync(garbageDir, { recursive: true, force: true });
 
 // Stage C fix (src/watch-role.ts sessionRole): the worker gate matches the
 // entry's OWN sessionPath ONLY — the former worktree checkoutPath === cwd
-// mounting equivalent is REMOVED (ambiguous: tab workers share the
+// mounting equivalent is REMOVED (ambiguous: shared-checkout workers share the
 // orchestrator's checkout, and a historical entry poisoned the gate for any
 // new session in that cwd). A degraded tier-1 lead (the live sessionManager
 // getter throws → sessionFile undefined) can match NOTHING: it reads as

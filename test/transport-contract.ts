@@ -195,6 +195,15 @@ try {
 	// fallback (that signature made every tab close fail tab_not_found while
 	// the agent stayed alive; see placementFromTabResult BUG_FIX_CONTEXT).
 	{
+		// ENV guard: tab placement needs the SESSION's herdr workspace
+		// (HERDR_WORKSPACE_ID), which never exists in an rpc-host session or a
+		// bare worktree. Without a live herdr workspace this is an environment
+		// gap, not a code failure — mark it so run-checks.sh classifies ENV-FAIL
+		// instead of a red FAIL that sends agents chasing a ghost.
+		if (!process.env.HERDR_WORKSPACE_ID) {
+			console.log("SPAWN FAILED: herdr workspace unavailable in this session (HERDR_WORKSPACE_ID unset — rpc-host session); T2.2c/T2.2d need a live herdr tab. Env gap, not a code failure.");
+			process.exit(1);
+		}
 		logOp("transport.place(tab) [drift pin]");
 		const tabP = await t.place({ mode: "tab", repoPath: repoDir, branch: "", label: "qa-probe-tab-shape" });
 		// tabId is adapter-internal (herdr records it ALONGSIDE the legacy fields,

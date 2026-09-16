@@ -209,7 +209,7 @@ export interface SessionRole {
 	 *  not an audience): EXACT match between the entry's own `sessionPath`
 	 *  (the worker session's JSONL path) and this session's proven
 	 *  sessionFile. The former checkoutPath === cwd mounting equivalent was
-	 *  REMOVED (stage C fix): it is ambiguous by construction — tab workers
+	 *  REMOVED (stage C fix): it is ambiguous by construction — shared-checkout workers
 	 *  share the orchestrator's checkout, and a HISTORICAL worker entry
 	 *  poisoned the gate for every future session started in that cwd (an
 	 *  orchestrator silently lost its watcher). A cwd match alone proves
@@ -255,7 +255,7 @@ export interface ManifestLike {
  *     known behavior);
  *   - isWorker is matched by the entry's OWN sessionPath only — the
  *     former cwd/checkoutPath branch was removed as ambiguous (stage C
- *     fix): tab workers share the orchestrator's checkout, and a
+ *     fix): shared-checkout workers share the orchestrator's checkout, and a
  *     historical worker entry used to poison the gate for ANY new session
  *     started in that cwd. Consequence: during the spawn race (the
  *     manifest record predates the worker's sessionPath) a worker session

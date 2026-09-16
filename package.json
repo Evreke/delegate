@@ -5,7 +5,8 @@
     "type": "git",
     "url": "git+https://github.com/Evreke/delegate.git"
   },
-  "version": "1.17.0",
+  "version": "1.17.1",
+  "license": "MIT",
   "keywords": [
     "pi-package",
     "pi",

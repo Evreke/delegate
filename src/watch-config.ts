@@ -19,13 +19,13 @@
  * observe.ts except compose.ts and index.ts (ARCHITECTURE.md Law 6 —
  * layering enforced by machine).
  *
- * Dependencies: node builtins, ./host.ts (BUDGET_CONFIG_PATH — the ONE
- * config path constant), ./usage.ts (WATCH_DEFAULT_STALE_AFTER_MS — the
+ * Dependencies: node builtins, ./profile.ts (the ONE config-loading layer —
+ * base config ⊕ selected profile), ./usage.ts (WATCH_DEFAULT_STALE_AFTER_MS — the
  * stale threshold is canonically owned there; re-exported so the
  * watch-config API surface and its tests keep resolving it).
  *
- * EXTERNAL_DEPENDENCY: the config file at BUDGET_CONFIG_PATH (pi's
- * getAgentDir(), honors PI_CODING_AGENT_DIR). NOTE: bun caches os.homedir()
+ * EXTERNAL_DEPENDENCY: the config files at the agent dir (pi's getAgentDir(),
+ * honors PI_CODING_AGENT_DIR). NOTE: bun caches os.homedir()
  * — tests must set $HOME at child-process spawn time (the caveat documented
  * in usage.ts).
  *
@@ -37,8 +37,7 @@
  * All bodies are byte-verbatim moves from src/observe.ts (Wave 3a).
  */
 
-import { readFileSync } from "node:fs";
-import { BUDGET_CONFIG_PATH } from "./host.ts";
+import { loadDelegateConfig } from "./profile.ts";
 import { WATCH_DEFAULT_STALE_AFTER_MS } from "./usage.ts";
 
 // ---------------------------------------------------------------------------
@@ -64,12 +63,12 @@ export { WATCH_DEFAULT_STALE_AFTER_MS } from "./usage.ts";
 /** Floor for staleAfterMs — same rationale as the interval floor. */
 export const WATCH_MIN_STALE_AFTER_MS = 60_000;
 /** §23 retire: how long a RETIRABLE worker (valid report + drained mailbox +
- *  done/idle) may keep its pane before the watcher closes it on its own —
+ *  done/idle) may keep its console before the watcher closes it on its own —
  *  the TTL half of the close rule (the ACK half is the release marker).
  *  0 is legal (close on the first retirable tick). Inactive unless the
  *  master switch watch.retire is explicitly true — auto-teardown is OPT-IN. */
 export const RETIRE_DEFAULT_TTL_MS = 900_000;
-/** §23 master switch default: FALSE — the watcher never closes panes unless
+/** §23 master switch default: FALSE — the watcher never closes consoles unless
  *  the operator opted in via watch.retire:true (user decision, mandatory). */
 export const RETIRE_DEFAULT_ENABLED = false;
 
@@ -89,10 +88,10 @@ export interface WatchConfig {
 	 *  background watcher owns the rest of the wait (§21). */
 	releaseOn: "started" | "settle";
 	/** §23 retire TTL (default 15 min): elapsed-since-retirable threshold for
-	 *  the watcher's autonomous pane close. Inactive unless retire is true. */
+	 *  the watcher's autonomous console close. Inactive unless retire is true. */
 	retireTtlMs: number;
 	/** §23 master switch (default FALSE): when false, the retire pass is a
-	 *  no-op — panes NEVER close, no retirableSince is ever stamped. */
+	 *  no-op — consoles NEVER close, no retirableSince is ever stamped. */
 	retire: boolean;
 	/** Watcher stage A rollback for the missing-owner edge ONLY (default
 	 *  FALSE): legacy manifests that carry no owner field anywhere (no
@@ -119,18 +118,20 @@ export interface WatchConfig {
  * Output: the parsed config object, or null
  * Guarantees:
  *   - tolerant: missing/corrupt/non-object config → null, never throws
+ *   - the watcher is an ADVISORY surface (ARCHITECTURE.md): even a broken
+ *     NAMED profile (the one case loadDelegateConfig throws on) degrades to
+ *     defaults here — the spawn path is the one that fails loudly
  * Raises: never
- * EXTERNAL_DEPENDENCY: filesystem — ~/.pi/agent/pi-delegate.config.json
- *   (via pi's getAgentDir(), which honors PI_CODING_AGENT_DIR; the single
- *   config file for watch + collect + spawn defaults across the extension).
+ * EXTERNAL_DEPENDENCY: filesystem — the merged config view from
+ *   src/profile.ts (base ~/.pi/agent/pi-delegate.config.json ⊕ the selected
+ *   ~/.pi/agent/pi-delegate.d/<name>.json profile).
  */
 function readDelegateConfig(): Record<string, unknown> | null {
 	try {
-		const raw = readFileSync(BUDGET_CONFIG_PATH, "utf8");
-		const cfg = JSON.parse(raw) as unknown;
+		const cfg = loadDelegateConfig() as unknown;
 		return cfg !== null && typeof cfg === "object" ? (cfg as Record<string, unknown>) : null;
 	} catch {
-		return null; // no config / corrupt config → callers use defaults
+		return null; // no/corrupt base config or broken profile → defaults (advisory surface)
 	}
 }
 
@@ -164,7 +165,7 @@ export function resolveWatchConfig(): WatchConfig {
 		const num = (v: unknown, dflt: number, min: number): number =>
 			typeof v === "number" && Number.isFinite(v) && v >= min ? v : dflt;
 		// §23: absent key → default; a PRESENT-but-bad value warns ONCE (a silent
-		// fallback would leave a misconfigured operator wondering why panes never
+		// fallback would leave a misconfigured operator wondering why consoles never
 		// retire — or retire too fast) and still uses the default.
 		let retireTtlMs = fallback.retireTtlMs;
 		if (w.retireTtlMs !== undefined) {

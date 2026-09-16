@@ -21,7 +21,7 @@
  *   - name-taken → E_NAME with candidate guidance (D4, seam contract).
  *   - worktree placement rejected when capabilities().worktrees is false
  *     (authority model — the fake runs root authority but fakes no
- *     filesystem isolation, so it only serves tab placement).
+ *     filesystem isolation, so it only serves shared placement).
  *
  * Scripted behavior: statuses come from a FIFO statusScript consumed by
  * waitSettle (one status per poll slice) and peeked by getStatus/listStatuses.
@@ -50,8 +50,8 @@ const SETTLED: readonly AgentStatusName[] = ["idle", "done", "blocked"];
 const STARTED: readonly AgentStatusName[] = ["working", "blocked", "done"];
 
 export interface FakeHostOptions {
-	/** Repo the fake "places" into — checkoutPath points at it (tab mode: no
-	 *  real checkout is created; this is an in-memory fake). */
+	/** Repo the fake "places" into — checkoutPath points at it (shared
+	 *  placement: no real checkout is created; this is an in-memory fake). */
 	repoPath: string;
 	/** When set, startAgent appends a ManifestWorker entry here — with
 	 *  backend:"fake" + placementRef ALONGSIDE the legacy id fields. */
@@ -74,7 +74,7 @@ export class FakeWorkerHost implements Transport {
 	private seq = 0;
 	private script: AgentStatusName[];
 	/** Keyed by placementRef (opaque — the seam's StartReq key since migration
-	 *  step 3; legacy pane ids accepted as fallback keys). */
+	 *  step 3; legacy alternate ids accepted as fallback keys). */
 	private placements = new Map<string, Placement>();
 	private agents = new Map<string, FakeAgent>();
 	/** Last status consumed from the script — getStatus falls back to it once
@@ -106,7 +106,7 @@ export class FakeWorkerHost implements Transport {
 			throw new DelegateErrorImpl(
 				"E_PLACE",
 				`fake host: worktree placement not supported (requested for ${req.repoPath})`,
-				"Use tab placement on the fake host.",
+				"Use shared placement on the fake host.",
 			);
 		}
 		const n = ++this.seq;
@@ -127,7 +127,7 @@ export class FakeWorkerHost implements Transport {
 
 	async startAgent(req: StartReq): Promise<StartResult> {
 		// Keyed by the opaque placementRef (migration step 3); a legacy raw id
-		// (req.paneId-style fallback key) still resolves.
+		// (req.paneId-style legacy alternate id fallback key) still resolves.
 		const placement = this.placements.get(req.placementRef);
 		if (!placement) {
 			throw new DelegateErrorImpl(
@@ -251,9 +251,9 @@ export class FakeWorkerHost implements Transport {
 		// already gone), false when this call deleted a live placement.
 		const ref = req.placement.placementRef ?? req.placement.paneId;
 		let matched = false;
-		for (const [paneId, p] of this.placements) {
-			if ((p.placementRef ?? paneId) === ref) {
-				this.placements.delete(paneId);
+		for (const [key, p] of this.placements) {
+			if ((p.placementRef ?? key) === ref) {
+				this.placements.delete(key);
 				matched = true;
 			}
 		}

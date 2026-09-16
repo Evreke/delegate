@@ -212,7 +212,7 @@ export function registerStatusTool(pi: import("@earendil-works/pi-coding-agent")
 		promptSnippet: "Read-only status of delegate workers (never mutates)",
 		promptGuidelines: [
 			"Use delegate_status to check a specific worker after a timed-out or detached delegate call instead of repeating delegate — but do NOT poll it in a loop: the background watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead.",
-			"When delegate_status shows a worker as blocked, read the worker's pane and either answer the worker's question or send a re-brief.",
+			"When delegate_status shows a worker as blocked, read the worker's console and either answer the worker's question or send a re-brief.",
 		],
 		parameters: Type.Object({
 			name: Type.Optional(Type.String({ description: "Worker name; omit for all known workers" })),
@@ -293,7 +293,7 @@ export function registerStatusTool(pi: import("@earendil-works/pi-coding-agent")
 			const blocked = selected.filter((v) => v.status === "blocked");
 			if (blocked.length > 0) {
 				lines.push(
-					`Blocked: ${blocked.map((v) => v.name).join(", ")} — read the pane, then answer or re-brief.`,
+					`Blocked: ${blocked.map((v) => v.name).join(", ")} — read the console, then answer or re-brief.`,
 				);
 			}
 			// Law 1 truncation duty: announce the omitted rows (the details payload

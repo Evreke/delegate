@@ -71,10 +71,11 @@ import type { SessionUsage, SpawnTier } from "./host.ts";
  * Raises: never */
 export const WATCH_DEFAULT_STALE_AFTER_MS = 30 * 60_000;
 import {
-	BUDGET_CONFIG_PATH,
 	CONTEXT_WINDOWS,
 	DEFAULT_CONTEXT_WINDOW,
+	DelegateErrorImpl,
 } from "./host.ts";
+import { loadDelegateConfig } from "./profile.ts";
 
 
 
@@ -187,15 +188,17 @@ function num(v: unknown): number {
  * Raises: none
  */
 export function resolveContextWindow(modelId?: string): number {
-	// 1. config override (pi-delegate.config.json {"contextWindow": N})
+	// 1. config override ({"contextWindow": N} — base config or the selected
+	// profile's section replacement; a broken NAMED profile is an operator-
+	// intent error and propagates structured, advisory callers degrade)
 	try {
-		const raw = readFileSync(BUDGET_CONFIG_PATH, "utf8");
-		const cfg = JSON.parse(raw) as { contextWindow?: unknown };
+		const cfg = loadDelegateConfig() as { contextWindow?: unknown };
 		if (typeof cfg.contextWindow === "number" && Number.isFinite(cfg.contextWindow) && cfg.contextWindow > 0) {
 			return cfg.contextWindow;
 		}
-	} catch {
-		/* no config → fall through */
+	} catch (err) {
+		if (err instanceof DelegateErrorImpl) throw err; // profile intent error — loud
+		/* no/corrupt base config → fall through */
 	}
 	if (!modelId) return DEFAULT_CONTEXT_WINDOW;
 	// 2. exact id match
@@ -302,8 +305,7 @@ export function resolveSpawnDefaults(): {
 	tier?: string;
 } {
 	try {
-		const raw = readFileSync(BUDGET_CONFIG_PATH, "utf8");
-		const cfg = JSON.parse(raw) as { defaults?: Record<string, unknown> };
+		const cfg = loadDelegateConfig() as { defaults?: Record<string, unknown> };
 		const d = cfg.defaults;
 		const str = (v: unknown): string | undefined =>
 			typeof v === "string" && v.trim().length > 0 ? v : undefined;
@@ -315,7 +317,8 @@ export function resolveSpawnDefaults(): {
 					tier: str(d.tier),
 				}
 			: {};
-	} catch {
+	} catch (err) {
+		if (err instanceof DelegateErrorImpl) throw err; // profile intent error — loud
 		return {}; // no config / corrupt config → built-in defaults, never throw
 	}
 }
@@ -329,8 +332,7 @@ export function resolveSpawnDefaults(): {
  */
 export function resolveTierTable(): Record<string, SpawnTier> {
 	try {
-		const raw = readFileSync(BUDGET_CONFIG_PATH, "utf8");
-		const cfg = JSON.parse(raw) as { tiers?: unknown };
+		const cfg = loadDelegateConfig() as { tiers?: unknown };
 		if (cfg.tiers === null || typeof cfg.tiers !== "object") return {};
 		const str = (v: unknown): string | undefined =>
 			typeof v === "string" && v.trim().length > 0 ? v : undefined;
@@ -348,7 +350,8 @@ export function resolveTierTable(): Record<string, SpawnTier> {
 			}
 		}
 		return out;
-	} catch {
+	} catch (err) {
+		if (err instanceof DelegateErrorImpl) throw err; // profile intent error — loud
 		return {}; // no config / corrupt config → no tiers, never throw
 	}
 }

@@ -1278,20 +1278,20 @@ export class HerdrTransport implements Transport {
 		return isRecord(result) ? asString(pick(result, "agent.agent_session.value", "agent_session.value")) : undefined;
 	}
 
-	/** Recent pane output for a worker (terminal snapshot, few hundred lines tail).
-	 *  Optional: probe-verdict from streaming; implementations without pane
+	/** Recent console output for a worker (terminal snapshot, few hundred lines tail).
+	 *  Optional: probe-verdict from streaming; implementations without console
 	 *  readback may reject — callers must fall back to status-based verdicts.
 	 * <p>
 	 * FUNCTION_CONTRACT:
 	 * Input: name — canonical agent name; opts.maxChars — tail size (default 4000)
-	 * Output: the LAST maxChars characters of the pane's recent output
+	 * Output: the LAST maxChars characters of the console's recent output
 	 * Guarantees:
 	 *   - read-only (not queued with mutations)
 	 * Raises:
 	 *   - raw subprocess errors propagate (callers treat as readback-unavailable)
 	 * EXTERNAL_DEPENDENCY: `herdr agent read <name> --source recent` subprocess.
 	 */
-	async readPane(name: string, opts?: { maxChars?: number }): Promise<string> {
+	async readConsole(name: string, opts?: { maxChars?: number }): Promise<string> {
 		// Read-only: terminal snapshot (recent), NOT queued with mutations.
 		const { stdout } = await runHerdr(["agent", "read", name, "--source", "recent"]);
 		const out = String(stdout ?? "");
@@ -1310,7 +1310,7 @@ export class HerdrTransport implements Transport {
 	 *   isLinkedWorktree) extracted from the herdr result
 	 * Guarantees:
 	 *   - worktree placement is ROOT-only (sub-orchestrator → E_PLACE)
-	 *   - tab placement requires a current herdr workspace (env var below)
+	 *   - shared placement requires a current herdr workspace (env var below)
 	 *   - runs serialized on the mutation queue (enqueue)
 	 * Raises:
 	 *   - DelegateErrorImpl E_PLACE for every failure shape (CLI error,
@@ -1318,8 +1318,8 @@ export class HerdrTransport implements Transport {
 	 *     missing workspace/pane ids)
 	 * EXTERNAL_DEPENDENCY: `herdr worktree create` / `herdr tab create`
 	 *   subprocesses; process.env.HERDR_WORKSPACE_ID — the session's own herdr
-	 *   workspace id, REQUIRED for tab placement (tabs open on the session's
-	 *   workspace; absent → E_PLACE).
+	 *   workspace id, REQUIRED for shared placement (herdr tabs open on the
+	 *   session's workspace; absent → E_PLACE).
 	 */
 	private async placeInner(req: PlacementReq): Promise<Placement> {
 		const { authority } = this.capabilities();
@@ -1358,7 +1358,7 @@ export class HerdrTransport implements Transport {
 		if (!workspaceId) {
 			throw delegateError(
 				"E_PLACE",
-				`Tab placement requires a current herdr workspace: set ${WORKSPACE_ID_ENV} in the session environment (tabs are opened on the session's own workspace).`,
+				`Shared placement requires a current herdr workspace: set ${WORKSPACE_ID_ENV} in the session environment (herdr tabs are opened on the session's own workspace).`,
 			);
 		}
 		try {

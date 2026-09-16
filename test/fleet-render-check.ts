@@ -18,8 +18,8 @@ import {
 	fleetUsageOf,
 	layoutFleetRows,
 	type FleetLayoutRow,
-} from "../src/fleet.ts";
-import { stripAnsi, trunc, visibleWidth } from "../src/fleet.ts";
+} from "../src/fleet-overlay.ts";
+import { stripAnsi, trunc, visibleWidth } from "../src/ui-text.ts";
 // Wave 3 step 5: fmtK folded into usage.ts formatTokens (ONE spelling).
 import { formatTokens } from "../src/usage.ts";
 

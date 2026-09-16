@@ -47,8 +47,8 @@ import {
 	MEGA_GROUP_LIMIT,
 	type FleetRow,
 	type GroupStatsRow,
-} from "../src/fleet.ts";
-import { stripAnsi, visibleWidth } from "../src/fleet.ts";
+} from "../src/fleet-overlay.ts";
+import { stripAnsi, visibleWidth } from "../src/ui-text.ts";
 import {
 	DIR,
 	FOREIGN,

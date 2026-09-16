@@ -8,7 +8,7 @@
  * marker themes let goldens be readable AND ANSI-checked.
  */
 
-import type { FleetRow } from "../src/fleet.ts";
+import type { FleetRow } from "../src/fleet-overlay.ts";
 
 export const DIR = "/tmp/exchange/prod-prep";
 export const FOREIGN = "/home/u/.pi/agent/sessions/--home-u-promobile--/s-orch.jsonl";

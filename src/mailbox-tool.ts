@@ -54,7 +54,8 @@ import { errText, fail, textResult, type ToolResult } from "./tool-result.ts";
 // capped in the rendered result via pi's own truncation helpers.
 import { capWorkerText } from "./text-cap.ts";
 import { resolveWatchConfig } from "./watch-config.ts";
-import { clampLines, renderDelegateLines } from "./fleet.ts";
+import { clampLines } from "./ui-text.ts";
+import { renderDelegateLines } from "./fleet-widget.ts";
 import { WORKER_NAME_RE, type QuestionEnvelope, type Transport } from "./host.ts";
 
 // SECTION 1/2 — delegate_mailbox tool (mailbox + retire ACK)

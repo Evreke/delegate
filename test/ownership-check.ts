@@ -19,8 +19,9 @@
  *     "mine" receives NOTHING at the delivery level (fail-closed).
  */
 
-import { classifyOwnership, OWNERSHIP_GLYPH, foldLiveByOwnership, renderLiveRows } from "../src/fleet.ts";
-import { clampLines, visibleWidth, type FleetWidgetRow as FleetRow } from "../src/fleet.ts";
+import { classifyOwnership, OWNERSHIP_GLYPH } from "../src/fleet.ts";
+import { foldLiveByOwnership, renderLiveRows, type FleetWidgetRow as FleetRow } from "../src/fleet-widget.ts";
+import { clampLines, visibleWidth } from "../src/ui-text.ts";
 import { detectWorkerEvents, type WatchWorker } from "../src/observe.ts";
 
 let failures = 0;

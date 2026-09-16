@@ -19,7 +19,7 @@ import { buildWorkerView, type SelfIdentity } from "./src/fleet.ts";
 import { registerCommands } from "./src/commands.ts";
 import { registerStatusTool } from "./src/status-tool.ts";
 import { mountSessionWatcher } from "./src/compose.ts";
-import { disposeFleetUI, mountFleetUI, type FleetWidgetRow as FleetRow, type FleetUIDeps } from "./src/fleet.ts";
+import { buildWidgetRows, disposeFleetUI, mountFleetUI, type FleetWidgetRow as FleetRow, type FleetUIDeps } from "./src/fleet-widget.ts";
 import { createHerdrTransport } from "./src/herdr/host.ts";
 import { createRpcTransport } from "./src/host/rpc.ts";
 import { DelegateErrorImpl, type Transport } from "./src/host.ts";

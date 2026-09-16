@@ -22,7 +22,9 @@ import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TEARDOWN_LOG_NAME } from "./expaths.ts";
 import { teardownLogLine } from "./exchange.ts";
-import { buildWorkerView, disposeFleetUI, openFleetOverlay } from "./fleet.ts";
+import { buildWorkerView } from "./worker-view.ts";
+import { disposeFleetUI } from "./fleet-widget.ts";
+import { openFleetOverlay } from "./fleet-overlay.ts";
 // Wave 3 decomposition (step 4): errText lives in src/tool-result.ts — the
 // commands copy is deleted (audit finding 7, one definition per helper).
 import { asDelegateError, errText } from "./tool-result.ts";

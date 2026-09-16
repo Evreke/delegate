@@ -8,9 +8,9 @@
  * paths are checked via a stub ExtensionContext (hasUI: false).
  */
 
-import { mountFleetUI, notifyFleetIdle, renderDelegateLines } from "../src/fleet.ts";
+import { mountFleetUI, notifyFleetIdle, renderDelegateLines } from "../src/fleet-widget.ts";
 import { archiveRoot } from "../src/exchange.ts";
-import { clampLines, visibleWidth } from "../src/fleet.ts";
+import { clampLines, visibleWidth } from "../src/ui-text.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {

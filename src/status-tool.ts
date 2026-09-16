@@ -33,14 +33,16 @@ import { aggregateTaskUsage, exchangeRoot, isProbeDir, progressPathFor, readLast
 import { archiveRoot, listArchivedTasks } from "./archive.ts";
 import { type TaskUsageSnapshot, manifestStore } from "./manifest-store.ts";
 import { mailboxAnswerState } from "./mailbox-store.ts";
-import { clampLines, renderDelegateLines, type WorkerView } from "./fleet.ts";
+import { clampLines } from "./ui-text.ts";
+import { renderDelegateLines } from "./fleet-widget.ts";
+import { type WorkerView } from "./worker-view.ts";
 import {
 	contextPct,
 	formatTokens,
 	parseSessionUsage,
 	resolveContextWindow,
 } from "./usage.ts";
-import { buildWorkerView } from "./fleet.ts";
+import { buildWorkerView } from "./worker-view.ts";
 import { CONTEXT_TURNS_WARN, type Transport } from "./host.ts";
 
 // ===========================================================================

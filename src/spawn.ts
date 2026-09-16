@@ -166,7 +166,8 @@ import { registerMailboxTool } from "./mailbox-tool.ts";
 // src/clock.ts — the grace loop deps keep consuming it through the import.
 import { type ClockPort, systemClock } from "./clock.ts";
 import { probeDirPathFor, TEARDOWN_LOG_NAME } from "./expaths.ts";
-import { clampLines, notifyFleetIdle, renderDelegateLines } from "./fleet.ts";
+import { clampLines } from "./ui-text.ts";
+import { notifyFleetIdle, renderDelegateLines } from "./fleet-widget.ts";
 import {
 	CONTEXT_CRITICAL_PCT,
 	CONTEXT_TURNS_WARN,

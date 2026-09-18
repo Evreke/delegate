@@ -111,6 +111,7 @@ import {
 	type TransportCapabilities,
 } from "../host.ts";
 import { FidelityStore, DEFAULT_RING_CAP } from "../stream-seam/fidelity-store.ts";
+import { RpcJsonlParser, type RpcJsonlRecord } from "./rpc-jsonl.ts";
 import { isDirUnder } from "../expaths.ts";
 
 const execFileP = promisify(execFile);
@@ -228,6 +229,16 @@ export interface RpcAgentState {
 	exited: { code: number | null; signal: string | null } | null;
 	/** Last assistant text (probe verdict / readConsole body). */
 	lastAssistantText: string;
+	/** stopReason of the last assistant message_end (issue #14). */
+	lastStopReason?: string;
+	/** Verbatim provider error text of the last assistant message_end
+	 *  (issue #14 — captured, not paraphrased). */
+	lastErrorMessage?: string;
+	/** Classification of the last assistant message_end (issue #14):
+	 *  "provider-error" (the provider itself failed) or "abort-artifact"
+	 *  (the error text is OUR teardown abort echoing back). A clean stop
+	 *  leaves it undefined. */
+	failureClassification?: "provider-error" | "abort-artifact";
 	/** Bounded recent-activity log for readConsole (console snapshot substitute). */
 	consoleLines: string[];
 	/** First get_state round-trip completed (worker provably interactive). */
@@ -761,30 +772,42 @@ export class RpcWorkerHost implements Transport {
 
 	// -- internals ------------------------------------------------------------
 
-	/** The single stdout event pump: parses JSONL (LF framing per rpc.md),
-	 *  feeds each parsed record to the pure event reducer (applyRpcEvent).
-	 *  Single writer — everything else only reads. */
+	/** The single stdout event pump: parses JSONL through the strict
+	 *  byte-buffer parser (src/host/rpc-jsonl.ts — raw-byte accumulation, LF
+	 *  framing, one CR strip; a multi-byte character split across chunks
+	 *  decodes exactly once, at the record boundary) and feeds each parsed
+	 *  record to the pure event reducer (applyRpcEvent). Single writer —
+	 *  everything else only reads. */
 	private pumpStdout(state: RpcAgentState): void {
-		let buffer = "";
-		state.child.stdout?.on("data", (chunk: Buffer | string) => {
-			buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			let idx: number;
-			while ((idx = buffer.indexOf("\n")) !== -1) {
-				const line = buffer.slice(0, idx);
-				buffer = buffer.slice(idx + 1);
-				const trimmed = line.endsWith("\r") ? line.slice(0, -1) : line;
-				if (!trimmed.trim()) continue;
-				let ev: RpcEvent;
-				try {
-					ev = JSON.parse(trimmed) as RpcEvent;
-				} catch {
-					const rawLine = `[unparsed stdout] ${trimmed.slice(0, 200)}`;
-					pushConsoleLine(state, rawLine);
-					state.stream?.append(state.name, "raw", trimmed);
-					continue;
+		const parser = new RpcJsonlParser({
+			onMalformed: (raw, index) => {
+				void index;
+				// Bounded malformed budget exceeded → protocol failure escalation
+				// (exactly once — the console line is the orchestrator-visible signal).
+				if (parser.exceededMalformedThreshold && !escalated) {
+					escalated = true;
+					pushConsoleLine(state, `[protocol] malformed record threshold exceeded (${parser.malformedRecords} malformed records)`);
+					state.stream?.append(state.name, "raw", "[protocol] malformed record threshold exceeded");
 				}
-				applyRpcEvent(state, ev);
+			},
+		});
+		let escalated = false;
+		const accept = (record: RpcJsonlRecord): void => {
+			const trimmed = record.raw.toString("utf8");
+			if (!trimmed.trim()) return; // blank line — framing noise, not a record
+			if (record.malformed || record.parsed === null || typeof record.parsed !== "object") {
+				const rawLine = `[unparsed stdout] ${trimmed.slice(0, 200)}`;
+				pushConsoleLine(state, rawLine);
+				state.stream?.append(state.name, "raw", trimmed);
+				return;
 			}
+			applyRpcEvent(state, record.parsed as RpcEvent);
+		};
+		state.child.stdout?.on("data", (chunk: Buffer | string) => {
+			for (const record of parser.feed(chunk)) accept(record);
+		});
+		state.child.stdout?.on("end", () => {
+			for (const record of parser.close()) accept(record);
 		});
 	}
 
@@ -889,12 +912,36 @@ export function applyRpcEvent(state: RpcAgentState, ev: RpcEvent): void {
 			state.settledSeq += 1;
 			break;
 		case "message_end": {
-			const msg = ev.message as { role?: string; content?: unknown } | undefined;
+			const msg = ev.message as
+				| { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown }
+				| undefined;
 			if (msg?.role === "assistant") {
 				const text = extractText(msg.content);
 				if (text) {
 					state.lastAssistantText = text;
 					pushConsoleLine(state, `assistant: ${text.slice(0, 500)}`);
+				}
+				// Issue #14: the provider's own stop reason + error text ride on
+				// message_end — capture verbatim and classify. An error text that
+				// matches OUR abort artifacts (teardown) is not a provider failure.
+				if (typeof msg.stopReason === "string") state.lastStopReason = msg.stopReason;
+				if (typeof msg.errorMessage === "string" && msg.errorMessage.length > 0) {
+					state.lastErrorMessage = msg.errorMessage;
+					state.failureClassification = isAbortArtifactErrorMessage(msg.errorMessage)
+						? "abort-artifact"
+						: "provider-error";
+					// Orchestrator-visible failure detail (readConsole / console
+					// stream): WHY the worker stopped, verbatim — issue #14.
+					const classificationLine =
+						state.failureClassification === "abort-artifact"
+							? `aborted by teardown: ${msg.errorMessage}`
+							: `provider error: ${msg.errorMessage}`;
+					pushConsoleLine(state, classificationLine);
+					state.stream?.append(state.name, "raw", classificationLine);
+				} else if (typeof msg.stopReason === "string" && msg.stopReason !== "error") {
+					// A clean stop clears any stale classification from earlier turns.
+					state.lastErrorMessage = undefined;
+					state.failureClassification = undefined;
 				}
 			}
 			break;
@@ -958,6 +1005,14 @@ function extractText(content: unknown): string {
 			.join("");
 	}
 	return "";
+}
+
+/** Issue #14: provider-error artifacts produced by OUR own abort/teardown,
+ *  not by the provider — the child echoes the abort back over message_end.
+ *  A verbatim match against these patterns classifies as "abort-artifact";
+ *  everything else on the error channel is a genuine provider error. */
+export function isAbortArtifactErrorMessage(message: string): boolean {
+	return /this operation was aborted|request was aborted|operation aborted/i.test(message);
 }
 
 /** Composition-root factory (index.ts binds this for host:"rpc"). */

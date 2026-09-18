@@ -191,6 +191,49 @@ try {
 		// The default cap is 8 MiB.
 		check("parser: DEFAULT_MAX_RECORD_BYTES is 8 MiB", DEFAULT_MAX_RECORD_BYTES === 8 * 1024 * 1024);
 	}
+	// --- Slice 3 (issue #13): bounded malformed-record threshold -----------
+	{
+		const malformedSeen: Array<{ index: number; head: string }> = [];
+		const parser = new RpcJsonlParser({
+			malformedThreshold: 2,
+			onMalformed: (raw, index) => malformedSeen.push({ index, head: raw.toString("utf8") }),
+		});
+		const recs = parser.feed(Buffer.from("not json 1\nnot json 2\nnot json 3\n", "utf8"));
+		check(
+			"parser: malformed records are classified diagnostics with raw bytes kept",
+			recs.length === 3 && recs.every((r) => r.malformed && r.parsed === null && r.oversized === false),
+		);
+		check(
+			"parser: malformed count and onMalformed index are exact",
+			parser.malformedRecords === 3 &&
+				malformedSeen.length === 3 &&
+				malformedSeen[0].index === 0 &&
+				malformedSeen[2].head === "not json 3",
+			JSON.stringify(malformedSeen),
+		);
+		check(
+			"parser: threshold exceeded after 3 malformed records (threshold 2)",
+			parser.exceededMalformedThreshold === true,
+		);
+		// Below the threshold: 2 malformed records at threshold 2 stay sub-threshold.
+		const p2 = new RpcJsonlParser({ malformedThreshold: 2 });
+		p2.feed(Buffer.from("bad\nbad\n", "utf8"));
+		check("parser: malformed at exactly the threshold does NOT exceed it", p2.exceededMalformedThreshold === false);
+	}
+	// --- Slice 3b (issue #13): threshold escalation through the pump -------
+	{
+		const rig = await startWithFakeChild();
+		// DEFAULT_MALFORMED_THRESHOLD is 10 → 11 malformed records exceed it.
+		rig.child.stdout.emit("data", Buffer.from(Array.from({ length: 11 }, (_, i) => `garbage ${i}\n`).join(""), "utf8"));
+		rig.child.simulateExit(0, null);
+		const consoleText = await rig.host.readConsole(rig.name);
+		check(
+			"pump: malformed threshold escalation reaches readConsole exactly once",
+			consoleText.includes("[protocol] malformed record threshold exceeded") &&
+				consoleText.split("malformed record threshold exceeded").length === 2,
+			JSON.stringify(consoleText.slice(0, 300)),
+		);
+	}
 } finally {
 	for (const repo of repos) rmSync(repo, { recursive: true, force: true });
 	rmSync(WORKTREE_ROOT, { recursive: true, force: true });

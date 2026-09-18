@@ -33,6 +33,7 @@ export interface RpcJsonlRecord {
 }
 
 export const DEFAULT_MAX_RECORD_BYTES = 8 * 1024 * 1024; // 8 MiB
+export const DEFAULT_MALFORMED_THRESHOLD = 10;
 
 export class RpcJsonlParser {
 	private buffer: Buffer = Buffer.alloc(0);
@@ -40,6 +41,8 @@ export class RpcJsonlParser {
 	private recordIndex = 0;
 	private readonly maxRecordBytes: number;
 	private readonly onOversized?: (size: number) => void;
+	private readonly onMalformed?: (raw: Buffer, index: number) => void;
+	private readonly malformedThreshold: number;
 	/** True once an oversized record was observed (fatal by contract — a
 	 *  runaway child would otherwise grow the buffer unbounded). */
 	oversized = false;
@@ -50,15 +53,29 @@ export class RpcJsonlParser {
 			maxRecordBytes?: number;
 			/** Called with the size of each rejected oversized record. */
 			onOversized?: (size: number) => void;
+			/** Called with each malformed record's raw bytes and its record index. */
+			onMalformed?: (raw: Buffer, index: number) => void;
+			/** Malformed-record budget; exceeding it escalates to a protocol
+			 *  failure (exceededMalformedThreshold — the pump's escalation
+			 *  signal). Default DEFAULT_MALFORMED_THRESHOLD. */
+			malformedThreshold?: number;
 		} = {},
 	) {
 		this.maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
 		this.onOversized = options.onOversized;
+		this.onMalformed = options.onMalformed;
+		this.malformedThreshold = options.malformedThreshold ?? DEFAULT_MALFORMED_THRESHOLD;
 	}
 
 	/** Total malformed records observed so far (classified diagnostics). */
 	get malformedRecords(): number {
 		return this.malformedCount;
+	}
+
+	/** Protocol-failure signal: strictly MORE malformed records than the
+	 *  bounded threshold allows. */
+	get exceededMalformedThreshold(): boolean {
+		return this.malformedCount > this.malformedThreshold;
 	}
 
 	/** Feed one stdout chunk (bytes or already-decoded string); returns every
@@ -105,7 +122,7 @@ export class RpcJsonlParser {
 			parsed = null;
 			malformed = true;
 			this.malformedCount += 1;
-			void index;
+			this.onMalformed?.(raw, index);
 		}
 		return { raw, parsed, malformed, oversized: false };
 	}

@@ -769,7 +769,19 @@ export class RpcWorkerHost implements Transport {
 	 *  record to the pure event reducer (applyRpcEvent). Single writer —
 	 *  everything else only reads. */
 	private pumpStdout(state: RpcAgentState): void {
-		const parser = new RpcJsonlParser();
+		const parser = new RpcJsonlParser({
+			onMalformed: (raw, index) => {
+				void index;
+				// Bounded malformed budget exceeded → protocol failure escalation
+				// (exactly once — the console line is the orchestrator-visible signal).
+				if (parser.exceededMalformedThreshold && !escalated) {
+					escalated = true;
+					pushConsoleLine(state, `[protocol] malformed record threshold exceeded (${parser.malformedRecords} malformed records)`);
+					state.stream?.append(state.name, "raw", "[protocol] malformed record threshold exceeded");
+				}
+			},
+		});
+		let escalated = false;
 		const accept = (record: RpcJsonlRecord): void => {
 			const trimmed = record.raw.toString("utf8");
 			if (!trimmed.trim()) return; // blank line — framing noise, not a record

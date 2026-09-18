@@ -142,6 +142,14 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
 
 ### Operational notes
 
+- **Task passport.** Every delegated run records a passport in the task manifest:
+  the extension version that ran it (`version` in the result details and the
+  `· pi-delegate vX.Y.Z` completion line), plus — for worktree placements only —
+  the checkout's base commit and dirty-file list at spawn (`gitBase`, `gitStatus`)
+  and a capped diff-plus-untracked summary stamped at collect (`gitDelta`). Tab
+  placements are not stamped (a tab shares its checkout; a snapshot would falsely
+  attribute others' edits to this run). The probes are advisory: probe errors never
+  affect spawn or collect.
 - **Exchange root — not a durable store.** The default location is `/tmp/exchange` on
   Linux/macOS (cleared on reboot) and `%LOCALAPPDATA%\pi\exchange` on Windows (fallback
   `homedir()\AppData\Local\pi\exchange`); the `PI_DELEGATE_EXCHANGE_ROOT` environment

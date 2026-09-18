@@ -111,6 +111,7 @@ import {
 	type TransportCapabilities,
 } from "../host.ts";
 import { FidelityStore, DEFAULT_RING_CAP } from "../stream-seam/fidelity-store.ts";
+import { RpcJsonlParser, type RpcJsonlRecord } from "./rpc-jsonl.ts";
 import { isDirUnder } from "../expaths.ts";
 
 const execFileP = promisify(execFile);
@@ -761,30 +762,30 @@ export class RpcWorkerHost implements Transport {
 
 	// -- internals ------------------------------------------------------------
 
-	/** The single stdout event pump: parses JSONL (LF framing per rpc.md),
-	 *  feeds each parsed record to the pure event reducer (applyRpcEvent).
-	 *  Single writer — everything else only reads. */
+	/** The single stdout event pump: parses JSONL through the strict
+	 *  byte-buffer parser (src/host/rpc-jsonl.ts — raw-byte accumulation, LF
+	 *  framing, one CR strip; a multi-byte character split across chunks
+	 *  decodes exactly once, at the record boundary) and feeds each parsed
+	 *  record to the pure event reducer (applyRpcEvent). Single writer —
+	 *  everything else only reads. */
 	private pumpStdout(state: RpcAgentState): void {
-		let buffer = "";
-		state.child.stdout?.on("data", (chunk: Buffer | string) => {
-			buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-			let idx: number;
-			while ((idx = buffer.indexOf("\n")) !== -1) {
-				const line = buffer.slice(0, idx);
-				buffer = buffer.slice(idx + 1);
-				const trimmed = line.endsWith("\r") ? line.slice(0, -1) : line;
-				if (!trimmed.trim()) continue;
-				let ev: RpcEvent;
-				try {
-					ev = JSON.parse(trimmed) as RpcEvent;
-				} catch {
-					const rawLine = `[unparsed stdout] ${trimmed.slice(0, 200)}`;
-					pushConsoleLine(state, rawLine);
-					state.stream?.append(state.name, "raw", trimmed);
-					continue;
-				}
-				applyRpcEvent(state, ev);
+		const parser = new RpcJsonlParser();
+		const accept = (record: RpcJsonlRecord): void => {
+			const trimmed = record.raw.toString("utf8");
+			if (!trimmed.trim()) return; // blank line — framing noise, not a record
+			if (record.malformed || record.parsed === null || typeof record.parsed !== "object") {
+				const rawLine = `[unparsed stdout] ${trimmed.slice(0, 200)}`;
+				pushConsoleLine(state, rawLine);
+				state.stream?.append(state.name, "raw", trimmed);
+				return;
 			}
+			applyRpcEvent(state, record.parsed as RpcEvent);
+		};
+		state.child.stdout?.on("data", (chunk: Buffer | string) => {
+			for (const record of parser.feed(chunk)) accept(record);
+		});
+		state.child.stdout?.on("end", () => {
+			for (const record of parser.close()) accept(record);
 		});
 	}
 

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Version numbers align with the iteration numbering in DESIGN.md (v1.x sections).
 
+## [Unreleased]
+
+### Added — Task passport (per-run provenance)
+
+Every delegated run now leaves a passport in the task manifest:
+
+- **Executing version.** Every `delegate` result carries the extension version that
+  actually ran the call — both in the human-readable completion line
+  (`· pi-delegate vX.Y.Z`) and in the result details (`version`). Single runtime
+  source: `src/version.ts`, byte-matched to `package.json` by a static pin
+  (Law 9: one artifact, one source of truth).
+- **Pre-run git snapshot** (worktree placements only): the checkout's base commit
+  and a capped `git status --porcelain` stamped into the worker's manifest entry
+  at spawn. Tab placements are deliberately NOT stamped — a tab shares its checkout
+  with other workers and the orchestrator, so a snapshot there would falsely attribute
+  others' edits to this run.
+- **Post-run git delta** (worktree placements only): a capped `git diff --stat`
+  plus the untracked-file list, stamped by the same collect that stamps
+  `collectedAt` — one write, one witness.
+- **Advisory by contract (Law 8).** Both probes are failure-tolerant: a probe
+  error or a non-git checkout yields an empty/absent passport and never affects
+  spawn or collect.
+- **Additive on-disk format (Law 7).** `gitBase` / `gitStatus` / `gitDelta` are
+  optional manifest fields; no `schemaVersion` bump.
+
+Regression: `test/passport-check.ts` (P1–P5).
+
 ## [1.17.0] — 2026-09-12
 
 The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned into law and executed across waves 0–4 (see STABILIZATION.md and the new ARCHITECTURE.md).
@@ -246,8 +273,8 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
   failed `tab_not_found` while the agent stayed alive (the paneId fallback
   also masked the failure as an idempotent retire). The parser now reads the
   current spelling (legacy accepted), `AgentStatus` carries `tabId`, and
-  teardown re-resolves the live tab id from the herdr registry when the
-  recorded one carries the broken paneId-fallback signature.
+  teardown re-resolves the live tab id from the herdr
+  registry when the recorded one carries the broken paneId-fallback signature.
 - **Retire pass idempotency**: a herdr "not found" during the autonomous
   close (pane already gone) is treated as a successful retire — no more
   `tab_not_found` error spam every tick; genuine teardown failures keep the
@@ -304,36 +331,36 @@ live in the task's `manifest.json` (`usage` section) and survive restarts.
 ### Changed
 
 - **Layout v2: 7 flat modules** — the src/{tools,transport,ui} taxonomy is
-gone; src/ is now `index.ts` (wiring only) + `spawn.ts` (delegate+mailbox
-pipeline), `observe.ts` (status tool, watcher, config), `fleet.ts` (all
-UI + ownership + worker views), `exchange.ts` (report/manifest/mailbox
-lifecycle + archive), `transport.ts` (herdr boundary, E_* taxonomy),
-`usage.ts` (unchanged). Every module opens with a ZCS MODULE_CONTRACT
-header naming the invariants it owns (DESIGN.md "layout v2").
+  gone; src/ is now `index.ts` (wiring only) + `spawn.ts` (delegate+mailbox
+  pipeline), `observe.ts` (status tool, watcher, config), `fleet.ts` (all
+  UI + ownership + worker views), `exchange.ts` (report/manifest/mailbox
+  lifecycle + archive), `transport.ts` (herdr boundary, E_* taxonomy),
+  `usage.ts` (unchanged). Every module opens with a ZCS MODULE_CONTRACT
+  header naming the invariants it owns (DESIGN.md "layout v2").
 
 ### Fixed
 
 - **Report-contract precedence** — the injected report contract now
-explicitly overrides a conflicting brief OUTPUT section (rng-sum incident:
-a worker wrote `{"number": 6}` and failed schema validation).
+  explicitly overrides a conflicting brief OUTPUT section (rng-sum incident:
+  a worker wrote `{"number": 6}` and failed schema validation).
 - **Retriable E_REPORT_INVALID/E_REPORT_MISSING** — retry guidance now
-mandates a NEW suffixed worker name (`<name>-r2`); the original name stays
-taken by the settled agent.
+  mandates a NEW suffixed worker name (`<name>-r2`); the original name stays
+  taken by the settled agent.
 - **Phantom manifest entries** — a refused spawn (E_START) no longer leaves a
-manifest entry without `sessionPath` (rollback in the startAgent catch,
-append-before-start teardown invariant preserved).
+  manifest entry without `sessionPath` (rollback in the startAgent catch,
+  append-before-start teardown invariant preserved).
 - **Mailbox reaches Done workers** — `delegate_mailbox` steer/answer now
-wakes a settled worker via a new turn instead of silently dropping the
-mail; honest no-op warning for unknown status.
+  wakes a settled worker via a new turn instead of silently dropping the
+  mail; honest no-op warning for unknown status.
 - **`reportSchema` echo** — a brief-declared report JSON Schema is echoed
-into the worker prompt, so workers write against the schema they are
-validated against.
+  into the worker prompt, so workers write against the schema they are
+  validated against.
 - **§23 retire (opt-in)** — auto-teardown of drained worker panes, disabled
-by default: enable `watch.retire: true` (+ `watch.retireTtlMs`, default
-900000); off by default, behavior unchanged when off.
+  by default: enable `watch.retire: true` (+ `watch.retireTtlMs`, default
+  900000); off by default, behavior unchanged when off.
 - **Portable worktree paths** — `WORKTREE_DIR` resolved via `os.homedir()`
-instead of a hardcoded `/root/...`; new static check bans `/root/` literals
-in src/.
+  instead of a hardcoded `/root/...`; new static check bans `/root/` literals
+  in src/.
 
 ### Tests
 

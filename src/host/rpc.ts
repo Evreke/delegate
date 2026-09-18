@@ -930,6 +930,14 @@ export function applyRpcEvent(state: RpcAgentState, ev: RpcEvent): void {
 					state.failureClassification = isAbortArtifactErrorMessage(msg.errorMessage)
 						? "abort-artifact"
 						: "provider-error";
+					// Orchestrator-visible failure detail (readConsole / console
+					// stream): WHY the worker stopped, verbatim — issue #14.
+					const classificationLine =
+						state.failureClassification === "abort-artifact"
+							? `aborted by teardown: ${msg.errorMessage}`
+							: `provider error: ${msg.errorMessage}`;
+					pushConsoleLine(state, classificationLine);
+					state.stream?.append(state.name, "raw", classificationLine);
 				} else if (typeof msg.stopReason === "string" && msg.stopReason !== "error") {
 					// A clean stop clears any stale classification from earlier turns.
 					state.lastErrorMessage = undefined;

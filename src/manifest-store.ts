@@ -165,6 +165,17 @@ export interface ManifestWorker {
 	 *  no stamps → placed-or-started. External consumers of the manifest
 	 *  (the merge result) are unchanged — the field is optional and additive. */
 	embodiment?: { run: number; placementRef: string };
+	/** Passport (worktree placements only): `git rev-parse HEAD` at spawn —
+	 *  the commit the worker started from. "What did the dead worker change?"
+	 *  is `git diff <gitBase>`, not archaeology. Absent: tab placements,
+	 *  non-git checkouts, spawn-time probe failure (advisory by contract). */
+	gitBase?: string;
+	/** Passport (worktree only): `git status --porcelain` lines at spawn
+	 *  (pre-run dirty list, capped at GIT_SNAPSHOT_MAX_LINES). */
+	gitStatus?: string[];
+	/** Passport (worktree only): `git diff --stat HEAD` + `?? <file>`
+	 *  untracked lines, stamped by COLLECT — the post-run delta. */
+	gitDelta?: string[];
 }
 
 /** F1: cached fleet usage roll-up (aggregateTaskUsage {persist:true}). The

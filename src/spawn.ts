@@ -133,6 +133,8 @@ import {
 	teardownLogLine,
 } from "./exchange.ts";
 import { archiveReport } from "./archive.ts";
+import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
+import { EXTENSION_VERSION } from "./version.ts";
 import { manifestStore, type ManifestWorker } from "./manifest-store.ts";
 import { parseBriefSchema, resolveReportSchema, validateReport, validateReportAgainstSchema } from "./report-schema.ts";
 import {
@@ -1090,6 +1092,12 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					schemaProvenance,
 					embodiment: { run: embodiment.run, placementRef: embodiment.placementRef },
 					...(orchestratorSessionPath ? { orchestratorSessionPath } : {}),
+					// Passport: the pre-run git snapshot stamps ONLY worktree placements
+					// (a tab shares the checkout with other workers and the orchestrator —
+					// a snapshot there would falsely attribute others' edits to this run).
+					// Advisory by contract: probe failures yield an empty snapshot and
+					// never fail the spawn.
+					...(placement.kind === "worktree" ? readPreRunGitSnapshot(placement.checkoutPath) : {}),
 				};
 				// F1 fleet accounting: the FIRST delegate call of a task fixes the
 				// task-level description (derived from THIS call's brief via
@@ -1439,6 +1447,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// too). Best-effort by contract: a failure warns like the archive note,
 				// never fails the collect.
 				let collectedNote = "";
+				// Passport: the post-run git delta (worktree placements only — same
+				// shared-checkout attribution rule as the pre-run snapshot). Computed
+				// ONCE here, before the collectedAt stamp; advisory, never throws.
+				const gitDelta = placement.kind === "worktree" ? readPostRunGitDelta(placement.checkoutPath) : undefined;
 				try {
 					// Migration stage 2 (audit step 6): the collectedAt stamp is now a
 					// REDUCER TRANSITION (lifecycle.stampCollected) — an illegal stamp
@@ -1462,7 +1474,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 								return w; // a different embodiment of the same name — not ours to stamp
 							}
 							const stamped = stampCollected(w, collectedAt);
-							return stamped.ok ? stamped.entry : w;
+							if (!stamped.ok) return w;
+							// Passport: the collect that stamps collectedAt also stamps
+							// the post-run delta — one write, one witness.
+							return gitDelta ? { ...stamped.entry, gitDelta } : stamped.entry;
 						}),
 					}));
 					// F1: a collect is a manifest WRITER — stamp the recomputed usage
@@ -1498,7 +1513,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						? `Report OK: status=pass — ${summaryCap.text}`
 						: `Report OK: status=fail (honest failure — the worker ran and reported) — ${summaryCap.text}`;
 				return textResult(
-					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}).\n` +
+					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}) · pi-delegate v${EXTENSION_VERSION}.\n` +
 						`${verdictLine}\n` +
 						`Artifacts: ${artifactsList ? artifactsCap.text : "(none)"}` +
 						archiveNote +
@@ -1513,6 +1528,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						canonical,
 						requestedName: params.name,
 						nameUniquified: canonical !== params.name,
+						version: EXTENSION_VERSION,
 						placement,
 						branch: placement.branch,
 						status: settleStatus,

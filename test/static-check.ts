@@ -79,6 +79,7 @@ function check(name: string, ok: boolean, detail = "") {
 // re-widened exports map fails here).
 interface PackageExports {
 	exports?: Record<string, string>;
+	version?: string;
 }
 const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")) as PackageExports;
 check(
@@ -86,6 +87,21 @@ check(
 	pkg.exports?.["."] === "./index.ts" && pkg.exports?.["./herdr"] === "./src/herdr/host.ts",
 	JSON.stringify(pkg.exports ?? null),
 );
+
+// Version single-sourcing (Law 9 — one artifact, one source of truth):
+// src/version.ts is the runtime version stamped into tool results; the pin
+// makes a package.json bump without the matching version.ts bump (or vice
+// versa) a CI failure, not a silent drift between "the version the user
+// installed" and "the version the tool reports".
+{
+	const versionSrc = readFileSync(resolve(ROOT, "src/version.ts"), "utf8");
+	const m = versionSrc.match(/EXTENSION_VERSION = "([^"]+)"/);
+	check(
+		"T-version src/version.ts is the single runtime version source and byte-matches package.json",
+		m?.[1] !== undefined && m[1] === pkg.version,
+		`version.ts=${m?.[1] ?? "(unparsed)"} package.json=${pkg.version ?? "(absent)"}`,
+	);
+}
 
 // The old T1.1b POSITIVE text pin (index.ts imports the adapter) is GONE
 // (migration stage 3, audit step 10): the binding's SUBSTANCE is the runtime

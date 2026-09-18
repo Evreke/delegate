@@ -18,7 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { RpcJsonlParser } from "../src/host/rpc-jsonl.ts";
+import { DEFAULT_MAX_RECORD_BYTES, RpcJsonlParser } from "../src/host/rpc-jsonl.ts";
 import { createRpcTransport } from "../src/host/rpc.ts";
 import type { Placement, Transport } from "../src/host.ts";
 
@@ -169,6 +169,27 @@ try {
 				JSON.stringify(consoleText),
 			);
 		}
+	}
+	// --- Slice 2 (issue #13): per-record size cap --------------------------
+	{
+		// Worked example: cap 32 bytes; the fed record is 100 bytes + LF.
+		const record = `${"x".repeat(100)}\n`;
+		let oversizeSeen = -1;
+		const parser = new RpcJsonlParser({ maxRecordBytes: 32, onOversized: (size) => (oversizeSeen = size) });
+		const recs = parser.feed(Buffer.from(record, "utf8"));
+		check(
+			"parser: record over maxRecordBytes is flagged oversize, reported, and not retained",
+			recs.length === 1 && recs[0].oversized && oversizeSeen === 100 && recs[0].parsed === null,
+			JSON.stringify({ oversized: (recs[0] as { oversized?: boolean }).oversized, oversizeSeen }),
+		);
+		// A subsequent normal record parses fine — the oversize did not wedge the stream.
+		const next = parser.feed(Buffer.from('{"type":"agent_end"}\n', "utf8"));
+		check(
+			"parser: stream continues after an oversize record",
+			next.length === 1 && !next[0].malformed && (next[0].parsed as { type?: string }).type === "agent_end",
+		);
+		// The default cap is 8 MiB.
+		check("parser: DEFAULT_MAX_RECORD_BYTES is 8 MiB", DEFAULT_MAX_RECORD_BYTES === 8 * 1024 * 1024);
 	}
 } finally {
 	for (const repo of repos) rmSync(repo, { recursive: true, force: true });

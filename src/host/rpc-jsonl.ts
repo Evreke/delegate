@@ -28,12 +28,33 @@ export interface RpcJsonlRecord {
 	raw: Buffer;
 	parsed: unknown;
 	malformed: boolean;
+	/** True when the record exceeded maxRecordBytes (parsed stays null). */
+	oversized: boolean;
 }
+
+export const DEFAULT_MAX_RECORD_BYTES = 8 * 1024 * 1024; // 8 MiB
 
 export class RpcJsonlParser {
 	private buffer: Buffer = Buffer.alloc(0);
 	private malformedCount = 0;
 	private recordIndex = 0;
+	private readonly maxRecordBytes: number;
+	private readonly onOversized?: (size: number) => void;
+	/** True once an oversized record was observed (fatal by contract — a
+	 *  runaway child would otherwise grow the buffer unbounded). */
+	oversized = false;
+
+	constructor(
+		options: {
+			/** Per-record size cap in bytes (default DEFAULT_MAX_RECORD_BYTES). */
+			maxRecordBytes?: number;
+			/** Called with the size of each rejected oversized record. */
+			onOversized?: (size: number) => void;
+		} = {},
+	) {
+		this.maxRecordBytes = options.maxRecordBytes ?? DEFAULT_MAX_RECORD_BYTES;
+		this.onOversized = options.onOversized;
+	}
 
 	/** Total malformed records observed so far (classified diagnostics). */
 	get malformedRecords(): number {
@@ -71,6 +92,11 @@ export class RpcJsonlParser {
 
 	private acceptRecord(raw: Buffer): RpcJsonlRecord {
 		const index = this.recordIndex++;
+		if (raw.length > this.maxRecordBytes) {
+			this.oversized = true;
+			this.onOversized?.(raw.length);
+			return { raw, parsed: null, malformed: true, oversized: true };
+		}
 		let parsed: unknown = null;
 		let malformed = false;
 		try {
@@ -81,6 +107,6 @@ export class RpcJsonlParser {
 			this.malformedCount += 1;
 			void index;
 		}
-		return { raw, parsed, malformed };
+		return { raw, parsed, malformed, oversized: false };
 	}
 }

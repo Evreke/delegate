@@ -229,6 +229,16 @@ export interface RpcAgentState {
 	exited: { code: number | null; signal: string | null } | null;
 	/** Last assistant text (probe verdict / readConsole body). */
 	lastAssistantText: string;
+	/** stopReason of the last assistant message_end (issue #14). */
+	lastStopReason?: string;
+	/** Verbatim provider error text of the last assistant message_end
+	 *  (issue #14 — captured, not paraphrased). */
+	lastErrorMessage?: string;
+	/** Classification of the last assistant message_end (issue #14):
+	 *  "provider-error" (the provider itself failed) or "abort-artifact"
+	 *  (the error text is OUR teardown abort echoing back). A clean stop
+	 *  leaves it undefined. */
+	failureClassification?: "provider-error" | "abort-artifact";
 	/** Bounded recent-activity log for readConsole (console snapshot substitute). */
 	consoleLines: string[];
 	/** First get_state round-trip completed (worker provably interactive). */
@@ -902,12 +912,28 @@ export function applyRpcEvent(state: RpcAgentState, ev: RpcEvent): void {
 			state.settledSeq += 1;
 			break;
 		case "message_end": {
-			const msg = ev.message as { role?: string; content?: unknown } | undefined;
+			const msg = ev.message as
+				| { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown }
+				| undefined;
 			if (msg?.role === "assistant") {
 				const text = extractText(msg.content);
 				if (text) {
 					state.lastAssistantText = text;
 					pushConsoleLine(state, `assistant: ${text.slice(0, 500)}`);
+				}
+				// Issue #14: the provider's own stop reason + error text ride on
+				// message_end — capture verbatim and classify. An error text that
+				// matches OUR abort artifacts (teardown) is not a provider failure.
+				if (typeof msg.stopReason === "string") state.lastStopReason = msg.stopReason;
+				if (typeof msg.errorMessage === "string" && msg.errorMessage.length > 0) {
+					state.lastErrorMessage = msg.errorMessage;
+					state.failureClassification = isAbortArtifactErrorMessage(msg.errorMessage)
+						? "abort-artifact"
+						: "provider-error";
+				} else if (typeof msg.stopReason === "string" && msg.stopReason !== "error") {
+					// A clean stop clears any stale classification from earlier turns.
+					state.lastErrorMessage = undefined;
+					state.failureClassification = undefined;
 				}
 			}
 			break;
@@ -971,6 +997,14 @@ function extractText(content: unknown): string {
 			.join("");
 	}
 	return "";
+}
+
+/** Issue #14: provider-error artifacts produced by OUR own abort/teardown,
+ *  not by the provider — the child echoes the abort back over message_end.
+ *  A verbatim match against these patterns classifies as "abort-artifact";
+ *  everything else on the error channel is a genuine provider error. */
+export function isAbortArtifactErrorMessage(message: string): boolean {
+	return /this operation was aborted|request was aborted|operation aborted/i.test(message);
 }
 
 /** Composition-root factory (index.ts binds this for host:"rpc"). */

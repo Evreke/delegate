@@ -158,6 +158,48 @@ try {
 			JSON.stringify({ c: clean.failureClassification, r: clean.lastStopReason }),
 		);
 	}
+	// --- Slice 5 (issue #14 RED): classification in failure details --------
+	{
+		// Provider failure: the verbatim error text must reach readConsole (the
+		// console readback spawn.ts embeds in the orchestrator-visible failure).
+		const rig = await startWithFakeChild();
+		rig.child.stdout.emit(
+			"data",
+			`${JSON.stringify({
+				type: "message_end",
+				message: {
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					errorMessage: "Codex error: The usage limit has been reached",
+				},
+			})}\n`,
+		);
+		rig.child.simulateExit(1, null);
+		const consoleText = await rig.host.readConsole(rig.name);
+		check(
+			"surface: provider error reaches readConsole with verbatim text",
+			consoleText.includes("provider error: Codex error: The usage limit has been reached"),
+			JSON.stringify(consoleText),
+		);
+		// Abort artifact: surfaced as OUR teardown abort, not a provider error.
+		const rig2 = await startWithFakeChild();
+		rig2.child.stdout.emit(
+			"data",
+			`${JSON.stringify({
+				type: "message_end",
+				message: { role: "assistant", content: [], stopReason: "error", errorMessage: "This operation was aborted" },
+			})}\n`,
+		);
+		rig2.child.simulateExit(0, null);
+		const consoleText2 = await rig2.host.readConsole(rig2.name);
+		check(
+			"surface: abort artifact reaches readConsole as aborted-by-teardown",
+			consoleText2.includes("aborted by teardown: This operation was aborted") &&
+				!consoleText2.includes("provider error"),
+			JSON.stringify(consoleText2),
+		);
+	}
 } finally {
 	for (const repo of repos) rmSync(repo, { recursive: true, force: true });
 	rmSync(WORKTREE_ROOT, { recursive: true, force: true });

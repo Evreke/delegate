@@ -118,6 +118,8 @@ import {
 	teardownLogLine,
 } from "./exchange.ts";
 import { archiveReport } from "./archive.ts";
+import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
+import { EXTENSION_VERSION } from "./version.ts";
 import { manifestStore, type ManifestWorker } from "./manifest-store.ts";
 import { parseBriefSchema, resolveReportSchema, validateReport, validateReportAgainstSchema } from "./report-schema.ts";
 import {
@@ -481,8 +483,8 @@ function resolveTierPlacement(
 				"E_TIER",
 				`E_TIER — no worker ${missingTierKeys.join("/")} configured (no built-in tier exists). ` +
 					"Set \"tiers\" / \"defaults\" in ~/.pi/agent/pi-delegate.config.json, e.g. " +
-					'{"tiers": {"flash": {"provider": "zai", "model": "glm-5.3-flash", "thinking": "high"}}, ' +
-					"\"defaults\": {\"tier\": \"flash\"}} — or pass provider/model/thinking explicitly.",
+				'{"tiers": {"flash": {"provider": "zai", "model": "glm-5.3-flash", "thinking": "high"}}, ' +
+				"\"defaults\": {\"tier\": \"flash\"}} — or pass provider/model/thinking explicitly.",
 				{ missing: missingTierKeys, name: input.name },
 			),
 		};
@@ -939,6 +941,12 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					schemaProvenance,
 					embodiment: { run: embodiment.run, placementRef: embodiment.placementRef },
 					...(orchestratorSessionPath ? { orchestratorSessionPath } : {}),
+					// Passport: the pre-run git snapshot stamps ONLY worktree placements
+					// (a tab shares the checkout with other workers and the orchestrator —
+					// a snapshot there would falsely attribute others' edits to this run).
+					// Advisory by contract: probe failures yield an empty snapshot and
+					// never fail the spawn.
+					...(placement.kind === "worktree" ? readPreRunGitSnapshot(placement.checkoutPath) : {}),
 				};
 				// F1 fleet accounting: the FIRST delegate call of a task fixes the
 				// task-level description (derived from THIS call's brief via
@@ -1082,22 +1090,22 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				try {
 					await manifestStore.update(manifestDir, (m) => ({
 						...m,
-					workers: m.workers.map((w) =>
-						w.name === params.name &&
-						(w.placement.placementRef ?? w.placement.paneId) === (placement.placementRef ?? placement.paneId)
-							? ({
-									...w,
-									name: canonical,
-									reportPath: canonicalReportPath,
-									...(sessionPath ? { sessionPath } : {}),
-									budgetTokens: params.budgetTokens,
-									maxContextPct: maxPct,
-									// v1.5: record the MERGED FRAGMENT (not just the
-									// name chain) so collect failures can quote what the report was
-									// held to. ManifestWorker declares the field (quality fix A7).
-									...(resolvedSchema ? { reportSchemaFragment: resolvedSchema } : {}),
-								})
-								: w,
+						workers: m.workers.map((w) =>
+							w.name === params.name &&
+							(w.placement.placementRef ?? w.placement.paneId) === (placement.placementRef ?? placement.paneId)
+								? ({
+										...w,
+										name: canonical,
+										reportPath: canonicalReportPath,
+										...(sessionPath ? { sessionPath } : {}),
+										budgetTokens: params.budgetTokens,
+										maxContextPct: maxPct,
+										// v1.5: record the MERGED FRAGMENT (not just the
+										// name chain) so collect failures can quote what the report was
+										// held to. ManifestWorker declares the field (quality fix A7).
+										...(resolvedSchema ? { reportSchemaFragment: resolvedSchema } : {}),
+									})
+									: w,
 						),
 					}));
 					reportPath = canonicalReportPath;
@@ -1140,7 +1148,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				const details: Record<string, unknown> = {
 					usage, contextWindow, maxPct, sessionPath,
 					...(params.budgetTokens !== undefined ? { budget: params.budgetTokens } : {}),
-				};
+			};
 				if (pct !== null && pct >= CONTEXT_CRITICAL_PCT) {
 					line += `\nCONTEXT CRITICAL ${pct}% — at ${maxPct}% this worker is refused on re-spawn; ` +
 						"steer it to finish NOW or expect compaction-driven quality loss.";
@@ -1317,6 +1325,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// too). Best-effort by contract: a failure warns like the archive note,
 				// never fails the collect.
 				let collectedNote = "";
+				// Passport: the post-run git delta (worktree placements only — same
+				// shared-checkout attribution rule as the pre-run snapshot). Computed
+				// ONCE here, before the collectedAt stamp; advisory, never throws.
+				const gitDelta = placement.kind === "worktree" ? readPostRunGitDelta(placement.checkoutPath) : undefined;
 				try {
 					// Migration stage 2 (audit step 6): the collectedAt stamp is now a
 					// REDUCER TRANSITION (lifecycle.stampCollected) — an illegal stamp
@@ -1340,7 +1352,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 								return w; // a different embodiment of the same name — not ours to stamp
 							}
 							const stamped = stampCollected(w, collectedAt);
-							return stamped.ok ? stamped.entry : w;
+							if (!stamped.ok) return w;
+							// Passport: the collect that stamps collectedAt also stamps
+							// the post-run delta — one write, one witness.
+							return gitDelta ? { ...stamped.entry, gitDelta } : stamped.entry;
 						}),
 					}));
 					// F1: a collect is a manifest WRITER — stamp the recomputed usage
@@ -1358,7 +1373,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				void maybeNotifyFleetIdle();
 				// v1.12.1: the collect is DONE here (report valid, collectedAt
 				// stamped) — the auto-teardown below can only append an advisory
-				// note, never change this result's verdict.
+			// note, never change this result's verdict.
 				const teardownNote = await teardownAfterCollect();
 				const teardownNoteLine = teardownNote ? `\n${teardownNote}` : "";
 				// Law 1 truncation duty (Wave 4 item 2): report.summary and the
@@ -1376,7 +1391,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						? `Report OK: status=pass — ${summaryCap.text}`
 						: `Report OK: status=fail (honest failure — the worker ran and reported) — ${summaryCap.text}`;
 				return textResult(
-					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}).\n` +
+					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}) · pi-delegate v${EXTENSION_VERSION}.\n` +
 						`${verdictLine}\n` +
 						`Artifacts: ${artifactsList ? artifactsCap.text : "(none)"}` +
 						archiveNote +
@@ -1391,6 +1406,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						canonical,
 						requestedName: params.name,
 						nameUniquified: canonical !== params.name,
+						version: EXTENSION_VERSION,
 						placement,
 						branch: placement.branch,
 						status: settleStatus,
@@ -1535,7 +1551,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			//
 			// FUNCTION_CONTRACT:
 			// Input: none (closure: reportWitnesses, reportPath, canonical/requested
-			//   names, placement, sessionPath)
+			//   names, placement, <parameter>
 			// Output: true when THIS run provably finished — the canonical report
 			//   file (or the requested-name fallback) OBSERVED against THIS
 			//   embodiment's witness (appeared / rewritten since launch; lifecycle.
@@ -1572,7 +1588,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				}
 				// Session-reply proof (probes have no report file). Assumes a fresh
 				// session per worker (the default): pre-existing turns would prove an
-				// earlier session, not this prompt.
+					// earlier session, not this prompt.
 				const sp = sessionPath
 					?? resolvePiSessionCandidates(placement.checkoutPath, startedAtDate.getTime())[0];
 				if (sp) sessionPath = sp;
@@ -1675,7 +1691,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				if (signal?.aborted) return detach();
 				const b = gaugeSummary();
 				// Migration stage 1: typed code from the adapter passes through; the
-				// positional E_TIMEOUT is only the fallback.
+					// positional E_TIMEOUT is only the fallback.
 				const code = typedCode(err, "E_TIMEOUT");
 				return fail(
 					code,
@@ -1798,9 +1814,9 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					);
 				}
 				const paneEvidence =
-					typeof paneText === "string" && paneText.trim().length > 0
-						? ` Pane tail: …${paneText.trim().slice(-300)}`
-						: " Pane readback unavailable — verdict from status only.";
+				typeof paneText === "string" && paneText.trim().length > 0
+					? ` Pane tail: …${paneText.trim().slice(-300)}`
+					: " Pane readback unavailable — verdict from status only.";
 				void maybeNotifyFleetIdle();
 				if (live === "idle" || live === "done") {
 					return fail(
@@ -1825,7 +1841,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 
 			if (settle.kind === "timeout") {
 				// v1.9b: a question pending even at timeout outranks E_TIMEOUT — the
-				// orchestrator's next action is answering, not retrying.
+				// orchestration's next action is answering, not retrying.
 				const timedOutQuestion = readQuestion(questionPathFor(manifestDir, canonical));
 				if (timedOutQuestion) {
 					questionDetected = true;

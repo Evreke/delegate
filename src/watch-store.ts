@@ -3,18 +3,17 @@
  *
  * MODULE_CONTRACT — the watcher's satellite persistence.
  *
- * Purpose: the per-watcher satellite files in the task dir, both families:
- *   - the retire-stamp layers (watch-<watcherKey>.json — retirableSince /
- *     retiredAt; readers MERGE manifest layer + satellite layers, earliest
- *     stamp wins; writer: updateWatchStamps, owner-exclusive file);
- *   - the durable delivered-facts store (delivered-<watcherKey>.json,
- *     watcher stage B — committed after a successful wake-up send; records
- *     are only ADDED, removal is GC-only when a worker really disappears).
- * Both share the same watcherKey convention (FNV-1a of the session JSONL
- * path, "anon" for a degraded self-id) and the same single-writer
- * discipline (one writer session per file BY FILE NAME; in-process
- * serialization via withFileMutationQueue) — that shared identity is why
- * they live in ONE module.
+ * Purpose: the per-watcher retire-stamp satellite layers in the task dir
+ * (watch-<watcherKey>.json — retirableSince / retiredAt; readers MERGE the
+ * manifest layer + satellite layers, earliest stamp wins; writer:
+ * updateWatchStamps, owner-exclusive file). The durable delivery dedup moved
+ * to the journal cursor (src/watch-cursor.ts, issue #26): the delivered-facts
+ * store is RETIRED — no `delivered-*.json` is ever written again. The
+ * watcherKey convention (FNV-1a of the session JSONL path, "anon" for a
+ * degraded self-id) and the single-writer discipline (one writer session per
+ * file BY FILE NAME; in-process serialization via withFileMutationQueue) are
+ * shared with the cursor module — that shared identity is why the
+ * conventions live here.
  *
  * Dependencies: @earendil-works/pi-coding-agent (withFileMutationQueue),
  * node builtins, ./manifest-store.ts (the ONE atomic writer).
@@ -156,8 +155,9 @@ export interface StampLayerCacheEntry {
 
 /** Cached variant of readWatchStampLayers for ONE dir: re-reads (open +
  *  parse) only when a watch-*.json file was added/removed/rewritten since
- *  the last read (name + mtime snapshot compare — the delivered-store cache
- *  pattern). WITHOUT a cache the uncached read runs.
+ *  the last read (name + mtime snapshot compare — the same cache pattern the
+ *  watcher uses for the journal cursor files). WITHOUT a cache the uncached
+ *  read runs.
  * <p>
  * FUNCTION_CONTRACT:
  * Input: dir — task dir; cache — caller-held Map keyed by dir (may be
@@ -278,237 +278,3 @@ export async function updateWatchStamps(
 	});
 }
 
-// ---------------------------------------------------------------------------
-// Durable delivery store (watcher stage B): the delivered-facts
-// file the watcher commits AFTER a successful wake-up send. One satellite
-// file per task dir per audience session (delivered-<watcherKey>.json,
-// watcherKey = FNV-1a of the audience session's JSONL path — the same
-// convention as the retire-stamp satellites): the file name carries the
-// audience key, so exactly ONE writer session exists per file by
-// construction — no cross-process lost update is possible (the in-process
-// file-mutation queue serializes same-process writers; inter-process safety
-// comes from the file NAME, not from a lock). Memory `seen` in observe.ts is
-// only a CACHE of this store; the store is the source of truth across
-// session restarts. Reads are tolerant: a missing, corrupt or torn file
-// reads as an EMPTY store (worst case one repeated wake-up, never a throw).
-// Records are only ever ADDED; removal happens exclusively as garbage
-// collection when a worker really disappears from the manifests — never on
-// a skipped observation or a transient read error.
-// ---------------------------------------------------------------------------
-
-/** Schema version of the delivered-facts file (bump on a breaking change). */
-export const DELIVERED_STORE_SCHEMA_VERSION = 1;
-
-/** One committed delivery fact. The task dir
- *  and the audience are given by the FILE's location (per-task dir, audience
- *  key in the file name) and are not part of the record key. */
-export interface DeliveryRecord {
-	worker: string;
-	kind: string;
-	/** Canonical fingerprint (episode identifier for gauge/absence kinds —
-	 *  never an empty constant; the spelling lives in this module's
-	 *  fingerprint helpers). */
-	fingerprint: string;
-	/** ISO 8601 — when the successful send was committed. */
-	deliveredAt: string;
-	/** How the wake-up was delivered — currently only "sent" (a real
-	 *  sendUserMessage call); the field exists so future modes stay
-	 *  distinguishable in the audit trail. */
-	deliveryMode: string;
-}
-
-/** The on-disk shape of delivered-<watcherKey>.json. */
-export interface DeliveredStoreFile {
-	schemaVersion: number;
-	/** Full session JSONL path of the audience this file belongs to. */
-	audienceSessionPath: string;
-	/** Record key = JSON.stringify([worker, kind, fingerprint]) — a canonical
-	 *  JSON-array string: unambiguous without any delimiter parsing (worker
-	 *  names, kinds and fingerprints are safe, but the task-dir path and the
-	 *  audience path are NOT validated and could contain any separator —
-	 *  they deliberately stay OUT of the key). */
-	records: Record<string, DeliveryRecord>;
-}
-
-/** Canonical delivery-record key: JSON array of the THREE in-file components
- *  (worker, kind, fingerprint). Never parsed back — the store's readers use
- *  the parsed record values. */
-export function deliveryRecordKey(worker: string, kind: string, fingerprint: string): string {
-	return JSON.stringify([worker, kind, fingerprint]);
-}
-
-/** Conventional path of one audience's delivered-facts file in a task dir. */
-export function deliveredStorePathFor(dir: string, watcherKey: string): string {
-	return join(dir, `delivered-${watcherKey}.json`);
-}
-
-/**
- * Tolerant read of THIS audience's delivered-facts file in a task dir.
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - dir: the task's exchange dir
- *   - watcherKey: this watcher's satellite key (watcherKeyFor(selfSessionFile))
- * Output: the parsed DeliveredStoreFile; a missing/unreadable/corrupt/torn
- *   file or a wrong schemaVersion reads as an EMPTY store
- * Guarantees:
- *   - never throws; a corrupt store costs at most one repeated wake-up
- *     (the memory cache in observe.ts still suppresses within the session)
- * Raises: never
- * EXTERNAL_DEPENDENCY: filesystem — delivered-<key>.json in the task dir.
- */
-export function readDeliveredStore(dir: string, watcherKey: string): DeliveredStoreFile {
-	const empty: DeliveredStoreFile = {
-		schemaVersion: DELIVERED_STORE_SCHEMA_VERSION,
-		audienceSessionPath: "",
-		records: {},
-	};
-	let raw: string;
-	try {
-		raw = readFileSync(deliveredStorePathFor(dir, watcherKey), "utf8");
-	} catch {
-		return empty; // absent/unreadable → empty store
-	}
-	try {
-		const parsed = JSON.parse(raw) as Partial<DeliveredStoreFile> | null;
-		if (
-			parsed === null ||
-			typeof parsed !== "object" ||
-			parsed.schemaVersion !== DELIVERED_STORE_SCHEMA_VERSION ||
-			typeof parsed.records !== "object" ||
-			parsed.records === null
-		) {
-			return empty; // unknown schema version / torn shape → empty store
-		}
-		const records: Record<string, DeliveryRecord> = {};
-		for (const [key, v] of Object.entries(parsed.records)) {
-			if (typeof v !== "object" || v === null) continue;
-			const o = v as unknown as Record<string, unknown>;
-			if (
-				typeof o.worker !== "string" || o.worker.length === 0 ||
-				typeof o.kind !== "string" || o.kind.length === 0 ||
-				typeof o.fingerprint !== "string" ||
-				typeof o.deliveredAt !== "string" || o.deliveredAt.length === 0 ||
-				typeof o.deliveryMode !== "string" || o.deliveryMode.length === 0
-			) {
-				continue; // a torn record is skipped, the rest of the file stays usable
-			}
-			records[key] = {
-				worker: o.worker,
-				kind: o.kind,
-				fingerprint: o.fingerprint,
-				deliveredAt: o.deliveredAt,
-				deliveryMode: o.deliveryMode,
-			};
-		}
-		return {
-			schemaVersion: DELIVERED_STORE_SCHEMA_VERSION,
-			audienceSessionPath:
-				typeof parsed.audienceSessionPath === "string" ? parsed.audienceSessionPath : "",
-			records,
-		};
-	} catch {
-		return empty; // corrupt JSON → empty store, never a throw
-	}
-}
-
-/**
- * Commit delivery records for one batch (already sent successfully) into
- * THIS audience's delivered-facts file — one atomic merge per task dir
- * (a batch may span several task dirs; atomicity holds WITHIN one dir's
- * file, between dirs a partial commit is possible and documented).
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - dir: the task's exchange dir
- *   - watcherKey: this watcher's satellite key
- *   - audienceSessionPath: the full session path of this watcher's audience
- *   - entries: {worker, kind, fingerprint} per delivered event
- *   - deliveredAt: ISO stamp for the whole batch
- *   - deliveryMode: e.g. "sent"
- * Output: resolves when the (merged, atomic) write settled
- * Guarantees:
- *   - merge semantics: existing records are kept, new ones added; the write
- *     is skipped entirely when nothing would change (idempotent)
- *   - serialized per path via withFileMutationQueue; atomic write (tmp+rename);
- *     creates the dir on demand
- * Raises:
- *   - propagates filesystem errors (the watcher treats a failed commit as
- *     "durable fact not written — a repeat is possible after a restart",
- *     never as a failed delivery)
- */
-export async function appendDeliveredRecords(
-	dir: string,
-	watcherKey: string,
-	audienceSessionPath: string,
-	entries: ReadonlyArray<{ worker: string; kind: string; fingerprint: string }>,
-	deliveredAt: string,
-	deliveryMode: string,
-): Promise<void> {
-	const path = deliveredStorePathFor(dir, watcherKey);
-	await withFileMutationQueue(path, async () => {
-		const current = readDeliveredStore(dir, watcherKey);
-		const next: DeliveredStoreFile = {
-			schemaVersion: DELIVERED_STORE_SCHEMA_VERSION,
-			audienceSessionPath,
-			records: { ...current.records },
-		};
-		for (const e of entries) {
-			next.records[deliveryRecordKey(e.worker, e.kind, e.fingerprint)] = {
-				worker: e.worker,
-				kind: e.kind,
-				fingerprint: e.fingerprint,
-				deliveredAt,
-				deliveryMode,
-			};
-		}
-		if (JSON.stringify(current.records) === JSON.stringify(next.records)) return; // idempotent
-		mkdirSync(dir, { recursive: true });
-		atomicWriteFileSync(path, JSON.stringify(next, null, "\t") + "\n");
-	});
-}
-
-/**
- * Garbage collection: remove ALL delivery records of ONE worker from THIS
- * audience's delivered-facts file. Called ONLY when the worker really
- * disappeared from the manifests (an atomic manifest write removed it) —
- * never on a skipped observation or a transient read error.
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - dir: the task's exchange dir
- *   - watcherKey: this watcher's satellite key
- *   - workerName: the worker whose records are collected
- * Output: resolves when the (possibly skipped) write settled
- * Guarantees:
- *   - idempotent: no matching records → no write at all
- *   - atomic write; creates the dir on demand
- * Raises:
- *   - propagates filesystem errors (advisory — the watcher retries next tick)
- */
-export async function deleteWorkerDeliveryRecords(
-	dir: string,
-	watcherKey: string,
-	workerName: string,
-): Promise<void> {
-	const path = deliveredStorePathFor(dir, watcherKey);
-	await withFileMutationQueue(path, async () => {
-		const current = readDeliveredStore(dir, watcherKey);
-		const next: Record<string, DeliveryRecord> = {};
-		let changed = false;
-		for (const [key, rec] of Object.entries(current.records)) {
-			if (rec.worker === workerName) {
-				changed = true;
-				continue;
-			}
-			next[key] = rec;
-		}
-		if (!changed) return; // idempotent — no write
-		mkdirSync(dir, { recursive: true });
-		atomicWriteFileSync(path, JSON.stringify({
-			schemaVersion: DELIVERED_STORE_SCHEMA_VERSION,
-			audienceSessionPath: current.audienceSessionPath,
-			records: next,
-		}, null, "\t") + "\n");
-	});
-}

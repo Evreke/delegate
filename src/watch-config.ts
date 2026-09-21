@@ -75,9 +75,9 @@ export const RETIRE_DEFAULT_TTL_MS = 900_000;
  *  the operator opted in via watch.retire:true (user decision, mandatory). */
 export const RETIRE_DEFAULT_ENABLED = false;
 
-/** Watcher stage B master default: TRUE — committing the durable delivered
- *  facts is the safe value (it only ever SUPPRESSES a repeated wake-up; the
- *  memory-only rollback is the emergency exit, not the default). */
+/** Watcher stage B + #26 master default: TRUE — committing the durable
+ *  cursor facts is the safe value (it only ever SUPPRESSES a repeated
+ *  wake-up; the memory-only rollback is the emergency exit, not the default). */
 export const DURABLE_DELIVERY_DEFAULT_ENABLED = true;
 
 export interface WatchConfig {
@@ -111,11 +111,11 @@ export interface WatchConfig {
 	 *  edge: a session whose identity is unreadable delivers nothing with or
 	 *  without the flag (no configuration escape — ARCHITECTURE.md Law 8). */
 	legacyFailOpen: boolean;
-	/** Watcher stage B (default TRUE): commit delivered-facts
-	 *  records to the durable per-task store after a successful send, so the
-	 *  dedup survives a session restart. false is the emergency rollback to
-	 *  the pre-stage-B memory-only dedup (repeated wake-ups after a restart
-	 *  return) without shipping a new version. */
+	/** Watcher stage B / #26 (default TRUE): commit cursor records to the
+	 *  durable per-task cursor file after a successful send and advance its
+	 *  journal `seq`, so the dedup survives a session restart. false is the
+	 *  emergency rollback to the pre-stage-B memory-only dedup (repeated
+	 *  wake-ups after a restart return) without shipping a new version. */
 	durableDelivery: boolean;
 }
 

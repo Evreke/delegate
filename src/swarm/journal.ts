@@ -26,10 +26,11 @@
  * Append-only by absence: this module contains NO UPDATE and NO DELETE
  * statement. The sole documented exception in §4.1.2 is the operator-invoked
  * compaction path (export fleet events to JSONL, then delete, gated on the
- * all-terminal rule); compaction is DEFERRED out of #22 — when it lands it is
- * the one place a DELETE may appear in the family, and `journal-check.ts`
- * scans these sources for write keywords so the deferral is a tested state,
- * not a convention.
+ * all-terminal rule); compaction is DEFERRED out of #22 and lands in its own
+ * family file `src/swarm/journal-compact.ts` (covered by the journal*.ts glob)
+ * so this writer never grows past the Law 5 threshold — it is the one place a
+ * DELETE may appear in the family, and `journal-check.ts` scans these sources
+ * for write keywords so the deferral is a tested state, not a convention.
  *
  * Dependencies: `bun:sqlite` (the platform driver — Law 1, the platform is the
  * API), pi's `getAgentDir()`, node builtins, and `./clock.ts` (the injected
@@ -135,7 +136,6 @@ export type JournalKind = (typeof JOURNAL_KINDS)[number];
 
 const JOURNAL_KIND_SET: ReadonlySet<string> = new Set(JOURNAL_KINDS);
 
-/** Narrowing guard for the closed kind set. */
 export function isJournalKind(v: unknown): v is JournalKind {
 	return typeof v === "string" && JOURNAL_KIND_SET.has(v);
 }
@@ -161,9 +161,7 @@ export interface JournalSuccess {
 export interface JournalFailure {
 	ok: false;
 	code: JournalFailureCode;
-	/** Human-readable cause (never thrown past the caller). */
 	error: string;
-	/** How many append attempts were made (1 when no retry was warranted). */
 	attempts: number;
 }
 
@@ -183,30 +181,16 @@ export interface JournalAppendInput {
 // Bounded, jittered SQLITE_BUSY backoff (§4.1.2 cross-process rule)
 // ---------------------------------------------------------------------------
 
-export interface JournalRetryOptions {
-	/** Total attempts per append (including the first). Default 4. */
-	attempts?: number;
-	/** Exponential base delay in ms. Default 20. */
-	baseMs?: number;
-	/** Hard ceiling for a single backoff delay in ms. Default 400. */
-	maxMs?: number;
-}
+/** Bounded SQLITE_BUSY retry budget: attempts (incl. the first), exponential
+ *  base in ms, and a per-delay ceiling in ms. */
+export interface JournalRetryOptions { attempts?: number; baseMs?: number; maxMs?: number; }
 
-export const JOURNAL_RETRY_DEFAULTS: Required<JournalRetryOptions> = {
-	attempts: 4,
-	baseMs: 20,
-	maxMs: 400,
-};
+export const JOURNAL_RETRY_DEFAULTS: Required<JournalRetryOptions> = { attempts: 4, baseMs: 20, maxMs: 400 };
 
 /**
  * Bounded jittered backoff for attempt index `attempt` (0-based).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: attempt — 0-based retry index; rng — jitter source in [0,1);
- *   opts — the retry budget
- * Output: a delay in ms, always within [0, maxMs] (bounded)
- * Guarantees: pure (given rng); never throws
- * Raises: never
+ * FUNCTION_CONTRACT: Input — attempt, rng (jitter in [0,1)), opts. Output —
+ * a delay in [0, maxMs]. Pure given rng; never throws.
  */
 export function journalBackoffMs(
 	attempt: number,
@@ -227,19 +211,15 @@ export function journalBackoffMs(
 export interface JournalWriterOptions {
 	/** Database path override (tests sandbox here). Default `journalDbPath()`. */
 	dbPath?: string;
-	/** Clock injected for `ts` (deterministic under a VirtualClock). Default
-	 *  `systemClock`. */
+	/** Clock injected for `ts`. Default `systemClock`. */
 	clock?: ClockPort;
 	/** SQLITE_BUSY retry budget. Defaults to `JOURNAL_RETRY_DEFAULTS`. */
 	retry?: JournalRetryOptions;
 	/** Jitter source for the backoff. Default `Math.random`. */
 	rng?: () => number;
-	/** TEST-ONLY: override the pinned 5000 ms busy timeout for this connection.
-	 *  Production never passes it; the pinned DDL still sets 5000 exactly. */
+	/** TEST-ONLY override of the pinned 5000 ms busy timeout (the pinned DDL still sets 5000). */
 	busyTimeoutMs?: number;
-	/** Advisory sink: called once per failed append (the outcome is also
-	 *  returned). Default no-op — failures are recorded in the result, not
-	 *  thrown. */
+	/** Advisory sink, called once per failed append (also returned); default no-op. */
 	onError?: (failure: JournalFailure & { kind: string }) => void;
 }
 
@@ -261,6 +241,26 @@ function isBusyError(e: unknown): boolean {
 	const code = typeof e === "object" && e !== null ? (e as { code?: unknown }).code : undefined;
 	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
 	return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(errorMessage(e));
+}
+
+/** Invoke the advisory error sink, swallowing a throwing sink (the sink is
+ *  advisory too) so no sink can escape append() or trigger a second call. */
+function notifySink(
+	sink: ((f: JournalFailure & { kind: string }) => void) | undefined,
+	f: JournalFailure & { kind: string },
+): void {
+	if (!sink) return;
+	try {
+		sink(f);
+	} catch {
+		// swallowed — the sink is advisory
+	}
+}
+
+/** Never-throwing read of the input kind (append(null) is caught by append). */
+function safeKind(input: unknown): string {
+	const k = typeof input === "object" && input !== null ? (input as { kind?: unknown }).kind : undefined;
+	return typeof k === "string" ? k : "unknown";
 }
 
 function readUserVersion(db: Database): number {
@@ -370,7 +370,7 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 					attempts,
 					kind: input.kind,
 				};
-				opts.onError?.(failure);
+				notifySink(opts.onError, failure);
 				return failure;
 			} catch (e) {
 				// Structural advisory guarantee: no path out of append() throws.
@@ -379,9 +379,9 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 					code: "E_JOURNAL_WRITE",
 					error: errorMessage(e),
 					attempts: 0,
-					kind: input.kind,
+					kind: safeKind(input),
 				};
-				opts.onError?.(failure);
+				notifySink(opts.onError, failure);
 				return failure;
 			}
 		},

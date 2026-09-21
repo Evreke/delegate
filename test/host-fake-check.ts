@@ -110,8 +110,17 @@ const start = await fake.startAgent({
 	model: "m",
 	thinking: "low",
 	timeoutMs: 1000,
+	env: { SWARM_TASK: "t", SWARM_WORKER: NAME, SWARM_SCHEMA_DIR: "/proj/.pi/delegate-schemas" },
 });
 check("A5 startAgent reads back the canonical name (seam contract)", start.name === NAME);
+check(
+	"A5b startAgent records the seam env (StartReq.env flows through, issue #25)",
+	fake.startEnvs.length === 1 &&
+		fake.startEnvs[0]?.SWARM_TASK === "t" &&
+		fake.startEnvs[0]?.SWARM_WORKER === NAME &&
+		fake.startEnvs[0]?.SWARM_SCHEMA_DIR === "/proj/.pi/delegate-schemas",
+	JSON.stringify(fake.startEnvs),
+);
 
 // Name-taken → E_NAME (D4 seam contract the fake must reproduce).
 let nameTaken = false;

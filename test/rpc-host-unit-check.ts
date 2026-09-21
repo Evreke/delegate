@@ -26,7 +26,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import {
 	applyRpcEvent,
 	createRpcTransport,
@@ -425,6 +425,43 @@ try {
 		setTimeout(() => rig.child.emitLine({ type: "agent_start" }), 100);
 		const r = await waiting;
 		check("R8.3 releaseOnStarted → 'started-confirmed' once working", r.kind === "started-confirmed" && r.status === "working", JSON.stringify(r));
+	}
+
+	// --- R9: StartReq.env reaches the spawned rpc child (issue #25) ------------
+	{
+		let captured: SpawnOptions | undefined;
+		const child = new FakeChildProcess();
+		const host = createRpcTransport({
+			worktreeRoot: WORKTREE_ROOT,
+			subOrchestrator: false,
+			spawnProcess: (_cmd, _args, options) => {
+				captured = options;
+				return child as unknown as ChildProcess;
+			},
+		});
+		const repo = mkdtempSync(join(tmpdir(), "rpc-unit-repo-"));
+		repos.push(repo);
+		const placement = await host.place({ mode: "tab", repoPath: repo, branch: "", label: "env" });
+		const env = { SWARM_TASK: "task-x", SWARM_WORKER: "w1", SWARM_SCHEMA_DIR: "/proj/.pi/delegate-schemas" };
+		await host.startAgent({
+			name: "env-worker",
+			placementRef: placement.placementRef ?? "",
+			provider: "p",
+			model: "m",
+			thinking: "low",
+			timeoutMs: 5_000,
+			env,
+		});
+		const spawnedEnv = (captured?.env ?? {}) as Record<string, string | undefined>;
+		check(
+			"R9.1 StartReq.env reaches the rpc child env (SWARM_* identity exported, issue #25)",
+			spawnedEnv.SWARM_TASK === "task-x" && spawnedEnv.SWARM_WORKER === "w1" && spawnedEnv.SWARM_SCHEMA_DIR === "/proj/.pi/delegate-schemas",
+			JSON.stringify(spawnedEnv),
+		);
+		check(
+			"R9.2 the child env still inherits the orchestrator environment",
+			spawnedEnv.PATH === process.env.PATH,
+		);
 	}
 } finally {
 	for (const repo of repos) rmSync(repo, { recursive: true, force: true });

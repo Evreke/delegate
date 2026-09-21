@@ -352,9 +352,17 @@ check(
 
 // ---------------------------------------------------------------------------
 // Leg 3 — real rpc adapter (skip-guarded on `pi --version`; NO LLM calls:
-// the spawned worker is never prompted — get_state is the only traffic)
+// the spawned worker is never prompted — get_state is the only traffic).
+// Opt-in via RPC_E2E=1 (same gate as rpc-host-e2e-check.ts): `pi --version`
+// succeeding is NOT enough — starting a worker needs the auth/config under
+// the agent dir, which CI runners do not have; without the opt-in the child
+// exits code=1 at startup and the leg fails the PR (field incident: PR #17
+// CI run 35573910361). Locally (operator machine, auth present) set RPC_E2E=1
+// to run this leg.
 // ---------------------------------------------------------------------------
-if (!piAvailable) {
+if (process.env.RPC_E2E !== "1") {
+	console.log("SKIP  rpc leg — opt-in check (set RPC_E2E=1 to run; needs agent auth/config on the host)");
+} else if (!piAvailable) {
 	console.log("SKIP  rpc leg — no pi binary on PATH (skip guard, transport-contract shape)");
 } else {
 	const rpcWorktreeRoot = join(tmpdir(), `host-parity-rpc-wt-${process.pid}`);

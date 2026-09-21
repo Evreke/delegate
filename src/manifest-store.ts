@@ -36,7 +36,7 @@
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeSync } from "node:fs";
 import { basename, resolve } from "node:path";
-import type { Placement } from "./host.ts";
+import type { AuthorityMode, Placement } from "./host.ts";
 import { exchangeRoot } from "./exchange.ts";
 
 // ---------------------------------------------------------------------------
@@ -176,6 +176,26 @@ export interface ManifestWorker {
 	/** Passport (worktree only): `git diff --stat HEAD` + `?? <file>`
 	 *  untracked lines, stamped by COLLECT — the post-run delta. */
 	gitDelta?: string[];
+	/** SwarmGraph level (milestone swarm-core-v1, issue #28) — additive optional
+	 *  field, same precedent as the passport fields: NO schemaVersion bump.
+	 *  0 for the root orchestrator's workers, parent+1 for a sub-orchestrator's
+	 *  children. Written by spawn at the ONE manifest-append site; absent on
+	 *  legacy entries → readers must treat it as unknown depth, never misparse. */
+	depth?: number;
+}
+
+/** The depth stamped on a worker's manifest entry at append time.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: authority — the spawning session's authority (TransportCapabilities)
+ * Output: 0 for the root orchestrator's workers; 1 for a sub-orchestrator's
+ *   children (parent+1 under the current two-level authority model — the
+ *   sub-orchestrator itself is a depth-0 worker)
+ * Guarantees: pure; never throws
+ * Raises: never
+ */
+export function manifestDepthFor(authority: AuthorityMode): number {
+	return authority === "sub" ? 1 : 0;
 }
 
 /** F1: cached fleet usage roll-up (aggregateTaskUsage {persist:true}). The

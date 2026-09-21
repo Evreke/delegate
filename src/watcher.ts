@@ -4,9 +4,9 @@
  * observe.ts (Wave 3, audit Law 5: modules are responsibilities).
  * <p>
  * MODULE_CONTRACT: builds and runs the poller (createWatcher — one tick =
- * snapshot → §23 retire pass → detection → dedup → ONE wake-up send →
- * durable delivered-facts commit), the delivery text formatters, the
- * guarded delivery sink builders (makeSender, makeWatcherLogSink) and the
+ * snapshot → §23 retire pass → journal cursor read → detection → dedup → ONE
+ * wake-up send → durable journal-cursor commit), the delivery text formatters,
+ * the guarded delivery sink builders (makeSender, makeWatcherLogSink) and the
  * session-keyed mount lifecycle (startWatcher/stopWatcher over the
  * globalThis registry — Wave 2, Law 3).
  * Advisory by contract: a watcher failure must NEVER affect spawn or collect
@@ -14,8 +14,10 @@
  * without `sendUserMessage` (headless/old) stays inert, never throws.
  * Independent of the fleet UI: no `ctx.hasUI` guard, works headless.
  * Dependencies: watch-detect.ts (snapshot/detection/event model),
- * watch-retire.ts (§23 pass inside the tick), watch-store.ts (the durable
- * delivered-facts store + watcher key), watch-config.ts (resolved config),
+ * watch-retire.ts (§23 pass inside the tick), watch-cursor.ts (the durable
+ * journal cursor — the retired delivered-facts store's replacement),
+ * watch-store.ts (the watcher key), swarm/journal-read.ts (the cursor read),
+ * watch-config.ts (resolved config),
  * mailbox-store.ts (the ONE steer-posting core — the report-invalid auto
  * fix nudge shares it with the delegate_mailbox tool, Law 9), host.ts (the
  * Transport seam). Never imports the transport implementation (dependency
@@ -27,7 +29,7 @@
 
 import { statSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	becameCollectedOnDisk,
@@ -42,15 +44,16 @@ import {
 } from "./watch-detect.ts";
 import { retirePass } from "./watch-retire.ts";
 import {
-	appendDeliveredRecords,
-	deleteWorkerDeliveryRecords,
-	deliveryRecordKey,
-	deliveredStorePathFor,
-	readDeliveredStore,
-	type DeliveryRecord,
-	watcherKeyFor,
-	type StampLayerCacheEntry,
-} from "./watch-store.ts";
+	commitWatchCursor,
+	cursorRecordKey,
+	deleteWorkerCursorRecords,
+	readWatchCursor,
+	type WatchCursorFile,
+	watchCursorPathFor,
+} from "./watch-cursor.ts";
+import { watcherKeyFor, type StampLayerCacheEntry } from "./watch-store.ts";
+import { createJournalReader, type JournalEvent, type JournalReader } from "./swarm/journal-read.ts";
+import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from "./swarm/storage.ts";
 import { WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
 import { sameSessionPath } from "./watch-role.ts";
 // Wave 4 item 5 (reliability finding 10): per-mount caches for the tick's
@@ -83,7 +86,7 @@ export function formatEventBatch(events: WatchEvent[]): string {
 /**
  * Audit line for a REAL send (watcher delivery).
  * <p>
- * The durable delivery store answers "what did this audience already hear";
+ * The durable journal cursor answers "what did this audience already hear";
  * this line answers the incident question the store cannot: WHAT EXACTLY was
  * considered delivered at what moment — the recovery trail after a send pi
  * may have swallowed asynchronously. One line per BATCH (not per event — the
@@ -129,19 +132,28 @@ export interface WatcherDeps {
 	intervalMs?: number;
 	self?: SelfIdentity;
 	detect?: DetectOptions;
-	/** Watcher stage B (default TRUE — watch.durableDelivery): commit
-	 *  delivered-facts records to the durable per-task store after a
-	 *  successful send, so the dedup survives a session restart. false is
-	 *  the emergency rollback to memory-only dedup. */
+	/** Journal-cursor dedup (default TRUE — watch.durableDelivery): after a
+	 *  successful send, commit cursor records to the durable cursor
+	 *  file and advance its journal `seq`, so the dedup survives a session
+	 *  restart and the next tick reads `eventsAfter(cursor)`. false is the
+	 *  emergency rollback to memory-only dedup. */
 	durableDelivery?: boolean;
-	/** Injectable durable-commit seam (tests): defaults to
-	 *  appendDeliveredRecords in exchange.ts (one atomic merge per task
-	 *  dir). A rejection is NOT a failed delivery — memory keys stay, an
-	 *  audit line notes the possible post-restart repeat. */
+	/** Injectable durable-commit seam (tests): defaults to commitWatchCursor
+	 *  (one atomic merge per task dir). A rejection is NOT a failed delivery
+	 *  — memory keys stay, an audit line notes the possible post-restart
+	 *  repeat. */
 	commitDelivery?: (
 		dir: string,
 		entries: ReadonlyArray<{ worker: string; kind: string; fingerprint: string }>,
 	) => Promise<void>;
+	/** Journal read seam (issue #26): the cursor source. Defaults to
+	 *  createJournalReader() (lazily opened on the first tick). The watcher
+	 *  reads `eventsAfter(cursor)` each tick and advances the cursor `seq` ONLY
+	 *  over rows of THIS audience's live fleets (session_id + task); foreign-
+	 *  fleet rows never move it. A throwing reader SKIPS the tick (advisory,
+	 *  Law 8) and can never affect a spawn or collect. `null` disables the read
+	 *  entirely (tests without a journal). */
+	journal?: { eventsAfter(cursor: number): JournalEvent[] } | null;
 	/** Snapshot source override (tests drive fixtures; production uses
 	 *  collectSnapshot over manifestStore.scan() + the injected transport). */
 	snapshot?: () => Promise<WatchSnapshot>;
@@ -164,39 +176,69 @@ import { errText } from "./tool-result.ts";
  * unreachable herdr or a throwing sink only costs that cycle.
  * <p>
  * FUNCTION_CONTRACT (the tick — exact order):
- *   1. snapshot; 2. retire pass (before delivery); 3. detection with the
- *   memory cache; 4. self-event filter + leaf-worker check BEFORE any
- *   durable write (a leaf worker never writes to disk); 5. canonical keys
- *   for the batch; 6. keys already in the durable store are dropped (they
- *   STAY in memory and are never rolled back); 7. an empty batch ends the
- *   tick silently; 8. ONE send; 9. only on a successful send — an atomic
- *   records write per task dir (a batch may span dirs: atomicity holds
- *   within each dir, a partial commit between dirs is possible and
- *   documented); 10. a failed send → nothing on disk, the batch's memory
+ *   1. snapshot; 2. retire pass (before delivery); 3. journal cursor read
+ *   (`eventsAfter(seq)`; a throwing read skips the tick, advisory); 4.
+ *   detection with the memory cache; 5. self-event filter + leaf-worker check
+ *   BEFORE any durable write (a leaf worker never writes to disk); 6.
+ *   canonical keys for the batch; 7. keys already committed to the cursor
+ *   are dropped (they STAY in memory and are never rolled back); 8. an empty
+ *   batch ends the tick silently; 9. ONE send; 10. only on a successful send
+ *   — an atomic cursor write per task dir (a batch may span dirs: atomicity
+ *   holds within each dir, a partial commit between dirs is possible and
+ *   documented); 11. a failed send → nothing on disk, the batch's memory
  *   keys roll back. A failed durable WRITE is not a failed delivery:
  *   memory keys stay (a rollback would re-fire the batch EVERY tick —
  *   endless retry noise), an audit line notes the possible repeat after a
  *   restart. Silent mode (no pi.sendUserMessage) → no disk write, memory
  *   keys stay. Garbage collection: records of a worker that really
- *   vanished from the manifests are removed from this audience's store.
+ *   vanished from the manifests are removed from this audience's cursor.
  */
 export function createWatcher(deps: WatcherDeps): WatcherHandle {
 	const seen = new Map<string, DeliveryKey>();
 	const log = deps.log ?? ((m: string) => console.error(`[pi-delegate watch] ${m}`));
 	let stopped = false;
-	// Watcher stage B: the audience key of THIS mount — the durable store
-	// file name component (delivered-<watcherKey>.json). A degraded self-id
-	// degrades to the shared "anon" file (strictly no worse than the old
-	// shared-manifest stamps).
+	// The audience key of THIS mount — the cursor file name component
+	// (cursor-<watcherKey>.json). A degraded self-id degrades to the shared
+	// "anon" file (strictly no worse than the old shared-manifest stamps).
 	const watcherKey = watcherKeyFor(deps.self?.sessionFile);
 	const audienceSessionPath = deps.self?.sessionFile ?? "";
 	const durableEnabled = deps.durableDelivery !== false;
 	const commit = deps.commitDelivery;
-	// Content cache of this audience's store files, keyed by task dir, kept
-	// fresh by the file's mtime: a tick re-reads a dir's store only when its
+	// Journal read (issue #26): lazily opened on the first tick so a watcher
+	// mount never touches the journal before it polls. `undefined` = not yet
+	// resolved; `null` = explicitly disabled (deps.journal === null).
+	let journalReader: { eventsAfter(cursor: number): JournalEvent[] } | null | undefined =
+		deps.journal === null ? null : deps.journal;
+	const ownsJournalReader = deps.journal === undefined;
+	function journalFor(): { eventsAfter(cursor: number): JournalEvent[] } | null {
+		if (journalReader !== undefined) return journalReader;
+		try {
+			journalReader = createJournalReader();
+		} catch {
+			journalReader = null; // advisory: no journal → no cursor read
+		}
+		return journalReader;
+	}
+	// #26 scoping: the audience's live fleets are the snapshot task dirs; a
+	// fleet is identified by the journal's own (session_id, task) key. Rows of
+	// foreign fleets are read (one cursor read) but never advance this
+	// audience's cursor and never fold owner fields.
+	let swarmCfg: SwarmStorageConfig | undefined;
+	const fleetKeyFor = (dir: string): string => {
+		if (swarmCfg === undefined) {
+			try {
+				swarmCfg = resolveSwarmStorage();
+			} catch {
+				swarmCfg = { storage: "files", projection: true, warnings: [] };
+			}
+		}
+		return `${swarmSessionIdFor(dir, swarmCfg)}\u0000${basename(dir)}`;
+	};
+	// Content cache of this audience's cursor files, keyed by task dir, kept
+	// fresh by the file's mtime: a tick re-reads a dir's cursor only when its
 	// mtime moved (or the cache was invalidated by this mount's own write).
 	// A negative mtime means "no file yet" and is cached too.
-	const storeCache = new Map<string, { mtimeMs: number; records: Record<string, DeliveryRecord> }>();
+	const storeCache = new Map<string, { mtimeMs: number; cursor: WatchCursorFile }>();
 	// Wave 4 item 5 (reliability finding 10): mtime-keyed caches that keep the
 	// tick cheap on large fleets — satellite stamp layers re-read only when a
 	// watch-*.json (name, mtime) snapshot moved; the grill-deck session-tail
@@ -328,22 +370,22 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 	);
 }
 
-/** THIS audience's committed records for one task dir — mtime-cached. */
-	const storeRecordsFor = (dir: string): Record<string, DeliveryRecord> => {
+/** THIS audience's cursor for one task dir — mtime-cached. */
+	const storeCursorFor = (dir: string): WatchCursorFile => {
 		let mtimeMs = -1;
 		try {
-			mtimeMs = statSync(deliveredStorePathFor(dir, watcherKey)).mtimeMs;
+			mtimeMs = statSync(watchCursorPathFor(dir, watcherKey)).mtimeMs;
 		} catch {
-			// no store file yet
+			// no cursor file yet (first-run migration)
 		}
 		const cached = storeCache.get(dir);
-		if (cached && cached.mtimeMs === mtimeMs) return cached.records;
-		const records = readDeliveredStore(dir, watcherKey).records;
-		storeCache.set(dir, { mtimeMs, records });
-		return records;
+		if (cached && cached.mtimeMs === mtimeMs) return cached.cursor;
+		const cursor = readWatchCursor(dir, watcherKey);
+		storeCache.set(dir, { mtimeMs, cursor });
+		return cursor;
 	};
 
-	/** Garbage collection over the store: a worker this mount committed
+	/** Garbage collection over the cursor: a worker this mount committed
 	 *  records for that is absent from the current snapshot is REALLY gone
 	 *  (manifest writes are atomic) → remove its records from this
 	 *  audience's file. Advisory: any failure is logged and retried next
@@ -354,11 +396,11 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 			if (liveNow.has(id)) continue;
 			gcCandidates.delete(id);
 			try {
-				await deleteWorkerDeliveryRecords(dir, watcherKey, worker);
+				await deleteWorkerCursorRecords(dir, watcherKey, worker);
 				storeCache.delete(dir); // own write → drop the cached content
-				log(`collected delivery records of the vanished worker ${worker} (${dir})`);
+				log(`collected cursor records of the vanished worker ${worker} (${dir})`);
 			} catch (err) {
-				log(`delivery-record garbage collection failed for ${worker} (${dir}) (${errText(err)}) — advisory, retried next tick`);
+				log(`cursor-record garbage collection failed for ${worker} (${dir}) (${errText(err)}) — advisory, retried next tick`);
 			}
 		}
 	};
@@ -418,30 +460,69 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 			log(`tick skipped (${errText(err)}) — advisory, no outcome affected`);
 			return [];
 		}
+		// Journal cursor read (issue #26, tick step 3): `eventsAfter(cursor)` is
+		// the §4.1.2 cursor read. The cursor `seq` is the per-audience high-water
+		// mark persisted in the cursor files; the read is advisory — a THROWING
+		// reader (injected seam) skips the tick and can never affect a spawn or
+		// collect. The real reader is total (a missing/corrupt journal reads as
+		// no new rows), so this guard only fires on a genuinely broken seam.
+		// SCOPING: only rows of THIS audience's live fleets (session_id + task)
+		// advance the cursor — a foreign fleet's rows are never "consumed" here
+		// (they may belong to another session's audience). The global last seq
+		// is only the migration fallback when NO fleet is live (nothing commits
+		// on a quiet tick anyway).
+		let journalSeqNow = 0;
+		if (durableEnabled) {
+			try {
+				const reader = journalFor();
+				if (reader !== null && snapOrNull !== null) {
+					const liveFleets = new Set<string>();
+					let baseSeq = 0;
+					for (const w of snapOrNull.workers) {
+						baseSeq = Math.max(baseSeq, storeCursorFor(w.dir).seq);
+						liveFleets.add(fleetKeyFor(w.dir));
+					}
+					const rows = reader.eventsAfter(baseSeq);
+					let scopedSeq = baseSeq;
+					for (const row of rows) {
+						if (liveFleets.has(`${row.sessionId}\u0000${row.task}`)) scopedSeq = Math.max(scopedSeq, row.seq);
+					}
+					journalSeqNow =
+						liveFleets.size > 0
+							? scopedSeq
+							: rows.length > 0
+								? rows[rows.length - 1]!.seq
+								: baseSeq;
+				}
+			} catch (err) {
+				log(`tick skipped (journal read failed: ${errText(err)}) — advisory, no outcome affected`);
+				return [];
+			}
+		}
 		// Garbage collection of vanished workers — before the delivery path,
 		// so a gone worker's records leave the store even on a quiet tick.
 		if (durableEnabled && snapOrNull !== null) await garbageCollect(snapOrNull);
 		if (leafWorker || events.length === 0) return [];
-		// Watcher stage B, tick step 6: drop events whose delivery key is
-		// already committed to THIS audience's durable store (e.g. after a
-		// session restart, where the memory cache starts empty). Dropped keys
-		// STAY in memory and are never rolled back.
+		// Tick step 7: drop events whose delivery key is already committed to
+		// THIS audience's cursor (e.g. after a session restart, where the memory
+		// cache starts empty). Dropped keys STAY in memory and are never rolled
+		// back.
 		if (durableEnabled) {
-			const committedRecordsByDir = new Map<string, Record<string, DeliveryRecord>>();
+			const committedCursorsByDir = new Map<string, WatchCursorFile>();
 			events = events.filter((e) => {
-				let records = committedRecordsByDir.get(e.dir);
-				if (records === undefined) {
-					records = storeRecordsFor(e.dir);
-					committedRecordsByDir.set(e.dir, records);
+				let cursor = committedCursorsByDir.get(e.dir);
+				if (cursor === undefined) {
+					cursor = storeCursorFor(e.dir);
+					committedCursorsByDir.set(e.dir, cursor);
 				}
-				return records[deliveryRecordKey(e.worker, e.kind, e.fingerprint ?? "")] === undefined;
+				return cursor.records[cursorRecordKey(e.worker, e.kind, e.fingerprint ?? "")] === undefined;
 			});
 		}
 		if (events.length === 0) return [];
 		// Wave 2 (the watcher-vs-collect race): report-kind suppression reads
 		// collectedAt in the TICK SNAPSHOT — a collect that stamps between the
 		// snapshot and the send produced a duplicate report-ready wake for a
-		// fresh session (empty memory dedup, empty durable store).
+		// fresh session (empty memory dedup, empty durable cursor).
 		// BUG_FIX_CONTEXT: symptom — a fresh orchestrator session received the
 		// report-ready wake even though the report had just been collected. Why
 		// the old solution did not work: the collectedAt check ran against the
@@ -451,7 +532,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// collected are dropped (other kinds are unaffected — collect only ever
 		// means "the report was delivered"). Residual (documented): a stamp
 		// landing between this re-read and the actual send still races — the
-		// window is now a single atomic-rename scale, and the durable store
+		// window is now a single atomic-rename scale, and the durable cursor
 		// records the wake for cross-restart dedup.
 		events = events.filter((e) => {
 			if (e.kind !== "report-ready" && e.kind !== "report-invalid") return true;
@@ -459,7 +540,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		});
 		if (events.length === 0) return [];
 		// Automatic self-heal (fix-report-heal): the batch is now FULLY accepted
-		// for delivery (memory dedup + durable store + collectedAt suppression
+		// for delivery (memory dedup + durable cursor + collectedAt suppression
 		// all passed) — nudge live workers whose report failed validation to fix
 		// it in place, and mark the nudged events' messages. Runs (and is
 		// awaited) before the send so the suffix reaches the wake text;
@@ -500,16 +581,16 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 				// next tick while its condition still holds.
 				// Delivery failed: roll the batch's keys back out of `seen`, or a single
 				// transient send error would permanently swallow the wake-up. Nothing is
-				// written to the durable store (a commit would claim a delivery that
+				// written to the durable cursor (a commit would claim a delivery that
 				// did not happen). Still advisory, never a queue: nothing is buffered,
 				// and an event whose condition already reset is simply gone.
 				for (const e of events) seen.delete(eventKey(e));
-				log(`delivery failed (${errText(err)}) — batch rolled back, durable store untouched, re-fires while still true (advisory)`);
+				log(`delivery failed (${errText(err)}) — batch rolled back, durable cursor untouched, re-fires while still true (advisory)`);
 				return events;
 			}
 		}
 		if (!delivered) {
-			log("delivery sink is silent (no usable pi.sendUserMessage) — wake-up suppressed in memory, nothing committed to the durable store");
+			log("delivery sink is silent (no usable pi.sendUserMessage) — wake-up suppressed in memory, nothing committed to the durable cursor");
 			return events;
 		}
 		// Watcher delivery: every REAL send is recorded as
@@ -539,15 +620,16 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 					if (commit) {
 						await commit(dir, entries);
 					} else {
-						// EXTERNAL_DEPENDENCY: the delivered-facts file
-						// delivered-<watcherKey>.json in the task dir (exchange.ts I/O).
-						await appendDeliveredRecords(dir, watcherKey, audienceSessionPath, entries, new Date().toISOString(), "sent");
+						// EXTERNAL_DEPENDENCY: the cursor file
+						// cursor-<watcherKey>.json in the task dir (watch-cursor.ts I/O).
+						// The journal `seq` read this tick advances the cursor.
+						await commitWatchCursor(dir, watcherKey, audienceSessionPath, entries, new Date().toISOString(), "sent", journalSeqNow);
 					}
 					storeCache.delete(dir); // own write → the cached content is stale
 					for (const e of entries) gcCandidates.set(`${dir}#${e.worker}`, { dir, worker: e.worker });
 				} catch (err) {
 					log(
-						`durable delivery record not written for ${dir} (${errText(err)}) — ` +
+						`cursor record not written for ${dir} (${errText(err)}) — ` +
 							"the wake-up WAS sent; the same fact may repeat after a session restart (advisory)",
 					);
 				}
@@ -568,6 +650,13 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		if (stopped) return;
 		stopped = true;
 		clearInterval(timer);
+		if (ownsJournalReader && journalReader !== null && journalReader !== undefined) {
+			try {
+				(journalReader as Partial<JournalReader>).close?.();
+			} catch {
+				// advisory — a close failure never propagates
+			}
+		}
 	};
 
 	return { tick, stop };
@@ -624,11 +713,11 @@ export function stopWatcher(): void {
 	}
 }
 
-/** Structured send outcome (watcher stage B; the durable store canon is
+/** Structured send outcome (watcher stage B; the durable cursor canon is
  *  src/watch-store.ts): the INTERNAL
  *  contract of the delivery sink. `mode: "silent"` means the build has no
  *  usable `pi.sendUserMessage` (headless/old pi) — the tick treats it as
- *  "not a delivery": nothing is committed to the durable store and the
+ *  "not a delivery": nothing is committed to the durable cursor and the
  *  memory keys are not rolled back (the existing "headless watcher is
  *  silent but unbroken" contract). Full delivery CONFIRMATION would require
  *  changes on the pi side (out of scope for stage B) — every real send is
@@ -853,7 +942,7 @@ export function startWatcher(
 		// §23: the retire TTL threads the same way.
 		// Watcher stage A: the legacy fail-open rollback threads from
 		// watch.legacyFailOpen (default false — fail-closed delivery).
-		// Watcher stage B: the durable delivered-facts store switch threads
+		// Watcher stage B: the durable journal-cursor switch threads
 		// from watch.durableDelivery (default true — commit after send).
 		detect: {
 			staleAfterMs: cfg.staleAfterMs,

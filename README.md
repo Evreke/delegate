@@ -67,11 +67,13 @@ a **validated JSON report** is on disk — never when the agent status says done
   worker died without a report, collected-but-still-mounted worker. No `sleep 1500`.
   The watcher is session-keyed: exactly one mount per session, and a second mount for the
   same session file is refused rather than silently replaced.
-  Delivered facts are durable: a session restart does NOT re-wake you on already-delivered
-  facts (one file per session per task directory). Emergency rollback:
-  `watch.durableDelivery: false`. One-time note: the first run after upgrading on a
-  resumed session may produce a single volley of repeated wake-ups (bounded by ownership
-  and the 24 h lookback) — the durable store starts empty and is never seeded.
+  Delivered facts are durable via the per-audience journal cursor
+  (`cursor-<key>.json` in the task directory, fed by the fleet journal's
+  `eventsAfter` read): a session restart does NOT re-wake you on already-delivered
+  facts. Emergency rollback: `watch.durableDelivery: false`. One-time note: the first run
+  after upgrading on a resumed session may produce a single volley of repeated wake-ups
+  (bounded by ownership and the 24 h lookback) — the cursor starts at zero and is never
+  seeded. The retired `delivered-*.json` files are inert leftovers, safe to delete.
 - **File mailbox.** `q-<name>.json` / `a-<name>.json` — send follow-ups to a running worker
   or answer its questions without respawning it.
 - **Strict reports.** The completion criterion is a **validated JSON report** with evidence
@@ -170,14 +172,17 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   explicit config `watch.legacyFailOpen: true`, which is unsafe on a machine with several
   sessions. A session that cannot read its own identity delivers nothing unconditionally
   (no config escape).
-- Delivered wake-up facts survive a session restart: each audience session commits its
-  delivery records to `delivered-<key>.json` in the task directory (one file per session,
-  written only after a successful send). Repeated wake-ups after a restart are therefore
-  gone; the emergency rollback is `watch.durableDelivery: false` (back to memory-only
-  dedup, no new version needed). On the first run after upgrading, a resumed session may
-  emit a one-time volley of repeated wake-ups (the store starts empty and is never
-  seeded; the volley is bounded by the ownership gate and the 24 h lookback). On a shared
-  machine, updated and not-yet-updated sessions behave differently until all are updated.
+- Delivered wake-up facts survive a session restart via the per-audience journal
+  cursor: each audience session commits its delivery records to `cursor-<key>.json` in
+  the task directory (one file per session per task dir), fed by the fleet journal's
+  `eventsAfter` read and written only after a successful send. Repeated wake-ups after a
+  restart are therefore gone; the emergency rollback is `watch.durableDelivery: false`
+  (back to memory-only dedup, no new version needed). On the first run after upgrading, a
+  resumed session may emit a one-time volley of repeated wake-ups (the cursor starts at
+  zero and is never seeded; the volley is bounded by the ownership gate and the 24 h
+  lookback). The retired `delivered-*.json` files are inert leftovers — safe to delete.
+  On a shared machine, updated and not-yet-updated sessions behave differently until all
+  are updated.
 - **Windows: real-host QA gate.** A real-Windows E2E run (delegate spawn →
   report → wake → mailbox, with herdr for Windows) is NOT part of CI — only
   Windows-shaped path tests (`path.win32` fixtures) run on the POSIX CI. An
@@ -438,14 +443,17 @@ done/idle.
   `watch.legacyFailOpen: true`; это небезопасно на машине с несколькими сессиями. Сессия,
   которая не может прочитать собственную идентичность, не доставляет ничего безусловно
   (конфигурационного выхода нет).
-- Факты доставки пробуждений переживают рестарт сессии: каждая сессия-аудитория коммитит
-  свои записи доставки в `delivered-<ключ>.json` в каталоге задачи (один файл на сессию,
-  запись только после успешной отправки). Повторных пробуждений после рестарта больше нет;
-  аварийный откат — `watch.durableDelivery: false` (возврат к дедупу в памяти, без новой
-  версии). При первом запуске после обновления возобновлённая сессия может выдать
-  разовый залп повторных пробуждений (хранилище стартует пустым и никогда не
-  засевается; залп ограничен гейтом владения и суточным горизонтом). На общей машине
-  обновлённые и ещё не обновлённые сессии ведут себя по-разному, пока не обновлены все.
+- Факты доставки пробуждений переживают рестарт сессии через пер-аудиторный курсор
+  журнала: каждая сессия-аудитория коммитит свои записи доставки в `cursor-<ключ>.json`
+  в каталоге задачи (один файл на сессию на каталог задачи), который питается чтением
+  `eventsAfter` журнала флотов и пишется только после успешной отправки. Повторных
+  пробуждений после рестарта больше нет; аварийный откат — `watch.durableDelivery: false`
+  (возврат к дедупу в памяти, без новой версии). При первом запуске после обновления
+  возобновлённая сессия может выдать разовый залп повторных пробуждений (курсор стартует
+  с нуля и никогда не засевается; залп ограничен гейтом владения и суточным горизонтом).
+  Устаревшие файлы `delivered-*.json` — инертные остатки, их можно безопасно удалить.
+  На общей машине обновлённые и ещё не обновлённые сессии ведут себя по-разному, пока
+  не обновлены все.
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

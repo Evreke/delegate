@@ -846,7 +846,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 
 /**
  * Deduped detection over a whole snapshot. `seen` is the watcher's memory
- * cache (watcher stage B: a CACHE of the durable delivered-facts store, not
+ * cache (watcher stage B / #26: a CACHE of the durable journal cursor, not
  * the source of truth): a map from the canonical eventKey to the PARSED
  * DeliveryKey — the reset loop reads the structure, it never re-splits a
  * key string (the old right-to-left `split("#")` survived only while the

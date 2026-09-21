@@ -135,7 +135,7 @@ import {
 import { archiveReport } from "./archive.ts";
 import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
 import { EXTENSION_VERSION } from "./version.ts";
-import { manifestStore, type ManifestWorker } from "./manifest-store.ts";
+import { manifestDepthFor, manifestStore, type ManifestWorker } from "./manifest-store.ts";
 import { parseBriefSchema, validateReportAgainstSchema } from "./report-schema.ts";
 import {
 	questionPathFor,
@@ -782,6 +782,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					model: model as string,
 					thinking: thinking as string,
 					startedAt: startedAtDate.toISOString(),
+					// SwarmGraph level (milestone swarm-core-v1, issue #28): the ONE write
+					// site for `depth` — the manifest append at spawn. The spawning
+					// session's authority decides the level (root → 0, sub → parent+1).
+					depth: manifestDepthFor(transport.capabilities().authority),
 					schemaProvenance,
 					embodiment: { run: embodiment.run, placementRef: embodiment.placementRef },
 					...(orchestratorSessionPath ? { orchestratorSessionPath } : {}),

@@ -68,7 +68,8 @@ export interface ManifestExtras {
  *   - read-only
  * Raises: none
  * Wave 2 (Law 9): this is the ONE manifest-extras reader — the ambient widget
- * (buildWidgetRows) and the overlay (buildRow) both consume it; the former
+ * (the former buildWidgetRows/overlay buildRow consumed it; both went with
+ * the ambient UI removal — the status tool is the remaining consumer); the former
  * index.ts copy is deleted.
  */
 export async function readManifestExtras(dir: string, name: string): Promise<ManifestExtras> {
@@ -94,7 +95,8 @@ export async function readManifestExtras(dir: string, name: string): Promise<Man
 			extras.orchestratorSessionPath = w.orchestratorSessionPath;
 		}
 		// Watcher stage A: the manifest-level fleet owner feeds the canonical
-		// display mapping (classifyOwnership → workerAudienceMatch) so a
+		// display mapping (the former fleet.ts classifyOwnership mapping intent →
+		// workerAudienceMatch) so a
 		// known-foreign master is rendered foreign, not unknown.
 		if (typeof manifest.masterSessionPath === "string" && manifest.masterSessionPath.length > 0) {
 			extras.masterSessionPath = manifest.masterSessionPath;

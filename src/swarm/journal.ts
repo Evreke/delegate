@@ -32,7 +32,7 @@
  * DELETE may appear in the family, and `journal-check.ts` scans these sources
  * for write keywords so the deferral is a tested state, not a convention.
  *
- * Dependencies: `bun:sqlite` (the platform driver — Law 1, the platform is the
+ * Dependencies: the sqlite driver via `./journal-driver.ts` (adaptive bun:sqlite / node:sqlite — pi runs under both runtimes; see that module's contract).
  * API), pi's `getAgentDir()`, node builtins, and `./clock.ts` (the injected
  * ClockPort supplies `ts`). No herdr adapter import (Law 4).
  *
@@ -46,7 +46,7 @@
  *     stored.
  */
 
-import { Database } from "bun:sqlite";
+import { openJournalDatabase, type JournalDb } from "./journal-driver.ts";
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -263,8 +263,8 @@ function safeKind(input: unknown): string {
 	return typeof k === "string" ? k : "unknown";
 }
 
-function readUserVersion(db: Database): number {
-	const row = db.query("PRAGMA user_version").get() as { user_version?: number } | null;
+function readUserVersion(db: JournalDb): number {
+	const row = db.queryOne<{ user_version?: number }>("PRAGMA user_version");
 	return Number(row?.user_version ?? 0);
 }
 
@@ -273,10 +273,10 @@ function readUserVersion(db: Database): number {
  * carries a FUTURE `user_version` (Law 7 gate) — the caller degrades to an
  * advisory no-op writer.
  */
-function openDatabase(dbPath: string, busyTimeoutMs?: number): Database | null {
+function openDatabase(dbPath: string, busyTimeoutMs?: number): JournalDb | null {
 	try {
 		mkdirSync(dirname(dbPath), { recursive: true });
-		const db = new Database(dbPath, { create: true });
+		const db = openJournalDatabase(dbPath, { create: true });
 		if (readUserVersion(db) > JOURNAL_DB_VERSION) {
 			db.close();
 			return null;
@@ -306,7 +306,7 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 		baseMs: opts.retry?.baseMs ?? JOURNAL_RETRY_DEFAULTS.baseMs,
 		maxMs: opts.retry?.maxMs ?? JOURNAL_RETRY_DEFAULTS.maxMs,
 	};
-	let db: Database | null = openDatabase(dbPath, opts.busyTimeoutMs);
+	let db: JournalDb | null = openDatabase(dbPath, opts.busyTimeoutMs);
 	let closed = false;
 
 	return {

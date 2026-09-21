@@ -15,12 +15,12 @@
  * file, a future `user_version`, a missing table or a corrupt row payload
  * yields an empty/valid result, never a throw.
  *
- * Dependencies: `bun:sqlite` (Law 1), node builtins, and `./journal.ts` (the
+ * Dependencies: the sqlite driver via `./journal-driver.ts` (adaptive, Law 1), node builtins, and `./journal.ts` (the
  * ONE location resolver + the Law 7 version gate + the closed kind set). No
  * herdr adapter import (Law 4).
  */
 
-import { Database } from "bun:sqlite";
+import { openJournalDatabase, type JournalDb } from "./journal-driver.ts";
 import { existsSync, statSync } from "node:fs";
 import { isJournalKind, journalDbPath, JOURNAL_DB_VERSION, type JournalKind } from "./journal.ts";
 
@@ -104,20 +104,19 @@ function mapRow(r: EventRow): JournalEvent | null {
  * Open the journal read-only. Returns null when the file is absent, cannot be
  * opened, or carries a FUTURE `user_version` (Law 7 gate → empty result).
  */
-function openReadOnly(dbPath: string): Database | null {
+function openReadOnly(dbPath: string): JournalDb | null {
 	try {
 		if (!existsSync(dbPath)) return null;
 		// NOTE: `{ create: false }` throws SQLITE_MISUSE on bun 1.3.x, so the
-		// existsSync guard above is the create gate instead.
-		const db = new Database(dbPath);
-		const row = db.query("PRAGMA user_version").get() as { user_version?: number } | null;
+		// existsSync guard above is the create gate instead (the driver's bun leg
+		// opens without the create option for the same reason).
+		const db = openJournalDatabase(dbPath);
+		const row = db.queryOne<{ user_version?: number }>("PRAGMA user_version");
 		if (Number(row?.user_version ?? 0) > JOURNAL_DB_VERSION) {
 			db.close();
 			return null;
 		}
-		const table = db
-			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'")
-			.get();
+		const table = db.queryOne("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'");
 		if (!table) {
 			db.close();
 			return null;
@@ -135,7 +134,7 @@ function openReadOnly(dbPath: string): Database | null {
  */
 export function createJournalReader(opts: JournalReaderOptions = {}): JournalReader {
 	const dbPath = opts.dbPath ?? journalDbPath();
-	const db: Database | null = openReadOnly(dbPath);
+	const db: JournalDb | null = openReadOnly(dbPath);
 
 	function queryEvents(after: number, q: JournalQuery): JournalEvent[] {
 		if (db === null) return [];
@@ -160,7 +159,7 @@ export function createJournalReader(opts: JournalReaderOptions = {}): JournalRea
 				sql += " LIMIT ?";
 				params.push(Math.max(0, Math.floor(q.limit)));
 			}
-			return (db.query(sql).all(...params) as EventRow[])
+			return (db.queryAll<EventRow>(sql, params))
 				.map(mapRow)
 				.filter((e): e is JournalEvent => e !== null);
 		} catch {
@@ -182,7 +181,7 @@ export function createJournalReader(opts: JournalReaderOptions = {}): JournalRea
 		count() {
 			if (db === null) return 0;
 			try {
-				const row = db.query("SELECT COUNT(*) AS c FROM events").get() as { c?: number } | null;
+				const row = db.queryOne<{ c?: number }>("SELECT COUNT(*) AS c FROM events");
 				return Number(row?.c ?? 0);
 			} catch {
 				return 0;

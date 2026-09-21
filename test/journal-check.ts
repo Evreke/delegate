@@ -16,8 +16,9 @@
  *       derived state through `eventsAfter(0)` only.
  *   J4  Cursor semantics (§4.1.2): `eventsAfter(cursor)` is strictly `seq >
  *       cursor`, ascending; per-task and per-worker reads are scoped.
- *   J5  Closed v1 kind set: exactly the 13 kinds; all accepted; an unknown
- *       kind is refused and stored nowhere.
+ *   J5  Closed kind set: exactly the 14 kinds (the §4.1.2 thirteen plus
+ *       `report`, the operator-approved #23 addition); all accepted; an
+ *       unknown kind is refused and stored nowhere.
  *   J6  Append-only by absence: no UPDATE/DELETE in the writer sources, no
  *       INSERT/UPDATE/DELETE in the reader, and no update/delete methods on
  *       either handle (the §4.1.2 compaction path is deferred).
@@ -282,6 +283,7 @@ const EXPECTED_KINDS = [
 	"answer",
 	"steer",
 	"progress",
+	"report",
 	"retire",
 	"dead-reboot",
 	"reconcile-summary",
@@ -290,8 +292,8 @@ const EXPECTED_KINDS = [
 	"partial-report",
 ];
 check(
-	"J5.1 the kind set is exactly the 13 §4.1.2 kinds",
-	JOURNAL_KINDS.length === 13 && EXPECTED_KINDS.every((k) => (JOURNAL_KINDS as readonly string[]).includes(k)),
+	"J5.1 the kind set is exactly the 14 kinds (§4.1.2 thirteen + `report`, the #23 addition)",
+	JOURNAL_KINDS.length === 14 && EXPECTED_KINDS.every((k) => (JOURNAL_KINDS as readonly string[]).includes(k)),
 	JOURNAL_KINDS.join(","),
 );
 {
@@ -305,8 +307,8 @@ check(
 	const bad = await kw.append({ kind: "not-a-kind" as never, sessionId: "s", task: "t" });
 	const kr = createJournalReader({ dbPath: kindsDb });
 	check(
-		"J5.2 all 13 kinds are accepted; an unknown kind is refused and stored nowhere",
-		allAccepted && bad.ok === false && bad.code === "E_JOURNAL_KIND" && kr.count() === 13,
+		"J5.2 all 14 kinds are accepted; an unknown kind is refused and stored nowhere",
+		allAccepted && bad.ok === false && bad.code === "E_JOURNAL_KIND" && kr.count() === 14,
 		JSON.stringify({ allAccepted, bad, count: kr.count() }),
 	);
 	kr.close();

@@ -38,6 +38,8 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, r
 import { basename, resolve } from "node:path";
 import type { AuthorityMode, Placement } from "./host.ts";
 import { exchangeRoot } from "./exchange.ts";
+import { resolveSwarmStorage } from "./swarm/storage.ts";
+import { createJournalManifestStore } from "./swarm/journal-manifest-store.ts";
 
 // ---------------------------------------------------------------------------
 // Law 7 — on-disk formats are versioned contracts (shared version gate)
@@ -247,7 +249,7 @@ export interface ExchangeManifest {
 // Manifest
 // ---------------------------------------------------------------------------
 
-function manifestPath(dir: string): string {
+export function manifestPath(dir: string): string {
 	return resolve(dir, "manifest.json");
 }
 
@@ -350,6 +352,11 @@ export function updateManifest(
  * createMemoryManifestStore (in-memory Map — makes the previously
  * untestable competing-writers class of bugs deterministically testable).
  * Parity between the two is pinned by test/manifest-store-check.ts.
+ * Phase B (issue #23, ARCHITECTURE §4.1.3) adds the third implementation —
+ * createJournalManifestStore (journal = truth, manifest.json a byte-frozen
+ * projection), which lives in src/swarm/journal-manifest-store.ts (the
+ * journal module family owns the sqlite seam; Law 5 keeps this module under
+ * threshold) and is re-exported here; the same parity check pins all three.
  */
 export interface ManifestStore {
 	read(dir: string): ExchangeManifest | null;
@@ -434,9 +441,38 @@ export function createMemoryManifestStore(): ManifestStore {
 	return store;
 }
 
-/** The process-default manifest store: file-backed, production behavior.
- *  Consumers import THIS, never the raw functions. */
-export const manifestStore: ManifestStore = createFileManifestStore();
+/**
+ * The process-default manifest store, selected ONCE at module load from the
+ * `swarm.storage` config flag (ARCHITECTURE §4.1.3, issue #23): "files"
+ * (the default this release) binds the file-backed production store;
+ * "journal" binds the journal-backed store (journal = truth, manifest.json
+ * a byte-frozen projection, gated additionally by `swarm.projection`). The
+ * selection is TOTAL: any config/journal-setup failure degrades to the
+ * file store (advisory by contract, Law 8 — the storage flag can never
+ * break the pipeline). Consumers import THIS, never the raw functions.
+ */
+function selectDefaultManifestStore(): ManifestStore {
+	try {
+		const cfg = resolveSwarmStorage();
+		if (cfg.storage === "journal") {
+			return createJournalManifestStore({
+				dbPath: cfg.dbPath,
+				sessionId: cfg.sessionId,
+				projection: cfg.projection,
+			});
+		}
+	} catch {
+		// advisory — fall through to the file store
+	}
+	return createFileManifestStore();
+}
+
+export const manifestStore: ManifestStore = selectDefaultManifestStore();
+
+// Phase B (issue #23): the third port implementation lives in the journal
+// module family (src/swarm/journal-manifest-store.ts) and is re-exported
+// here so consumers have ONE import site for all three implementations.
+export { createJournalManifestStore } from "./swarm/journal-manifest-store.ts";
 
 // ---------------------------------------------------------------------------
 // Global scan
@@ -503,7 +539,7 @@ export function scanAllManifests(activeBackend: string): ExchangeManifest[] {
  *   - the manifest object is not mutated in place when nothing is dropped
  * Raises: never
  */
-function filterForeignBackendWorkers(m: ExchangeManifest, activeBackend: string): ExchangeManifest {
+export function filterForeignBackendWorkers(m: ExchangeManifest, activeBackend: string): ExchangeManifest {
 	const kept = m.workers.filter((w) => {
 		const backend = (w as { placement?: { backend?: unknown } } | null)?.placement?.backend;
 		return !(typeof backend === "string" && backend.length > 0 && backend !== activeBackend);

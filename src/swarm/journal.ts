@@ -41,7 +41,9 @@
  *     `PRAGMA user_version = 1` is the Law 7 version gate for the database.
  *   - `createJournalWriter()` and `append()` are total: they return structured
  *     results and never throw (advisory-by-contract, Law 8).
- *   - The kind set is closed at 13; an unknown kind is refused, not stored.
+ *   - The kind set is closed (14 kinds; the §4.1.2 thirteen plus `report`,
+ *     the operator-approved #23 addition); an unknown kind is refused, not
+ *     stored.
  */
 
 import { Database } from "bun:sqlite";
@@ -78,9 +80,8 @@ export function journalDbPath(): string {
 // Law 7 — the database version gate + the pinned v1 DDL
 // ---------------------------------------------------------------------------
 
-/** Database schema version (Law 7). `PRAGMA user_version` absent (0) is a
- *  fresh database and migrates to 1; a value ABOVE this is a future version
- *  this build cannot parse — writers refuse, readers yield empty. */
+/** Database schema version (Law 7). Absent (0) migrates to 1; ABOVE this a
+ *  future version writers refuse, readers yield empty. */
 export const JOURNAL_DB_VERSION = 1;
 
 /**
@@ -103,8 +104,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_fleet ON events(session_id, task, seq);`;
 
-/** The single-statement append. Payload/ts are bound parameters — never
- *  interpolated. */
+/** The single-statement append (bound params, never interpolated). */
 const INSERT_EVENT_SQL =
 	"INSERT INTO events(ts, kind, session_id, task, worker, payload) VALUES (?, ?, ?, ?, ?, ?)";
 
@@ -112,10 +112,10 @@ const INSERT_EVENT_SQL =
 // The closed v1 kind set (§4.1.2) — new kinds only by addition, never rename
 // ---------------------------------------------------------------------------
 
-/** The 13 v1 kinds: the issue's 11 PLUS `reconcile-summary` and
- *  `compaction-marker` (operator-approved additions in §4.1.2). The last two
- *  kinds (`termination-notice`, `partial-report`) are forward-compat with
- *  #15: reserved in the schema before their producers land. */
+/** The closed v1 kinds (additive-only, §4.1.2): the issue's 11 plus
+ *  `reconcile-summary`, `compaction-marker`, and the #23 `report` addition
+ *  (payload = the validated report JSON verbatim). `termination-notice` /
+ *  `partial-report` are forward-compat (#15) before their producers land. */
 export const JOURNAL_KINDS = [
 	"spawn",
 	"stamp",
@@ -124,6 +124,7 @@ export const JOURNAL_KINDS = [
 	"answer",
 	"steer",
 	"progress",
+	"report",
 	"retire",
 	"dead-reboot",
 	"reconcile-summary",
@@ -181,8 +182,7 @@ export interface JournalAppendInput {
 // Bounded, jittered SQLITE_BUSY backoff (§4.1.2 cross-process rule)
 // ---------------------------------------------------------------------------
 
-/** Bounded SQLITE_BUSY retry budget: attempts (incl. the first), exponential
- *  base in ms, and a per-delay ceiling in ms. */
+/** Bounded SQLITE_BUSY retry budget: attempts, base/exponential ms, and max ms. */
 export interface JournalRetryOptions { attempts?: number; baseMs?: number; maxMs?: number; }
 
 export const JOURNAL_RETRY_DEFAULTS: Required<JournalRetryOptions> = { attempts: 4, baseMs: 20, maxMs: 400 };

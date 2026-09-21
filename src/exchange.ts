@@ -109,8 +109,7 @@ import {
 import * as nodePath from "node:path";
 import * as nodePathWin32 from "node:path/win32";
 import {
-	readManifest,
-	updateManifest,
+	manifestStore,
 	type ExchangeManifest,
 	type TaskUsageSnapshot,
 } from "./manifest-store.ts";
@@ -148,6 +147,7 @@ export type {
 } from "./manifest-store.ts";
 export {
 	createFileManifestStore,
+	createJournalManifestStore,
 	createMemoryManifestStore,
 	manifestStore,
 	readManifest,
@@ -448,7 +448,11 @@ export function applyFleetTaskFields(
  * Raises: never
  */
 export function aggregateTaskUsage(dir: string): TaskUsageSnapshot | null {
-	const manifest = readManifest(dir);
+	// Law 9 (one writer of truth per mode): read through the manifest PORT, not
+	// the raw file. In journal mode (Phase B, #23) the fleet lives in the journal
+	// — with `swarm.projection=false` there is no manifest.json at all, and a
+	// raw file read would silently see zero workers (split-brain).
+	const manifest = manifestStore.read(dir);
 	if (!manifest) return null;
 	const snapshot: TaskUsageSnapshot = {
 		workers: manifest.workers.length,
@@ -499,7 +503,12 @@ export function aggregateTaskUsage(dir: string): TaskUsageSnapshot | null {
  */
 export async function persistTaskUsageSnapshot(dir: string, snapshot: TaskUsageSnapshot): Promise<void> {
 	try {
-		await updateManifest(dir, (m) => ({ ...m, usage: snapshot }));
+		// Law 9 (one writer of truth per mode): write through the manifest PORT.
+		// In journal mode this is a fleet-scoped `usage` STAMP event (the journal
+		// store's top-level diff); the usage-cache file is written only as part of
+		// the projection (`swarm.projection=true`) — with projection disabled the
+		// usage line is recovered by journal replay, never by a raw file write.
+		await manifestStore.update(dir, (m) => ({ ...m, usage: snapshot }));
 	} catch {
 		/* cache write failed — the recomputed totals remain the answer */
 	}

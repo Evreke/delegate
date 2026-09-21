@@ -37,7 +37,7 @@
  * single call site, ever.
  * Exported surface: AudienceVerdict, OwnerFields, SessionIdentity,
  * AudienceOptions, workerAudienceMatch, SessionRole, sessionRole,
- * sameSessionPath.
+ * sameSessionPath, ownerFieldsFromJournalRows, journalAudienceMatch.
  * Error modes: none — every read degrades (non-string/garbage owner fields
  * read as absent), never throws.
  */
@@ -312,4 +312,80 @@ export function sessionRole(
 		}
 	}
 	return { isWorker, ownsChildren };
+}
+
+/**
+ * The owner fields a journal ROW proves for a worker (#26: ownership verdicts
+ * become predicates over journal rows). The Phase B `spawn` payload carries
+ * the manifest `entry` inline (§4.1.2 — the journal is where briefs survive a
+ * reboot); the `stamp` payload carries single manifest fields. This helper
+ * folds the LATEST row for the worker (highest `seq` if present, else last in
+ * order) into the canonical OwnerFields shape — `orchestratorSessionPath`
+ * (worker-level canon) and `masterSessionPath` (fleet fallback).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: rows (untyped journal rows), worker (canonical name)
+ * Output: the proven OwnerFields for the worker (empty when nothing proves one)
+ * Guarantees: tolerant (garbage reads as absent), pure, never throws
+ * Raises: never
+ */
+export function ownerFieldsFromJournalRows(
+	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; payload?: unknown }>,
+	worker: string,
+): OwnerFields {
+	const out: OwnerFields = {};
+	let bestSeq = -Infinity;
+	const fold = (entry: unknown): void => {
+		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return;
+		const e = entry as Record<string, unknown>;
+		const orch = nonEmptyString(e.orchestratorSessionPath);
+		const master = nonEmptyString(e.masterSessionPath);
+		if (orch !== undefined) out.orchestratorSessionPath = orch;
+		if (master !== undefined) out.masterSessionPath = master;
+	};
+	for (const row of rows ?? []) {
+		if (row === null || typeof row !== "object") continue;
+		if (row.worker !== worker) continue;
+		const seq = typeof row.seq === "number" && Number.isFinite(row.seq) ? row.seq : -0.5;
+		if (seq < bestSeq) continue; // only the latest row wins per field
+		bestSeq = seq;
+		const payload = row.payload;
+		if (payload === null || typeof payload !== "object" || Array.isArray(payload)) continue;
+		const p = payload as Record<string, unknown>;
+		if (row.kind === "spawn") fold(p.entry);
+		else if (row.kind === "stamp") {
+			// A stamp names one manifest field: {field, value}. The fleet-level
+			// master owner rides a worker:null stamp; a worker stamp can still
+			// carry orchestratorSessionPath (spawn writes it as entry, so this
+			// covers a later path repair).
+			const field = p.field;
+			if (field === "orchestratorSessionPath") fold({ orchestratorSessionPath: p.value });
+			else if (field === "masterSessionPath") fold({ masterSessionPath: p.value });
+		}
+	}
+	return out;
+}
+
+/**
+ * The canonical wake-ownership verdict evaluated over JOURNAL ROWS (#26) —
+ * the journal-row twin of {@link workerAudienceMatch}, with the SAME
+ * fail-closed semantics: the rows prove the owner fields, the verdict is the
+ * unchanged four-way table, and an empty proof delivers nothing ("no-owner")
+ * exactly as a legacy manifest does. Foreign fleets stay untouched.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: rows, worker, self identity, owner options
+ * Output: one of the four AudienceVerdict values
+ * Guarantees: pure and tolerant; identical verdict semantics to
+ *   workerAudienceMatch (the journal only changes WHERE the owner fields come
+ *   from, never the fail-closed rule); never throws
+ * Raises: never
+ */
+export function journalAudienceMatch(
+	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; payload?: unknown }>,
+	worker: string,
+	self: SessionIdentity,
+	opts: AudienceOptions,
+): AudienceVerdict {
+	return workerAudienceMatch(ownerFieldsFromJournalRows(rows, worker), self, opts);
 }

@@ -117,13 +117,13 @@ import {
 	type WatchWorker,
 } from "../src/observe.ts";
 import {
-	appendDeliveredRecords,
-	deliveredStorePathFor,
-	deliveryRecordKey,
 	questionPathFor,
-	readDeliveredStore,
 	reportPathFor,
 	watcherKeyFor,
+	commitWatchCursor,
+	cursorRecordKey,
+	watchCursorPathFor,
+	readWatchCursor,
 	type ExchangeManifest,
 	type ManifestWorker,
 } from "../src/exchange.ts";
@@ -382,9 +382,9 @@ const kindsOf = (events: WatchEvent[]): string => events.map((e) => e.kind).sort
  *  a string. */
 const newSeen = (): Map<string, DeliveryKey> => new Map<string, DeliveryKey>();
 
-/** THIS test audience's durable store for a task dir. */
+/** THIS test audience's durable cursor for a task dir. */
 const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
-	readDeliveredStore(dir, watcherKeyFor(sessionFile));
+	readWatchCursor(dir, watcherKeyFor(sessionFile));
 
 // ---------------------------------------------------------------------------
 // W3. report-ready (+ report-invalid distinct message)
@@ -1902,7 +1902,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 		);
 		check(
 			"W17.2b the record key is the canonical three-component JSON array",
-			recKeys1[0] === deliveryRecordKey("w-restart", "report-ready", store1.records[recKeys1[0]!]?.fingerprint ?? ""),
+			recKeys1[0] === cursorRecordKey("w-restart", "report-ready", store1.records[recKeys1[0]!]?.fingerprint ?? ""),
 			recKeys1[0] ?? "",
 		);
 		h1.stop();
@@ -2142,7 +2142,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 				commitCalls++;
 				if (breakCommit) throw new Error("store write broken");
 				// otherwise behave exactly like the real writer
-				await appendDeliveredRecords(cdir, watcherKeyFor(TEST_SELF), TEST_SELF, entries, new Date().toISOString(), "sent");
+				await commitWatchCursor(cdir, watcherKeyFor(TEST_SELF), TEST_SELF, entries, new Date().toISOString(), "sent");
 			},
 			snapshot: async () => snap,
 			self: { sessionFile: TEST_SELF },
@@ -2162,7 +2162,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 		);
 		check(
 			"W17.11d the failed commit leaves the audit line (a repeat is possible after a restart)",
-			logs.some((m) => /durable delivery record not written/.test(m) && /restart/.test(m)),
+			logs.some((m) => /cursor record not written/.test(m) && /restart/.test(m)),
 			JSON.stringify(logs),
 		);
 		breakCommit = false;
@@ -2198,7 +2198,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 		});
 		const b = await h.tick();
 		check(
-			"W17.12 a batch spanning two task dirs is ONE message and TWO store files (one per dir)",
+			"W17.12 a batch spanning two task dirs is ONE message and TWO cursor files (one per dir)",
 			b.length === 2 && sent.length === 1 &&
 				Object.keys(ownStore(dirA).records).length === 1 &&
 				Object.keys(ownStore(dirB).records).length === 1,
@@ -2254,10 +2254,10 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 			log: () => {},
 		});
 		await hT.tick();
-		const before = readFileSync(deliveredStorePathFor(dirT, watcherKeyFor(TEST_SELF)), "utf8");
-		writeFileSync(deliveredStorePathFor(dirT, watcherKeyFor(TEST_SELF)), "{corrupt"); // transient torn file
-		check("W17.15 a torn store read suppresses nothing extra in memory (no re-delivery)", (await hT.tick()).length === 0 && sentT.length === 1);
-		writeFileSync(deliveredStorePathFor(dirT, watcherKeyFor(TEST_SELF)), before); // the transient error is over
+		const before = readFileSync(watchCursorPathFor(dirT, watcherKeyFor(TEST_SELF)), "utf8");
+		writeFileSync(watchCursorPathFor(dirT, watcherKeyFor(TEST_SELF)), "{corrupt"); // transient torn file
+		check("W17.15 a torn cursor read suppresses nothing extra in memory (no re-delivery)", (await hT.tick()).length === 0 && sentT.length === 1);
+		writeFileSync(watchCursorPathFor(dirT, watcherKeyFor(TEST_SELF)), before); // the transient error is over
 		check(
 			"W17.16 the transient read error did NOT erase the durable keys",
 			Object.keys(ownStore(dirT).records).length === 1,
@@ -2289,17 +2289,17 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 		});
 		const b = await h.tick();
 		check(
-			"W17.17 durableDelivery:false → the memory-only dedup, no store file ever created",
+			"W17.17 durableDelivery:false → the memory-only dedup, no cursor file ever created",
 			b.length === 1 && sent.length === 1,
 		);
 		let storeFileExists = false;
 		try {
-			readFileSync(deliveredStorePathFor(dir, watcherKeyFor(TEST_SELF)));
+			readFileSync(watchCursorPathFor(dir, watcherKeyFor(TEST_SELF)));
 			storeFileExists = true;
 		} catch {
 			storeFileExists = false;
 		}
-		check("W17.17b the rollback creates no store file", !storeFileExists);
+		check("W17.17b the rollback creates no cursor file", !storeFileExists);
 		h.stop();
 	}
 

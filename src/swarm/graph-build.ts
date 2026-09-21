@@ -39,6 +39,7 @@ import {
 import {
 	dedupeEdges,
 	ORPHAN_DEGRADED_FLAG,
+	ORPHAN_REASON,
 	sortEdges,
 	sortOrphans,
 	type SwarmEdge,
@@ -63,6 +64,8 @@ interface TaskAcc {
 	dir?: string;
 	description?: string;
 	workers: SwarmWorkerEmbodiment[];
+	/** Fallback depth from the journal `spawn` payload (manifest workers win). */
+	depth?: number;
 }
 
 function nonEmpty(v: unknown): string | undefined {
@@ -89,8 +92,12 @@ function safeRole(roleFn: SwarmRoleFn, path: string, manifests: ExchangeManifest
 
 function normalizeUsage(u: SwarmUsageSummary): SwarmUsageSummary {
 	const out: SwarmUsageSummary = {};
-	if (typeof u.outputTokens === "number") out.outputTokens = u.outputTokens;
-	if (u.contextPct !== undefined) out.contextPct = u.contextPct;
+	if (typeof u.outputTokens === "number" && Number.isFinite(u.outputTokens)) out.outputTokens = u.outputTokens;
+	// contextPct is `number | null`; a non-numeric/garbage value is dropped
+	// (never copied into the graph — determinism/type guarantee).
+	if (u.contextPct === null || (typeof u.contextPct === "number" && Number.isFinite(u.contextPct))) {
+		out.contextPct = u.contextPct;
+	}
 	return out;
 }
 
@@ -228,7 +235,7 @@ export async function projectSwarmGraph(
 					worker: name,
 					run: typeof w.embodiment?.run === "number" ? w.embodiment.run : null,
 					...(placementRef === undefined ? {} : { placementRef }),
-					reason: "legacy-orphan",
+					reason: ORPHAN_REASON,
 				});
 			}
 
@@ -281,9 +288,14 @@ export async function projectSwarmGraph(
 	// ---- journal projection ------------------------------------------------
 	const journal = projectJournal(events);
 	for (const id of journal.tasks) ensureTask(id);
+	for (const t of journal.taskDepths) {
+		const acc = ensureTask(t.id);
+		if (acc.depth === undefined) acc.depth = t.depth;
+	}
 	for (const s of journal.sessions) {
 		const acc = ensureSession(s.id, s.path);
 		for (const t of s.tasks) acc.tasks.add(t);
+		if (typeof s.depth === "number") acc.depths.push(s.depth);
 	}
 	for (const e of journal.edges) edges.push(e);
 
@@ -323,9 +335,9 @@ export async function projectSwarmGraph(
 			node.isWorker = role.isWorker;
 			node.ownsChildren = role.ownsChildren;
 		}
+		if (acc.depths.length > 0) node.depth = Math.min(...acc.depths);
 		const worker = acc.workerMeta;
 		if (worker !== undefined) {
-			if (acc.depths.length > 0) node.depth = Math.min(...acc.depths);
 			if (!sources.liveStatus) {
 				addDegraded(flags, degraded("no-live-status"));
 			} else {
@@ -369,16 +381,17 @@ export async function projectSwarmGraph(
 		};
 		const depths = workers.map((w) => w.depth).filter((d): d is number => typeof d === "number");
 		if (depths.length > 0) node.depth = Math.min(...depths);
+		else if (typeof acc.depth === "number") node.depth = acc.depth;
 		if (orphanTasks.has(acc.id)) addDegraded(flags, degraded(ORPHAN_DEGRADED_FLAG));
 		if (workers.some((w) => w.sessionPath === undefined)) addDegraded(flags, degraded("no-session-path"));
 		if (workers.length > 0 && typeof deps.usage !== "function") addDegraded(flags, degraded("usage-unavailable"));
-		if (!sources.manifests && workers.length === 0) addDegraded(flags, degraded("legacy-orphan"));
 		node.degraded = sortDegraded(flags);
 		taskNodes.push(node);
 	}
 
 	return {
 		schemaVersion,
+		available: true,
 		sources,
 		nodes: sortNodes([...sessionNodes, ...taskNodes]),
 		edges: sortEdges(dedupeEdges(edges)),

@@ -41,13 +41,17 @@ export interface SwarmEdge {
 	at?: string;
 }
 
+/** The orphan reason token (the issue's "legacy entries without a resolvable
+ *  parent" — a manifest-only concept; journal-only nodes never carry it). */
+export const ORPHAN_REASON = "legacy-orphan" as const;
+
 /** One legacy entry without a resolvable parent. */
 export interface SwarmOrphan {
 	task: string;
 	worker: string;
 	run: number | null;
 	placementRef?: string;
-	reason: "legacy-orphan";
+	reason: typeof ORPHAN_REASON;
 }
 
 /** Stable dedup key for one edge (the `at` is part of the identity: a worker

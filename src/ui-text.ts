@@ -2,11 +2,11 @@
  * pi-delegate — width-safe shared text helpers for UI rendering.
  * <p>
  * MODULE_CONTRACT: the ONE spelling of the width-safe text primitives every
- * UI surface shares — stripAnsi, visibleWidth, trunc, clampLines (and the
- * private charWidth they build on). This module is a LEAF: it imports nothing
- * from src/ (node/pi types only, and here it needs neither). Every other UI
- * module (fleet-widget, fleet-overlay, the status tool) imports these from
- * here; local duplicates were deleted (quality fix A7 — the former
+ * rendering surface shares — stripAnsi, visibleWidth, trunc, clampLines,
+ * renderDelegateLines (and the private charWidth/wrapLine they build on).
+ * This module is a LEAF: it imports nothing from src/ (pi types only).
+ * Consumers: the status tool, the delegate/mailbox tools' transcript
+ * rendering; local duplicates were deleted (quality fix A7 — the former
  * triplication had DIVERGENT semantics under the same names).
  * Owned invariants (moved verbatim from the old fleet.ts SECTION 2/4):
  *   - line-width-clamping: clampLines is the single guard every TUI-rendered
@@ -80,4 +80,87 @@ export function clampLines(lines: string[], width?: number): string[] {
 	if (typeof width !== "number" || !Number.isFinite(width) || width <= 0) return lines;
 	const w = Math.floor(width);
 	return lines.map((l) => (visibleWidth(l) <= w ? l : trunc(l, w)));
+}
+
+// ---------------------------------------------------------------------------
+// renderDelegateLines — delegate-family tool-result rendering (moved verbatim
+// from the removed fleet-widget.ts; the ambient widget/overlay surfaces were
+// removed with them — this is the functional part the tools consume).
+// ---------------------------------------------------------------------------
+
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+
+interface FgTheme {
+	fg?: (color: ThemeColor, text: string) => string;
+}
+
+/** herdr internals that must never appear in visible lines (details only). */
+const HERD_ID_RE = /\b(?:terminal_id|pane_id|workspace_id)=[^\s,;)]+/gi;
+const HERD_ID_PLACEHOLDER = "<herdr ids in details>";
+
+/** Recoverable codes render as warning; the rest as error. */
+const WARNING_CODES = new Set(["E_TIMEOUT", "E_PROMPT_STALLED"]);
+
+/** Word-wrap at ~100 columns on spaces (plain-text details, ANSI-free input). */
+function wrapLine(text: string, width = 100): string[] {
+	const out: string[] = [];
+	let current = "";
+	for (const word of text.split(/\s+/).filter(Boolean)) {
+		if (current.length === 0) {
+			current = word;
+		} else if (current.length + 1 + word.length <= width) {
+			current += ` ${word}`;
+		} else {
+			out.push(current);
+			current = word;
+		}
+	}
+	if (current.length > 0) out.push(current);
+	return out;
+}
+
+/**
+ * Render one delegate-family tool result as themed lines for the transcript.
+ * Rules: status-colored badge; E_* code as error/warning;
+ * ONE-line verdict headline; herdr internals (terminal_id/pane_id/… patterns)
+ * NEVER in the headline — caller still puts them in details. Returns lines.
+ */
+export function renderDelegateLines(
+	toolName: string,
+	resultText: string,
+	theme: unknown,
+): string[] {
+	const th = theme as FgTheme;
+	const fg = (color: ThemeColor, text: string): string =>
+		th && typeof th.fg === "function" ? th.fg(color, text) : text;
+
+	const allLines = (resultText ?? "").split("\n");
+	const rawHeadline = allLines[0] ?? "";
+	const detailText = allLines.slice(1).join(" ").trim();
+
+	// Badge selection: AWAITING_ANSWER → warning; E_* → error/warning; else OK.
+	let badge: string;
+	if (/\bAWAITING_ANSWER\b/.test(rawHeadline)) {
+		badge = fg("warning", "[AWAITING_ANSWER]");
+	} else {
+		const codeMatch = rawHeadline.match(/^E_[A-Z_]+/);
+		if (codeMatch) {
+			const code = codeMatch[0];
+			badge = fg(WARNING_CODES.has(code) ? "warning" : "error", `[${code}]`);
+		} else {
+			badge = fg("success", "[OK]");
+		}
+	}
+
+	// Headline: one line, herdr internals stripped (details carry them).
+	const headline = rawHeadline.replace(HERD_ID_RE, HERD_ID_PLACEHOLDER);
+	const lines = [`${fg("muted", `[${toolName}]`)} ${badge} ${headline}`];
+
+	// Up to 3 wrapped detail lines, herdr internals stripped.
+	if (detailText.length > 0) {
+		const stripped = detailText.replace(HERD_ID_RE, HERD_ID_PLACEHOLDER);
+		const wrapped = wrapLine(stripped).slice(0, 3);
+		for (const w of wrapped) lines.push(fg("dim", `  ${w}`));
+	}
+	return lines;
 }

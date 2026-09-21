@@ -34,7 +34,7 @@ import { archiveRoot, listArchivedTasks } from "./archive.ts";
 import { type TaskUsageSnapshot, manifestStore } from "./manifest-store.ts";
 import { mailboxAnswerState } from "./mailbox-store.ts";
 import { clampLines } from "./ui-text.ts";
-import { renderDelegateLines } from "./fleet-widget.ts";
+import { renderDelegateLines } from "./ui-text.ts";
 import { type WorkerView } from "./worker-view.ts";
 import {
 	contextPct,

@@ -297,8 +297,8 @@ the exchange layout (`/tmp/exchange/<task>/brief-<name>.md` on Linux/macOS). If 
 did not resolve, the call returns a structured error (`E_TIER`) with a recovery hint; if
 `herdr` is missing while `"host"` is `"herdr"`, the tools refuse up front.
 
-The `/delegate-teardown` command and the fleet overlay/`delegate_status` tool become
-available immediately after the session starts.
+The `/delegate-teardown` command and the `delegate_status` tool become available
+immediately after the session starts.
 
 ---
 

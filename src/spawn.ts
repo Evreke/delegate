@@ -47,10 +47,10 @@
  * Dependencies: ./host.ts (the Transport seam + E_* taxonomy + briefPrompt),
  * exchange.ts (manifest/report/mailbox lifecycle + archive), usage.ts
  * (session-JSONL gauges), observe.ts (watch/collect config resolution),
- * fleet.ts (render helpers + idle nudge). Never imports the transport
+ * ui-text.ts (render helpers). Never imports the transport
  * implementation (dependency rule, ARCHITECTURE.md Law 4 — the Transport instance is
  * injected from index.ts). Import graph: spawn is the root consumer —
- * transport/exchange/fleet/observe are all imported BY this module and none
+ * transport/exchange/observe are all imported BY this module and none
  * of them import it (DAG holds, no module-eval cycles).
  * Exported surface: registerDelegateTool (the delegate_mailbox tool moved
  * verbatim to src/mailbox-tool.ts in Wave 3 — registerDelegateTool keeps its
@@ -186,8 +186,7 @@ import { TEARDOWN_LOG_NAME } from "./expaths.ts";
 // moved verbatim to src/pre-placement.ts; execute() consumes the discriminated
 // results.
 import { applyGaugeGovernor, validateNameAndBrief } from "./pre-placement.ts";
-import { clampLines } from "./ui-text.ts";
-import { renderDelegateLines } from "./fleet-widget.ts";
+import { clampLines, renderDelegateLines } from "./ui-text.ts";
 import {
 	CONTEXT_CRITICAL_PCT,
 	CONTEXT_TURNS_WARN,
@@ -423,7 +422,6 @@ import { appendWatcherAudit } from "./watcher.ts";
 import {
 	briefSchemaViolationNote,
 	detectBriefTierMismatch,
-	maybeNotifyFleetIdle,
 	resolveBriefReportSchema,
 	resolveTierPlacement,
 } from "./spawn-phases.ts";
@@ -1027,8 +1025,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			};
 
 			// Last-live-worker nudge (wave 3 decomposition, Law 5 continuation):
-			// moved verbatim to the module-level maybeNotifyFleetIdle above — it
-			// reads no closure state, only the injected transport, ctx and the
+						// reads no closure state, only the injected transport, ctx and the
 			// manifest dir passed at each call site.
 
 			//
@@ -1187,8 +1184,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				const collectedStampNote = collectedNote ? `\nWarning: ${collectedNote}` : "";
 				journal(pi, "collect", canonical, report.status, archivePath ?? undefined);
 				// Last live worker settled → teardown nudge.
-				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-				// v1.12.1: the collect is DONE here (report valid, collectedAt
+								// v1.12.1: the collect is DONE here (report valid, collectedAt
 				// stamped) — the auto-teardown below can only append an advisory
 				// note, never change this result's verdict.
 				const teardownNote = await teardownAfterCollect();
@@ -1301,8 +1297,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const probeSalvage = (): ToolResult | null => {
 				if (!isProbe) return null;
 				if (!sessionPath || parseSessionUsage(sessionPath).turns === 0) return null;
-				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-				return textResult(
+								return textResult(
 					`probe OK (detached after settle) — smoke gate passed before the abort (agent ${canonical}, smoke reply in session). ` +
 						"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
 						"Run one probe before any ≥3 fan-out." +
@@ -1579,8 +1574,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// probe is probe FAIL — never let the console status produce a spurious
 				// 'probe OK' (the original spurious-pass bug half-survived here).
 				if (settle.kind === "never-started") {
-					void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-					return fail(
+										return fail(
 						"E_START",
 						`probe FAIL — worker never started (prompt never consumed) for ${canonical}; ` +
 							"inspect the console via a console read (readConsole); do NOT fan out. Probes write no report file." +
@@ -1611,8 +1605,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				}
 				const markerSeen = typeof consoleText === "string" && /OUTPUT:\s*OK/i.test(consoleText);
 				if (markerSeen) {
-					void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-					return textResult(
+										return textResult(
 						`probe OK — smoke reply verified in worker output ("OUTPUT: OK", agent ${canonical}, status ${live}). ` +
 							"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
 							"Probe is optional: skip it when the environment is already trusted. " +
@@ -1634,8 +1627,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					typeof consoleText === "string" && consoleText.trim().length > 0
 						? ` Console tail: …${consoleText.trim().slice(-300)}`
 						: " Console readback unavailable — verdict from status only.";
-				void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-				if (live === "idle" || live === "done") {
+								if (live === "idle" || live === "done") {
 					return fail(
 						"E_START",
 						`probe FAIL — agent ${canonical} ${live} but the smoke reply "OUTPUT: OK" was not found in its output.${consoleEvidence} ` +
@@ -1813,8 +1805,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const b = gaugeSummary();
 			// A settle (even a failed one) that empties the fleet still fires the
 			// teardown nudge.
-			void maybeNotifyFleetIdle({ transport, ctx, manifestDir });
-			return fail(
+						return fail(
 				code,
 				`${code} — worker ${canonical} settled but ${what}.\n` +
 					"Treat as a failed spawn: do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate). " +

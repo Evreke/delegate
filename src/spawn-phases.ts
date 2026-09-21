@@ -16,8 +16,6 @@
  *     ("" when no mismatch / unreadable brief / probe run);
  *   - briefSchemaViolationNote — the "base schema passes, brief fragment
  *     rejects" guidance note the caller appends to E_REPORT_INVALID;
- *   - maybeNotifyFleetIdle — the advisory last-live-worker nudge (fires
- *     notifyFleetIdle only when zero workers are working/blocked).
  * None of them reads any of the seven closure-scoped mutables spawn.ts's
  * MODULE_CONTRACT names as the shared phase state (sessionPath,
  * manifestWarning, reportPath, tierWarning, questionDetected, lastBeat,
@@ -26,28 +24,23 @@
  * the pre-extraction inline region; only the phase boundary became a
  * discriminated result. The structural edges are pinned by
  * test/spawn-shrink-check.ts.
- * Dependencies: host.ts (the Transport seam type — the injected transport is
- * a maybeNotifyFleetIdle argument, never an import; the SpawnTier type
- * comes from the same module), tool-result.ts (the fail/errText vocabulary),
- * report-schema.ts (resolveReportSchema/validateReport), manifest-store.ts
- * (the task manifest read behind the nudge), fleet-widget.ts
- * (notifyFleetIdle), plus node:fs/promises, node:path and pi's
- * CONFIG_DIR_NAME for the two-tier schema-library resolution. Never imports
- * spawn.ts — spawn is the root consumer, the DAG holds (ARCHITECTURE.md
- * Laws 4 and 5).
+ * Dependencies: host.ts (the Transport seam type and the SpawnTier type),
+ * tool-result.ts (the fail/errText vocabulary), report-schema.ts
+ * (resolveReportSchema/validateReport), plus node:fs/promises, node:path and
+ * pi's CONFIG_DIR_NAME for the two-tier schema-library resolution. Never
+ * imports spawn.ts — spawn is the root consumer, the DAG holds
+ * (ARCHITECTURE.md Laws 4 and 5).
  * Error modes: never throws past the boundary — resolveTierPlacement and
  * resolveBriefReportSchema return {ok:false, failure} carrying the
  * structured E_TIER / E_BRIEF tool result, which the caller returns
  * verbatim; the advisory phases (detectBriefTierMismatch,
- * briefSchemaViolationNote, maybeNotifyFleetIdle) swallow their own
- * failures by contract and never alter a verdict.
+ * briefSchemaViolationNote) swallow their own failures by contract and
+ * never alter a verdict.
  */
 
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { notifyFleetIdle } from "./fleet-widget.ts";
-import { manifestStore } from "./manifest-store.ts";
 import { resolveReportSchema, validateReport } from "./report-schema.ts";
 import { errText, fail, type ToolResult } from "./tool-result.ts";
 import type { SpawnTier, Transport } from "./host.ts";
@@ -316,41 +309,4 @@ export function briefSchemaViolationNote(input: SchemaViolationNoteInput): strin
 		}
 	}
 	return schemaNote;
-}
-
-/** Explicit inputs of the last-live-worker nudge (no closure state). */
-export interface FleetIdleInput {
-	/** The injected Transport seam (the live-worker sensor). */
-	transport: Transport;
-	/** The tool context (notifyFleetIdle's UI handle). */
-	ctx: import("@earendil-works/pi-coding-agent").ExtensionContext;
-	/** The task dir whose manifest holds the worker count. */
-	manifestDir: string;
-}
-
-/**
- * The last-live-worker nudge as a PURE-over-its-args function (verbatim logic
- * from the execute closure): when no worker is live (working/blocked) anymore
- * after this collect, fire notifyFleetIdle with the task manifest's worker
- * count. Advisory — never affects outcomes.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: transport, ctx, manifestDir (all explicit — no closure state)
- * Output: resolves when the (skippable) nudge attempt is done
- * Guarantees:
- *   - fires only when zero workers are working/blocked; any failure
- *     (herdr unreachable) is swallowed — advisory only
- * Raises: never
- */
-export async function maybeNotifyFleetIdle(input: FleetIdleInput): Promise<void> {
-	const { transport, ctx, manifestDir } = input;
-	try {
-		const statuses = await transport.listStatuses();
-		const live = statuses.filter((s) => s.status === "working" || s.status === "blocked");
-		if (live.length === 0) {
-			notifyFleetIdle(ctx, manifestStore.read(manifestDir)?.workers.length ?? 1);
-		}
-	} catch {
-		// advisory only — herdr unreachable → skip the nudge
-	}
 }

@@ -2,10 +2,10 @@
  * pi-delegate — worker view aggregation (the single shared read-model).
  * <p>
  * MODULE_CONTRACT: merges durable on-disk manifests with live transport
- * statuses into WorkerView records, and reads the manifest extras the UI
- * surfaces need beyond WorkerView. This is the ONE read-model consumed by the
- * ambient widget, the /delegate-fleet overlay and the delegate_status tool —
- * the single source of truth for "what does the fleet look like right now".
+ * statuses into WorkerView records, and reads the manifest extras the
+ * delegate_status tool surfaces beyond WorkerView. This is the ONE read-model
+ * consumed by the status tool and the /delegate-teardown command — the single
+ * source of truth for "what does the fleet look like right now".
  * Strictly READ-ONLY: manifest scans, satellite-stamp merges, report-file
  * existence probes and the read-only transport.listStatuses() — no mutating
  * call, no mailbox write. Moved verbatim out of the old fleet.ts SECTION 5/5
@@ -14,8 +14,8 @@
  * Dependencies: ./host.ts (the Transport seam + Placement/AgentStatusName
  * types), manifest-store.ts (manifestStore), watch-store.ts (the watcher
  * satellite stamp layers), fs-probe.ts (tolerant report-exists probe). It
- * imports NO other fleet module (no fleet-widget, no fleet-overlay, no
- * fleet.ts) — it sits BELOW them in the layering.
+ * imports no presentation module (no ui-text rendering, no commands) — it
+ * sits BELOW them in the layering.
  * Exported surface: WorkerView, buildWorkerView, ManifestExtras,
  * readManifestExtras.
  * Owned invariants (moved verbatim):

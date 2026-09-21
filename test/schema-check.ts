@@ -26,8 +26,11 @@ import {
 	loadLibrarySchema,
 	progressPathFor,
 	readLastProgress,
+	readManifest,
 	resolveReportSchema,
 	resolveReportSchemaInDir,
+	updateManifest,
+	type ManifestWorker,
 } from "../src/exchange.ts";
 
 let failures = 0;
@@ -316,6 +319,52 @@ function writeSchema(name: string, schema: unknown): void {
 	const noneValidPath = progressPathFor(root, "nonevalid");
 	writeFileSync(noneValidPath, "garbage\n{broken\n", "utf8");
 	check("readLastProgress: no valid line → null", readLastProgress(noneValidPath) === null);
+}
+
+// ---------------------------------------------------------------------------
+// 8. manifest depth field (swarm-core-v1, issue #28) — additive optional field
+//    with no schemaVersion bump: it round-trips when present, and LEGACY
+//    manifests without it keep parsing unchanged.
+// ---------------------------------------------------------------------------
+
+{
+	const depthDir = join(root, "manifest-depth");
+	const worker = (depth?: number): ManifestWorker => ({
+		name: "w1",
+		placement: { kind: "tab", checkoutPath: root, backend: "fake" },
+		briefPath: join(briefs, "brief.md"),
+		reportPath: join(briefs, "report-w1.json"),
+		provider: "p",
+		model: "m",
+		thinking: "low",
+		startedAt: "2026-01-01T00:00:00.000Z",
+		...(depth === undefined ? {} : { depth }),
+	});
+
+	// Present depth round-trips, and the writer does NOT bump schemaVersion.
+	const written = await updateManifest(depthDir, (m) => ({
+		...m,
+		workers: [...m.workers, worker(1)],
+	}));
+	const readBack = readManifest(depthDir);
+	check(
+		"depth present → round-trips; schemaVersion stays 1 (no bump)",
+		readBack?.workers[0]?.depth === 1 && written.schemaVersion === 1,
+		JSON.stringify(readBack?.workers[0]),
+	);
+
+	// A legacy entry without depth parses unchanged (field simply absent).
+	const legacyDir = join(root, "manifest-depth-legacy");
+	await updateManifest(legacyDir, (m) => ({
+		...m,
+		workers: [...m.workers, worker()],
+	}));
+	const legacy = readManifest(legacyDir);
+	check(
+		"legacy entry without depth parses unchanged (depth absent, not null)",
+		legacy?.workers.length === 1 && legacy.workers[0]?.depth === undefined,
+		JSON.stringify(legacy?.workers[0]),
+	);
 }
 
 // ---------------------------------------------------------------------------

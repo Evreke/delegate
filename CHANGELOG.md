@@ -28,7 +28,40 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   root, no live transport, no usage) still yields a valid snapshot/events
   result with degraded fields, exit 0 (Law 8). The read verbs require no
   worker identity and join the frozen verb surface by addition (§4.1.1).
-
+- **`swarm` CLI — the five worker verbs, Phase A (#18, swarm-core-v1).**
+  `bun <extension>/src/swarm/cli.ts read-brief|write-report|ask|poll-answer|write-progress`
+  is the worker contract. Phase A output is byte-identical to the file
+  writers it replaces (golden/parity checks); raw-path worker prompts keep
+  working unchanged.
+- **Fleet event journal — SQLite, single-writer, append-only (#22).** One
+  shared database at `<agentDir>/delegate-journal/events.db` (WAL,
+  `synchronous = FULL`, `user_version = 1` — the Law 7 version gate); the
+  closed fourteen-kind set (including `report` — payload = the validated
+  report JSON, appended after the atomic publish); bounded `SQLITE_BUSY`
+  backoff for cross-process writers; advisory by contract: a journal
+  failure can never fail a spawn or collect.
+- **Phase B storage flag — journal = truth, files = projection (#23).**
+  `swarm.storage: "files" | "journal"` (default `"files"`) and
+  `swarm.projection` (default `true`, journal mode only) gate the
+  journal-backed ManifestStore: verb writes append journal events first,
+  then write the byte-frozen `manifest.json` projection; with
+  `projection: false` reads are served by journal replay alone. Parity
+  with the file store is check-pinned; the default flip to `"journal"` is
+  a separate operator-approved cutover, not bundled here.
+- **Resume reconciliation — the honest fleet picture after a reboot
+  (#27).** On session start (journal mode) every owned worker's placement
+  liveness is probed through the Transport seam; each dead placement gets
+  a terminal `dead-reboot` event and each affected fleet exactly one
+  `reconcile-summary` wake ("N workers lost to reboot, briefs preserved,
+  M reports collected before loss"). Foreign/owner-less rows in
+  mixed-ownership fleets are skipped (auditable `skipped` field), never
+  marked lost; the run is advisory and never blocks session start.
+- **SwarmGraph read-model — the canonical fleet projection (#29).**
+  `buildSwarmGraph` is a pure, deterministic, never-throws projection over
+  the journal, the manifest store and optional live status; its serialized
+  JSON is a versioned contract (`schemaVersion`, Law 7) pinned by a golden
+  check. Law 13's read path now has its projection layer; the read API
+  (#30) is the next client surface.
 ### Changed
 
 - **Watcher consumes the journal cursor; the delivered-facts store is
@@ -70,6 +103,15 @@ Regression: `test/report-contract-check.ts` (fallback/verb phrasing),
 `test/rpc-host-unit-check.ts` (R9 env delivery), `test/profile-check.ts` (P12
 resolver) and the opt-in `test/swarm-verbs-e2e-check.ts` (`RPC_E2E=1`: a live rpc
 worker writes its report through `swarm write-report`).
+
+### Fixed
+
+- **Adaptive sqlite driver — the extension must load under node too.** The
+  journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
+  (node ≥ 22.13); a statically chosen driver crashed the extension import
+  chain under the node runtime, so every rpc worker spawn died `E_START`
+  before this fix. Driver choice is confined to `src/swarm/journal-driver.ts`
+  (the #31 static pin's confinement glob covers it).
 
 ## [1.18.0] — 2026-09-21
 

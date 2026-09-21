@@ -62,12 +62,11 @@ import type { SessionUsage, SpawnTier } from "./host.ts";
  * Input: none
  * Output: 30 minutes in ms — the ONE staleness threshold
  * Guarantees:
- *   - lives in THIS module (a layer both observe.ts and fleet.ts already
- *     import) so watcher and fleet read one value with no import cycle:
- *     observe.ts re-exports it (WATCH_DEFAULT_STALE_AFTER_MS), fleet.ts
- *     aliases it (FLEET_STALE_AFTER_MS). Before the migration the literal
- *     was duplicated by hand in both files (fleet.ts could not import
- *     observe.ts — observe imports fleet's render helpers).
+ *   - lives in THIS module (a layer observe.ts already imports) so watcher
+ *     code reads one value with no import cycle: observe.ts re-exports it
+ *     (WATCH_DEFAULT_STALE_AFTER_MS). Before the migration the literal was
+ *     duplicated by hand in two files. (The fleet.ts alias went with the
+ *     ambient-UI removal.)
  * Raises: never */
 export const WATCH_DEFAULT_STALE_AFTER_MS = 30 * 60_000;
 import {

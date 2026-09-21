@@ -31,9 +31,6 @@
  *       the execute() closure.
  *   P5  the DAG holds: src/pre-placement.ts and src/spawn-phases.ts never
  *       import src/spawn.ts (spawn is the root consumer).
- *   P6  the last-live-worker nudge is module-level (in src/spawn-phases.ts
- *       since the Law 5 continuation) and every call site passes its three
- *       explicit deps (no closure capture remained).
  *   P7  behavior through the REAL tool: the three refusals the moved region
  *       owns come back byte-identical — E_NAME, E_CONTEXT, E_BUDGET — and
  *       none of them ever reaches transport.place().
@@ -199,12 +196,6 @@ const allSrc = spawnSrc + "\n" + preSrc;
 			`spawn.ts=${inSpawn} pre-placement.ts=${inPre} spawn-phases.ts=${inPhases}`,
 		);
 	}
-	// The advisory nudge text is owned by fleet-widget.ts (notifyFleetIdle) —
-	// the shrink moved only the CALLER, so the widget's text must stay put.
-	check(
-		"P2 the fleet-idle nudge text stays owned by src/fleet-widget.ts",
-		readSrc("fleet-widget.ts").includes("fleet idle — /delegate-teardown to clean up ${placedCount} tabs"),
-	);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,10 +222,9 @@ const allSrc = spawnSrc + "\n" + preSrc;
 		/export interface SchemaResolutionInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
 		/export interface TierMismatchInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
 		/export interface SchemaViolationNoteInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
-		/export interface FleetIdleInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
 	];
 	const ifaceSrc = ifaceParts.join("\n");
-	check("P3.1 all seven extracted-phase input interfaces were found", ifaceParts.every((p) => p.length > 0));
+	check("P3.1 all six extracted-phase input interfaces were found", ifaceParts.every((p) => p.length > 0));
 	for (const m of mutables) {
 		const fieldShape = new RegExp(`(^|\\n)\\s*(readonly\\s+)?${m}\\??\\s*[:,]`, "m");
 		check(
@@ -277,26 +267,10 @@ const allSrc = spawnSrc + "\n" + preSrc;
 }
 
 // ---------------------------------------------------------------------------
-// P6. The fleet-idle nudge left the closure.
-// ---------------------------------------------------------------------------
-
-{
-	const callSites = spawnSrc.split("void maybeNotifyFleetIdle({ transport, ctx, manifestDir });").length - 1;
-	check(
-		"P6.1 the nudge is a module-level function over explicit args, not a closure arrow",
-		/async function maybeNotifyFleetIdle\(input: FleetIdleInput\): Promise<void> \{/.test(phasesSrc) &&
-			!/const maybeNotifyFleetIdle = /.test(phasesSrc) &&
-			!/async function maybeNotifyFleetIdle\(/.test(spawnSrc),
-	);
-	check(
-		"P6.2 every call site passes the three explicit deps (advisory fire-and-forget kept)",
-		callSites >= 5 && spawnSrc.split("void maybeNotifyFleetIdle(").length - 1 === callSites,
-		`callSites=${callSites}`,
-	);
-}
-
-// ---------------------------------------------------------------------------
 // P7. Behavior through the REAL delegate tool — the three moved refusals.
+// (The P6 nudge pins were retired with the fleet-idle nudge itself — the
+// ambient UI removal took the notifyFleetIdle surface with it; the caller
+// sites in spawn.ts were deleted in the same change.)
 // ---------------------------------------------------------------------------
 
 {

@@ -8,6 +8,12 @@ Version numbers align with the iteration numbering in DESIGN.md (v1.x sections).
 
 ## [Unreleased]
 
+### Removed
+
+- The ambient fleet widget, the `/delegate-fleet` full-screen overlay, and every module and check that existed only for those TUI surfaces (`fleet-widget.ts`, `fleet-overlay.ts`, the `fleet.ts` ownership-display layer, and their render/tree/split checks). The functional parts survive: `renderDelegateLines` (delegate-family tool-result transcript rendering) moved to `ui-text.ts`; `delegate_status` and `/delegate-teardown` are unchanged. The `delegate-fleet` journal event name is kept (frozen surface).
+
+## [Unreleased]
+
 ### Added — Task passport (per-run provenance)
 
 Every delegated run now leaves a passport in the task manifest:

@@ -1,21 +1,21 @@
 /**
- * pi-delegate — commands: the /delegate-fleet + /delegate-teardown commands —
+ * pi-delegate — commands: the /delegate-teardown command —
  * extracted verbatim from observe.ts (Wave 3, audit Law 5: modules are
  * responsibilities; the code's own history: verbatim move from index.ts in
  * W6 — ex src/commands.ts, absorbed there in W5).
  * <p>
- * MODULE_CONTRACT: registers the two user-invoked commands (exact names,
- * frozen surface). /delegate-fleet opens the mission-control overlay
- * (headless → no-op); /delegate-teardown confirms, then tears workers down
+ * MODULE_CONTRACT: registers the user-invoked teardown command (exact name,
+ * frozen surface). /delegate-teardown confirms, then tears workers down
  * SEQUENTIALLY (one mutating op at a time is also enforced inside the
  * transport), pre-logging every planned op to <exchange dir>/teardown.log
  * before it runs. Never runs on its own — user-invoked command only.
- * Dependencies: fleet.ts (buildWorkerView + overlay/dispose), expaths.ts +
+ * Dependencies: worker-view.ts (the shared read-model), expaths.ts +
  * exchange.ts (the shared teardown-audit trail helpers), host.ts (the
  * Transport seam + DelegateError), watcher.ts (errText — one spelling until
- * step 4 moves it to tool-result.ts). The watcher/teardown state these
- * commands drive lives in watcher.ts (mount registry) and fleet.ts (UI
- * mount registry).
+ * step 4 moves it to tool-result.ts). The teardown state this command drives
+ * lives in watcher.ts (mount registry). The /delegate-fleet overlay command
+ * and the ambient widget were removed (operator decision — TUI surfaces are
+ * out of scope); disposeFleetUI calls went with them.
  */
 
 import { appendFile } from "node:fs/promises";
@@ -23,15 +23,13 @@ import { join } from "node:path";
 import { TEARDOWN_LOG_NAME } from "./expaths.ts";
 import { teardownLogLine } from "./exchange.ts";
 import { buildWorkerView } from "./worker-view.ts";
-import { disposeFleetUI } from "./fleet-widget.ts";
-import { openFleetOverlay } from "./fleet-overlay.ts";
 // Wave 3 decomposition (step 4): errText lives in src/tool-result.ts — the
 // commands copy is deleted (audit finding 7, one definition per helper).
 import { asDelegateError, errText } from "./tool-result.ts";
 import { type DelegateError, type Transport } from "./host.ts";
 
 // ===========================================================================
-// SECTION 3/3 — /delegate-fleet + /delegate-teardown commands
+// SECTION 3/3 — the /delegate-teardown command
 // (verbatim move from index.ts in W6 — ex src/commands.ts, absorbed there in
 // W5; this module owns the watcher/teardown state these commands drive. The
 // commands.ts errText copy is NOT re-duplicated: observe already has an
@@ -54,17 +52,6 @@ async function logTo(dir: string, line: string): Promise<void> {
 }
 
 export function registerCommands(pi: import("@earendil-works/pi-coding-agent").ExtensionAPI, transport: Transport) {
-	pi.registerCommand("delegate-fleet", {
-		description: "Mission-control overlay: live worker fleet status, reports, mailbox, budget burn (read-only)",
-		async handler(_args, ctx) {
-			// Headless guard (pi docs Mode Behavior, same pattern as mountFleetUI):
-			// the overlay is a TUI surface and the non-TUI early return in
-			// openFleetOverlay would notify into a UI that is not there.
-			if (!ctx.hasUI || !ctx.ui) return; // headless → no-op
-			await openFleetOverlay(ctx, { transport });
-		},
-	});
-
 	pi.registerCommand("delegate-teardown", {
 		description: "Confirm + sequentially tear down all delegate workers (pre-logged, never automatic)",
 		async handler(_args, ctx) {
@@ -81,9 +68,6 @@ export function registerCommands(pi: import("@earendil-works/pi-coding-agent").E
 			const views = await buildWorkerView(transport);
 			if (views.length === 0) {
 				ctx.ui.notify("No delegate workers to tear down.", "info");
-				// Nothing left to observe — also clear the ambient fleet UI (restore
-				// footer) so no stale chip/widget survives an empty fleet.
-				disposeFleetUI();
 				return;
 			}
 
@@ -99,7 +83,6 @@ export function registerCommands(pi: import("@earendil-works/pi-coding-agent").E
 					`Nothing to tear down — all ${views.length} manifest entries are retired history.`,
 					"info",
 				);
-				disposeFleetUI();
 				return;
 			}
 
@@ -154,10 +137,6 @@ export function registerCommands(pi: import("@earendil-works/pi-coding-agent").E
 				}
 			}
 
-			// Teardown emptied the fleet: clear the ambient widget + restore the
-			// default footer via the module-level mount registry in fleet.ts
-			// (the mount registry is documented in report-impl-ui.json).
-			disposeFleetUI();
 			ctx.ui.notify(`Teardown finished:\n${outcomes.join("\n")}`, "info");
 		},
 	});

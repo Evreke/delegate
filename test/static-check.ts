@@ -278,7 +278,7 @@ check(
 //       - split on a path separator        dir.split("/")
 //       - probe classify by suffix         dir.endsWith("/_probe")
 //       - containment by concat            cwd.startsWith(root + "/")
-//     Comments are stripped first (BUG_FIX_CONTEXT prose at fleet.ts and
+//     Comments are stripped first (BUG_FIX_CONTEXT prose in the sources and
 //     herdr/host.ts legally documents the OLD shapes — it must not fire);
 //     string literals are scanned as-is (guidance strings live there).
 // ---------------------------------------------------------------------------
@@ -825,7 +825,6 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/spawn.ts", owner: "operator", targetRelease: "1.18.0", plan: "finish the delegate-tool flow split: execute the remaining SECTION banners, extract the compose/execute phases into modules" },
 	{ file: "src/herdr/host.ts", owner: "operator", targetRelease: "1.18.0", plan: "adapter split LANDED (commit 426851f: cli.ts = subprocess runner with SIGTERM-to-SIGKILL escalation, socket.ts = NDJSON unix-socket client, map.ts = answer mapping to the E_* taxonomy; facade re-exports preserve the value surface, pins S1-S8 guard it); remaining: shrink the facade's placement/teardown dispatch as later slices" },
 	{ file: "src/host/rpc.ts", owner: "operator", targetRelease: "1.18.0", plan: "extract the line-protocol framing and error classification from the transport lifecycle" },
-	{ file: "src/fleet-overlay.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract row rendering and overlay geometry; the read-model stays shared with worker-view.ts" },
 	{ file: "src/watch-detect.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the delivery fingerprint dedup next to the delivered-facts store" },
 	{ file: "src/watcher.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract per-session mount/teardown ownership from the observation tick" },
 	{ file: "src/host.ts", owner: "operator", targetRelease: "1.19.0", plan: "move error-guidance strings into an import-free module (the seam stays the bottom of the graph — duplicating strings there is allowed)" },
@@ -835,7 +834,6 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/watch-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract schema-version migration from record reading" },
 	{ file: "src/manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the concurrent update() fold from manifest file I/O" },
 	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
-	{ file: "src/fleet-widget.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the golden row rendering from widget composition" },
 	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 ];
 

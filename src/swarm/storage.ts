@@ -217,7 +217,13 @@ function writeJournalWarning(identity: { task: string; worker: string }, kind: J
  *   - TOTAL (Law 8): a journal open/write failure is a structured result,
  *     never a throw — the verb's projection write proceeds regardless
  *   - the writer is opened and closed within the call (the CLI is a one-shot
- *     process; no handle outlives the append)
+ *     process; no handle outlives the append). A process-lifetime writer was
+ *     considered (rev NIT) and deliberately NOT taken: one CLI process runs
+ *     exactly ONE verb append, so reuse buys nothing, while a cached handle
+ *     would hold WAL/shm fds for the process lifetime and complicate the
+ *     per-call dbPath (tests drive several paths in one process) and the
+ *     busy-retry open path. The bounded retry lives in journal.ts per append
+ *     either way.
  * Raises: never
  */
 export async function appendSwarmEvent(

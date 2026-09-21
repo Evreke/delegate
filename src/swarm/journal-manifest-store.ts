@@ -5,65 +5,55 @@
  *
  * MODULE_CONTRACT — a ManifestStore whose truth is the append-only journal
  * (./journal.ts): every append/update is folded into journal events FIRST
- * (`spawn` for a new worker entry, per-field `stamp` events for everything
- * a fold changes), and the manifest.json file is then regenerated as a
- * byte-frozen projection (Law 7 — the exact bytes createFileManifestStore
- * would write: serializeJsonFile via the ONE atomic writer). Reads REPLAY
- * the journal (eventsForTask, seq order) — never the projection — so the
- * journal alone carries the fleet (cutover criterion 2). With
- * `projection: false` no manifest.json is written at all.
+ * (`spawn` for a new worker entry, per-field `stamp` events for everything a
+ * fold changes), and manifest.json is then regenerated as a byte-frozen
+ * projection (Law 7 — the exact bytes createFileManifestStore would write:
+ * serializeJsonFile via the ONE atomic writer). Reads REPLAY the journal
+ * (eventsForTask, seq order) — never the projection — so the journal alone
+ * carries the fleet (cutover criterion 2). With `projection: false` no
+ * manifest.json is written at all.
  *
  * Event model (§4.1.2 payloads; additive `entry` on spawn):
- *   - append(dir, workerEntry)      → kind `spawn`, payload {backend,
- *     placementRef, briefPath, briefText, depth?, entry} — `entry` is the
- *     full ManifestWorker (additive per the §4.1.2 additive-only rule) so a
- *     replay can rebuild the manifest; `briefText` is the brief inline
- *     (§4.1.4 step 5 respawn needs nothing from a dead exchange root).
- *   - update(dir, fold)             → the fold is applied to the REPLAYED
- *     current state; the diff becomes `stamp` events ({field, value};
- *     worker-scoped per worker-entry field, fleet-scoped for the top-level
- *     fields description/masterSessionPath/usage/schemaVersion). A null
- *     value clears the field on replay (JSON cannot carry undefined).
+ *   - spawn {backend, placementRef, briefPath, briefText, depth?, entry} —
+ *     `entry` is the full ManifestWorker (additive) so replay rebuilds the
+ *     manifest; `briefText` is the brief inline (§4.1.4 step 5 respawn).
+ *   - stamp {field, value, entryIndex?} — worker-scoped (entryIndex = the
+ *     workers[] position the stamp mutates, so a same-name retry is not
+ *     retro-stamped; absent only on legacy rows → name-match fallback) or
+ *     fleet-scoped (worker NULL) for description/masterSessionPath/usage/
+ *     schemaVersion. A null value clears the field (JSON cannot carry
+ *     undefined).
  *   - collect (kind `collect`, worker-scoped) sets collectedAt = event ts on
- *     replay when unset — forward-compat with the dedicated collect event;
- *     this store itself expresses collection as a `stamp` of collectedAt
- *     (the dedicated collect-kind producer is the collect call-site in
- *     spawn.ts, outside #23's write scope).
+ *     replay when unset — forward-compat; this store expresses collection as
+ *     a collectedAt `stamp` (the collect-kind producer is deferred).
  *
- * Replay semantics mirror the file protocol exactly: workers are append-only
- * and matched by INDEX; worker-scoped stamps apply to every then-existing
- * entry carrying that name (the pipeline's own folds match by name), in seq
- * order, so a same-name retry spawned after a stamp is not retro-stamped.
- * Non-expressible folds (a worker RENAME, a shrunk workers array) skip the
- * journal append for that fact and still write the projection — recorded in
- * the `skipped` list, advisory (Law 8), never a throw.
+ * Replay semantics mirror the file protocol: workers are append-only and
+ * matched by INDEX, seq order. Non-expressible folds (RENAME, shrunk workers
+ * array) skip the journal append for that fact, are recorded in `skipped`,
+ * and still write the projection (advisory, Law 8; never a throw).
  *
- * Advisory by contract (Law 8 / Law 13): a journal append failure never
- * fails the store operation — the projection is still written and the
- * folded manifest still returned. A journal READ failure yields the
- * tolerant-empty plane (read → null, scan → []), exactly the file store's
- * corrupt-file behavior.
+ * Advisory by contract (Law 8 / Law 13): a journal append failure never fails
+ * the store operation — the projection is still written and the folded
+ * manifest returned. A journal READ failure yields the tolerant-empty plane
+ * (read → null, scan → []), exactly the file store's corrupt-file behavior.
  *
- * Fleet scoping: rows are keyed by (sessionId, task) where sessionId comes
- * from swarmSessionIdFor (./storage.ts — SWARM_SESSION_ID override, else a
- * stable dir hash; the true SwarmGraph SessionId wiring lands with the
- * spawn-side instrumentation, outside #23). scan() bounds the live set to
- * task dirs that EXIST under exchangeRoot() — the journal outlives pruned
- * exchange dirs, and the exchange root remains the liveness bound.
+ * Fleet scoping: rows are keyed by (sessionId, task) with sessionId from
+ * swarmSessionIdFor (./storage.ts — SWARM_SESSION_ID override, else a stable
+ * dir hash). scan() bounds the live set to task dirs that EXIST under
+ * exchangeRoot() — the journal outlives pruned exchange dirs.
  *
  * Dependencies: node builtins, @earendil-works/pi-coding-agent
- * (withFileMutationQueue — the same per-path serialization the file store
- * uses), ../exchange.ts (exchangeRoot ONLY), ../manifest-store.ts (the port
- * types + the ONE atomic writer + the foreign-backend filter + manifestPath),
- * ../clock.ts (ClockPort), ./journal.ts + ./journal-read.ts (the journal
- * module family — the ONLY sqlite seam), ./serialize.ts, ./storage.ts.
- * No herdr adapter import (Law 4); no sqlite driver import here.
+ * (withFileMutationQueue), ../exchange.ts (exchangeRoot ONLY),
+ * ../manifest-store.ts (port types + the ONE atomic writer + the foreign-
+ * backend filter + manifestPath), ../clock.ts (ClockPort), ./journal.ts +
+ * ./journal-read.ts (the ONLY sqlite seam), ./serialize.ts, ./storage.ts.
+ * No herdr import (Law 4); no sqlite driver import here.
  *
  * Critical invariants:
- *   - the journal is appended BEFORE the projection write (journal = truth);
- *     an append failure is recorded, never propagated;
+ *   - the journal is appended BEFORE the projection write; an append failure
+ *     is recorded, never propagated;
  *   - projection bytes are serializeJsonFile(next) via atomicWriteFileSync —
- *     byte-identical to updateManifest's writer (pinned by the parity check);
+ *     byte-identical to updateManifest's writer (pinned by the parity checks);
  *   - read/scan NEVER consult the projection file;
  *   - replay is total and order-deterministic (seq ascending).
  */
@@ -164,8 +154,8 @@ function isManifestWorkerish(v: unknown): v is ManifestWorker {
  *   - total: malformed rows/payloads are skipped, never a throw;
  *   - schemaVersion is the writer constant (a projection-format fact, not a
  *     journaled one); task/dir come from the dir argument;
- *   - worker-scoped stamps apply only to entries spawned by EARLIER events
- *     (sequential fold — same-name retries are not retro-stamped)
+ *   - worker-scoped stamps target the `entryIndex` entry (sequence-scoped — a
+ *     same-name retry is not retro-stamped; legacy rows → name match)
  * Raises: never
  */
 export function replayManifest(dir: string, events: JournalEvent[]): ExchangeManifest | null {
@@ -186,13 +176,24 @@ export function replayManifest(dir: string, events: JournalEvent[]): ExchangeMan
 			continue;
 		}
 		if (ev.kind === "stamp") {
-			const p = ev.payload as { field?: unknown; value?: unknown } | null;
+			const p = ev.payload as { field?: unknown; value?: unknown; entryIndex?: unknown } | null;
 			if (typeof p?.field !== "string") continue;
 			if (typeof ev.worker === "string") {
 				const cur = peek();
 				if (cur === null) continue;
-				for (const w of cur.workers) {
-					if (w.name !== ev.worker) continue;
+				// Sequence-scoped stamp (additive `entryIndex`): a same-name retry
+				// spawns a NEW entry at a later index, so a stamp must name the entry
+				// it mutates — otherwise a dead same-name entry is retro-stamped too.
+				// Legacy rows without `entryIndex` fall back to the name-match fold.
+				const idx = p.entryIndex;
+				const targets: ManifestWorker[] = [];
+				if (typeof idx === "number" && Number.isInteger(idx) && idx >= 0 && idx < cur.workers.length) {
+					const w = cur.workers[idx]!;
+					if (w.name === ev.worker) targets.push(w);
+				} else {
+					for (const w of cur.workers) if (w.name === ev.worker) targets.push(w);
+				}
+				for (const w of targets) {
 					const rec = w as unknown as Record<string, unknown>;
 					if (p.value === null || p.value === undefined) delete rec[p.field];
 					else rec[p.field] = p.value;
@@ -208,7 +209,12 @@ export function replayManifest(dir: string, events: JournalEvent[]): ExchangeMan
 		if (ev.kind === "collect" && typeof ev.worker === "string") {
 			const cur = peek();
 			if (cur === null) continue;
-			for (const w of cur.workers) {
+			const idx = (ev.payload as { entryIndex?: unknown } | null)?.entryIndex;
+			const scoped =
+				typeof idx === "number" && Number.isInteger(idx) && idx >= 0 && idx < cur.workers.length
+					? [cur.workers[idx]!]
+					: cur.workers;
+			for (const w of scoped) {
 				if (w.name === ev.worker && w.collectedAt === undefined) w.collectedAt = ev.ts;
 			}
 		}
@@ -275,7 +281,7 @@ export function diffManifestEvents(
 			events.push({
 				kind: "stamp",
 				worker: w.name,
-				payload: { field, value: nv === undefined ? null : nv },
+				payload: { field, value: nv === undefined ? null : nv, entryIndex: i },
 			});
 		}
 	}
@@ -298,8 +304,8 @@ export function diffManifestEvents(
  * Output: a ManifestStore (+ close()) backed by the journal
  * Guarantees:
  *   - read/update/append/scan parity with the file store for well-formed
- *     inputs (pinned by test/manifest-store-check.ts and
- *     test/swarm-parity-check.ts);
+ *     inputs (pinned by test/manifest-store-check.ts for ALL THREE impls plus
+ *     test/swarm-parity-check.ts for byte-identity);
  *   - every operation is total on the journal side (Law 8): append failures
  *     are advisory; read failures are the tolerant-empty plane;
  *   - updates are serialized per manifest path via withFileMutationQueue

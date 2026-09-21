@@ -475,6 +475,41 @@ setTimeout(() => { db.exec("ROLLBACK"); process.exit(0); }, 150);
 		waited.ok === true && elapsed >= 50 && elapsed < 5000,
 		JSON.stringify({ waited, elapsed, lockWait }),
 	);
+
+	// J8.5 — a THROWING onError sink is swallowed: append() still resolves with
+	// its structured failure and the sink is invoked exactly once (the
+	// busy-exhaustion path), so the "NEVER throws" contract is true, not just
+	// asserted (Law 2).
+	const sinkDb = join(SANDBOX, "sink.db");
+	const sinkSeed = createJournalWriter({ dbPath: sinkDb });
+	sinkSeed.close();
+	let sinkCalls = 0;
+	const sinkWriter = createJournalWriter({
+		dbPath: sinkDb,
+		busyTimeoutMs: 1,
+		retry: { attempts: 1 },
+		onError: () => {
+			sinkCalls++;
+			throw new Error("sink exploded");
+		},
+	});
+	const sinkHolder = new Database(sinkDb);
+	sinkHolder.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE;");
+	let sinkThrew = false;
+	let sinkRes: Awaited<ReturnType<typeof sinkWriter.append>> | null = null;
+	try {
+		sinkRes = await sinkWriter.append({ kind: "progress", sessionId: "s", task: "t", worker: "sink", payload: {} });
+	} catch {
+		sinkThrew = true;
+	}
+	sinkHolder.exec("ROLLBACK");
+	sinkHolder.close();
+	sinkWriter.close();
+	check(
+		"J8.5 a throwing onError sink is swallowed: append resolves E_JOURNAL_BUSY and invokes the sink exactly once",
+		!sinkThrew && sinkRes?.ok === false && sinkRes.code === "E_JOURNAL_BUSY" && sinkCalls === 1,
+		JSON.stringify({ sinkThrew, sinkRes, sinkCalls }),
+	);
 }
 
 // ---------------------------------------------------------------------------

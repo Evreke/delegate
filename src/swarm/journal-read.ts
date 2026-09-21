@@ -22,7 +22,7 @@
 
 import { Database } from "bun:sqlite";
 import { existsSync, statSync } from "node:fs";
-import { journalDbPath, JOURNAL_DB_VERSION, type JournalKind } from "./journal.ts";
+import { isJournalKind, journalDbPath, JOURNAL_DB_VERSION, type JournalKind } from "./journal.ts";
 
 /** One journal row with its payload JSON-parsed. `payload` is `null` when the
  *  stored text is not valid JSON (tolerant read — never a throw). */
@@ -79,7 +79,10 @@ interface EventRow {
 
 const SELECT_COLUMNS = "seq, ts, kind, session_id, task, worker, payload";
 
-function mapRow(r: EventRow): JournalEvent {
+function mapRow(r: EventRow): JournalEvent | null {
+	// Tolerant read: a kind outside the closed v1 set (a future row) is skipped,
+	// consistent with the reader's empty-but-valid failure mode.
+	if (!isJournalKind(r.kind)) return null;
 	let payload: unknown = null;
 	try {
 		payload = JSON.parse(r.payload);
@@ -89,7 +92,7 @@ function mapRow(r: EventRow): JournalEvent {
 	return {
 		seq: Number(r.seq),
 		ts: r.ts,
-		kind: r.kind as JournalKind,
+		kind: r.kind,
 		sessionId: r.session_id,
 		task: r.task,
 		worker: r.worker ?? null,
@@ -157,7 +160,9 @@ export function createJournalReader(opts: JournalReaderOptions = {}): JournalRea
 				sql += " LIMIT ?";
 				params.push(Math.max(0, Math.floor(q.limit)));
 			}
-			return (db.query(sql).all(...params) as EventRow[]).map(mapRow);
+			return (db.query(sql).all(...params) as EventRow[])
+				.map(mapRow)
+				.filter((e): e is JournalEvent => e !== null);
 		} catch {
 			return [];
 		}

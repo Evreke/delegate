@@ -19,6 +19,9 @@
  *       worker-verb `report` event.
  *   J5  The worker's write-report verb succeeded (journal mode) — the cycle's
  *       terminal artifact is produced through the verb, not a hand-written file.
+ *   J6  The collect-path usage cache is journaled as a fleet-scoped `usage`
+ *       stamp, so with projection disabled the usage line is recovered by
+ *       replay (Law 9: no raw-file bypass on the collect path).
  *
  * RPC_E2E leg: when `RPC_E2E=1` the SAME cycle runs against the real
  * `pi --mode rpc` backend (burns tokens; needs host auth/config). Without the
@@ -56,6 +59,7 @@ interface DriverOut {
 	code: string;
 	projectionExists: boolean;
 	replayWorkers: Array<{ name: string; collected: boolean }>;
+	replayUsage: unknown;
 	journalKinds: string[];
 	cliExit: number | null;
 	cliStderr: string;
@@ -113,6 +117,11 @@ function drive(
 		!!o && o.cliExit === 0 && typeof (o.cliJournal?.journal as { seq?: number } | undefined)?.seq === "number",
 		JSON.stringify({ cliExit: o?.cliExit, cliJournal: o?.cliJournal }),
 	);
+	check(
+		"J6 the collect-path usage snapshot is visible from the journal replay alone (projection off)",
+		!!o && !!o.replayUsage && typeof o.replayUsage === "object" && (o.replayUsage as { workers?: unknown }).workers === 1,
+		JSON.stringify(o?.replayUsage),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +129,7 @@ function drive(
 // ---------------------------------------------------------------------------
 if (process.env.RPC_E2E !== "1") {
 	console.log(
-		"SKIP  J6 rpc-backend journal-alone cycle — set RPC_E2E=1 to run (needs host auth/config).",
+		"SKIP  J7 rpc-backend journal-alone cycle — set RPC_E2E=1 to run (needs host auth/config).",
 	);
 	console.log(`      repro: RPC_E2E=1 bun test/swarm-journal-cycle-check.ts   (driver: bun ${DRIVER} rpc)`);
 } else {
@@ -128,10 +137,10 @@ if (process.env.RPC_E2E !== "1") {
 	const run = drive("rpc", { projection: false, journalDb: join(sandbox, "events.db"), timeoutMs: 180_000 });
 	rmSync(sandbox, { recursive: true, force: true });
 	const o = run.out;
-	check("J6.1 the rpc-backend cycle succeeds on the journal alone", o?.ok === true, run.stdout.slice(-300) || run.stderr.slice(-300));
-	check("J6.2 projection=false writes NO manifest.json (rpc leg)", o?.projectionExists === false, JSON.stringify(o?.projectionExists));
+	check("J7.1 the rpc-backend cycle succeeds on the journal alone", o?.ok === true, run.stdout.slice(-300) || run.stderr.slice(-300));
+	check("J7.2 projection=false writes NO manifest.json (rpc leg)", o?.projectionExists === false, JSON.stringify(o?.projectionExists));
 	check(
-		"J6.3 the journal replay shows the collected worker (rpc leg)",
+		"J7.3 the journal replay shows the collected worker (rpc leg)",
 		!!o && o.replayWorkers.length === 1 && o.replayWorkers[0]!.collected === true,
 		JSON.stringify(o?.replayWorkers),
 	);

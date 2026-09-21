@@ -15,6 +15,13 @@
  * verb-written report that fails collect-time validation stays a bug class with
  * its own regression check (Law 10).
  *
+ * Phase B (issue #23, §4.1.3): under `swarm.storage: "journal"` the verb
+ * appends the journal event (kind `report` — the operator-approved 14th
+ * kind; payload = the validated report JSON verbatim) AFTER validation and
+ * BEFORE the atomic publish (journal = truth, the file is the projection);
+ * the append is advisory (Law 8) and surfaces in the success envelope's
+ * `journal` field.
+ *
  * Schema-tier resolution ORDER (fix/cli-schema-tier, 2026-09-21): the brief's
  * `reportSchema` fragment is resolved against a PROJECT-tier library dir chosen
  * as `--schema-dir` flag > `SWARM_SCHEMA_DIR` env var > the cwd-derived
@@ -47,6 +54,7 @@ import { flagStr, type ParsedArgs } from "./args.ts";
 import { openExchangeDir, type SwarmContext } from "./context.ts";
 import { emitSuccess, SwarmError } from "./result.ts";
 import { serializeJsonFile } from "./serialize.ts";
+import { appendSwarmEvent } from "./storage.ts";
 
 /** Read the report JSON text from `--file <path>` or stdin (fd 0). */
 function readReportInput(parsed: ParsedArgs): string {
@@ -61,7 +69,7 @@ function readReportInput(parsed: ParsedArgs): string {
 /** Run `swarm write-report`: validate against the resolved schema, then publish
  *  the exact bytes atomically. `env` supplies the SWARM_SCHEMA_DIR project-tier
  *  override (see the MODULE_CONTRACT resolution order). */
-export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
+export async function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promise<void> {
 	const d = openExchangeDir(ctx.briefPath);
 	const reportPath = reportPathFor(d.dir, ctx.worker);
 
@@ -88,6 +96,7 @@ export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJ
 
 	const content = serializeJsonFile(parsedReport);
 	const tmpPath = `${reportPath}.validate-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+	let journal: { seq: number } | { error: string } | null = null;
 	try {
 		writeFileSync(tmpPath, content, "utf8");
 		const verdict = validateReportAgainstSchema(tmpPath, ctx.worker, resolved.schema);
@@ -97,6 +106,11 @@ export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJ
 			// name the report path, and write-time must read identically.
 			throw new SwarmError("E_REPORT_INVALID", verdict.error.replaceAll(tmpPath, reportPath));
 		}
+		// Phase B ordering (§4.1.3): the validated report is journaled (kind
+		// `report`, payload = the validated report JSON verbatim) BEFORE the
+		// publish; a journal failure is advisory (Law 8) and never blocks the
+		// projection rename. A REJECTED report is journaled nowhere.
+		journal = await appendSwarmEvent({ task: d.task, worker: ctx.worker, dir: d.dir }, "report", parsedReport, env);
 		renameSync(tmpPath, reportPath);
 	} finally {
 		// Success renamed the temp away; every failure path unlinks it here so a
@@ -108,5 +122,6 @@ export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJ
 		path: reportPath,
 		bytes: Buffer.byteLength(content, "utf8"),
 		schemaProvenance: resolved.provenance,
+		...(journal ? { journal } : {}),
 	});
 }

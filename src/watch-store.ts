@@ -155,8 +155,9 @@ export interface StampLayerCacheEntry {
 
 /** Cached variant of readWatchStampLayers for ONE dir: re-reads (open +
  *  parse) only when a watch-*.json file was added/removed/rewritten since
- *  the last read (name + mtime snapshot compare — the delivered-store cache
- *  pattern). WITHOUT a cache the uncached read runs.
+ *  the last read (name + mtime snapshot compare — the same cache pattern the
+ *  watcher uses for the journal cursor files). WITHOUT a cache the uncached
+ *  read runs.
  * <p>
  * FUNCTION_CONTRACT:
  * Input: dir — task dir; cache — caller-held Map keyed by dir (may be

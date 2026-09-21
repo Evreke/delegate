@@ -15,8 +15,10 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   `delivered-<key>.json` files to a durable per-audience journal cursor
   (`cursor-<key>.json`, `src/watch-cursor.ts`): each tick reads
   `eventsAfter(cursor)` through `src/swarm/journal-read.ts` (a throwing read
-  skips the tick — advisory by contract, spawn/collect never affected) and a
-  successful send commits the delivered facts and advances the cursor `seq`.
+  skips the tick — advisory by contract, spawn/collect never affected), and a
+  successful send commits the delivered facts and advances the cursor `seq`
+  only over rows of THIS audience's live fleets (the journal's
+  `session_id` + `task` key) — a foreign fleet's rows never move it.
   The wake-up text formats and event names are unchanged; the same fixtures
   through old and new detection produce the same event stream
   (`test/watcher-journal-parity-check.ts`). Ownership verdicts gained a

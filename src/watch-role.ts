@@ -37,7 +37,7 @@
  * single call site, ever.
  * Exported surface: AudienceVerdict, OwnerFields, SessionIdentity,
  * AudienceOptions, workerAudienceMatch, SessionRole, sessionRole,
- * sameSessionPath, ownerFieldsFromJournalRows, journalAudienceMatch.
+ * sameSessionPath, JournalFleetScope, ownerFieldsFromJournalRows, journalAudienceMatch.
  * Error modes: none — every read degrades (non-string/garbage owner fields
  * read as absent), never throws.
  */
@@ -314,26 +314,34 @@ export function sessionRole(
 	return { isWorker, ownsChildren };
 }
 
+/** The fleet scope of a journal read (#26): the journal's own (`session_id`,
+ *  `task`) key. Rows fold ONLY inside this scope; an unscoped read proves nothing. */
+export interface JournalFleetScope {
+	sessionId?: string;
+	task?: string;
+}
+
 /**
  * The owner fields a journal ROW proves for a worker (#26: ownership verdicts
- * become predicates over journal rows). The Phase B `spawn` payload carries
- * the manifest `entry` inline (§4.1.2 — the journal is where briefs survive a
- * reboot); the `stamp` payload carries single manifest fields. This helper
- * folds the LATEST row for the worker (highest `seq` if present, else last in
- * order) into the canonical OwnerFields shape — `orchestratorSessionPath`
- * (worker-level canon) and `masterSessionPath` (fleet fallback).
+ * over journal rows). The `spawn` payload carries the manifest `entry`
+ * inline; `stamp` carries single manifest fields. Folds the LATEST row IN THE
+ * FLEET SCOPE (session_id AND task) into the canonical OwnerFields.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: rows (untyped journal rows), worker (canonical name)
- * Output: the proven OwnerFields for the worker (empty when nothing proves one)
- * Guarantees: tolerant (garbage reads as absent), pure, never throws
+ * Input: rows (untyped), worker (canonical name), scope (fleet key)
+ * Output: the proven OwnerFields in that fleet (empty otherwise)
+ * Guarantees: rows outside the scope never contribute (never worker-name
+ *   alone); tolerant, pure, never throws
  * Raises: never
  */
 export function ownerFieldsFromJournalRows(
-	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; payload?: unknown }>,
+	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; sessionId?: unknown; task?: unknown; payload?: unknown }>,
 	worker: string,
+	scope: JournalFleetScope,
 ): OwnerFields {
 	const out: OwnerFields = {};
+	// Unscoped reads prove nothing: session_id AND task must both name a fleet.
+	if (scope.sessionId === undefined || scope.task === undefined) return out;
 	let bestSeq = -Infinity;
 	const fold = (entry: unknown): void => {
 		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return;
@@ -346,6 +354,7 @@ export function ownerFieldsFromJournalRows(
 	for (const row of rows ?? []) {
 		if (row === null || typeof row !== "object") continue;
 		if (row.worker !== worker) continue;
+		if (row.sessionId !== scope.sessionId || row.task !== scope.task) continue; // foreign fleet — never folded
 		const seq = typeof row.seq === "number" && Number.isFinite(row.seq) ? row.seq : -0.5;
 		if (seq < bestSeq) continue; // only the latest row wins per field
 		bestSeq = seq;
@@ -367,25 +376,24 @@ export function ownerFieldsFromJournalRows(
 }
 
 /**
- * The canonical wake-ownership verdict evaluated over JOURNAL ROWS (#26) —
- * the journal-row twin of {@link workerAudienceMatch}, with the SAME
- * fail-closed semantics: the rows prove the owner fields, the verdict is the
- * unchanged four-way table, and an empty proof delivers nothing ("no-owner")
- * exactly as a legacy manifest does. Foreign fleets stay untouched.
+ * The canonical wake-ownership verdict over JOURNAL ROWS (#26) — the row twin
+ * of {@link workerAudienceMatch} with the SAME fail-closed semantics: rows
+ * prove the owner fields INSIDE the fleet scope, the four-way table is
+ * unchanged, an empty proof delivers nothing. Foreign fleets stay untouched.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: rows, worker, self identity, owner options
+ * Input: rows, worker, fleet scope, self identity, owner options
  * Output: one of the four AudienceVerdict values
  * Guarantees: pure and tolerant; identical verdict semantics to
- *   workerAudienceMatch (the journal only changes WHERE the owner fields come
- *   from, never the fail-closed rule); never throws
+ *   workerAudienceMatch; never throws
  * Raises: never
  */
 export function journalAudienceMatch(
-	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; payload?: unknown }>,
+	rows: ReadonlyArray<{ kind?: unknown; worker?: unknown; seq?: unknown; sessionId?: unknown; task?: unknown; payload?: unknown }>,
 	worker: string,
+	scope: JournalFleetScope,
 	self: SessionIdentity,
 	opts: AudienceOptions,
 ): AudienceVerdict {
-	return workerAudienceMatch(ownerFieldsFromJournalRows(rows, worker), self, opts);
+	return workerAudienceMatch(ownerFieldsFromJournalRows(rows, worker, scope), self, opts);
 }

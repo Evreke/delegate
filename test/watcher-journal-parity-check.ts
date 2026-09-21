@@ -27,7 +27,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, basename } from "node:path";
 import {
 	createWatcher,
 	detectEvents,
@@ -47,6 +47,7 @@ import {
 } from "../src/exchange.ts";
 import type { AgentStatus, Transport } from "../src/host.ts";
 import { journalAudienceMatch, ownerFieldsFromJournalRows } from "../src/watch-role.ts";
+import { resolveSwarmStorage, swarmSessionIdFor } from "../src/swarm/storage.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -213,9 +214,15 @@ handle2.stop();
 	const jw = mkWorker(jdir, "w-journal");
 	writeValidReport(jdir, "w-journal");
 	const jsnap = snapshotFor([jw], [LIVE("w-journal")]);
+	// The live fleet key is the journal's own (session_id, task) — the watcher
+	// derives the same values from the task dir. A foreign row with a HIGHER
+	// seq must NOT advance this audience's cursor (orchestrator ruling 2a).
+	const sid = swarmSessionIdFor(jdir, resolveSwarmStorage());
+	const jtask = basename(jdir);
 	const rows = [
-		{ seq: 1, ts: new Date(NOW).toISOString(), kind: "report" as const, sessionId: "s", task: "journal-read", worker: "w-journal", payload: {} },
-		{ seq: 2, ts: new Date(NOW).toISOString(), kind: "collect" as const, sessionId: "s", task: "journal-read", worker: "w-journal", payload: {} },
+		{ seq: 1, ts: new Date(NOW).toISOString(), kind: "report" as const, sessionId: sid, task: jtask, worker: "w-journal", payload: {} },
+		{ seq: 2, ts: new Date(NOW).toISOString(), kind: "collect" as const, sessionId: sid, task: jtask, worker: "w-journal", payload: {} },
+		{ seq: 50, ts: new Date(NOW).toISOString(), kind: "spawn" as const, sessionId: "foreign-session", task: "foreign-task", worker: "w-foreign", payload: {} },
 	];
 	const seenCursors: number[] = [];
 	const harness = createWatcher({
@@ -236,7 +243,7 @@ handle2.stop();
 	await harness.tick();
 	check("P3.1 the watcher reads eventsAfter(cursor) each tick (cursor starts at 0)", seenCursors[0] === 0, JSON.stringify(seenCursors));
 	check(
-		"P3.2 the cursor seq advances to the last consumed journal row after a successful commit",
+		"P3.2 the cursor seq advances to the last consumed row of THIS audience's live fleet (a foreign row with seq 50 does NOT advance it)",
 		readWatchCursor(jdir, watcherKeyFor(SELF)).seq === 2,
 		String(readWatchCursor(jdir, watcherKeyFor(SELF)).seq),
 	);
@@ -302,32 +309,51 @@ handle2.stop();
 
 // ---------------------------------------------------------------------------
 // P6 — ownership verdicts as predicates over journal rows (same fail-closed
-// semantics as the manifest-based workerAudienceMatch).
+// semantics as the manifest-based workerAudienceMatch), SCOPED by the
+// journal's own (session_id, task) fleet key.
 // ---------------------------------------------------------------------------
 {
+	const scope = { sessionId: "s1", task: "t1" };
 	const rows = [
-		{ kind: "spawn", worker: "w1", seq: 1, payload: { entry: { orchestratorSessionPath: SELF } } },
-		{ kind: "spawn", worker: "w2", seq: 2, payload: { entry: { orchestratorSessionPath: "/tmp/sessions/other.jsonl" } } },
+		{ kind: "spawn", worker: "w1", seq: 1, sessionId: "s1", task: "t1", payload: { entry: { orchestratorSessionPath: SELF } } },
+		{ kind: "spawn", worker: "w2", seq: 2, sessionId: "s1", task: "t1", payload: { entry: { orchestratorSessionPath: "/tmp/sessions/other.jsonl" } } },
 	];
 	check(
 		"P6.1 a journal spawn row proving this session owns the worker → 'mine'",
-		journalAudienceMatch(rows, "w1", { sessionFile: SELF }, { legacyFailOpen: false }) === "mine",
+		journalAudienceMatch(rows, "w1", scope, { sessionFile: SELF }, { legacyFailOpen: false }) === "mine",
 	);
 	check(
 		"P6.2 a journal spawn row proving a FOREIGN owner → 'foreign' (untouched)",
-		journalAudienceMatch(rows, "w2", { sessionFile: SELF }, { legacyFailOpen: false }) === "foreign",
+		journalAudienceMatch(rows, "w2", scope, { sessionFile: SELF }, { legacyFailOpen: false }) === "foreign",
 	);
 	check(
 		"P6.3 no journal row proving an owner → 'no-owner' (fail-closed, no configuration escape for no-self-id)",
-		journalAudienceMatch(rows, "w3", { sessionFile: SELF }, { legacyFailOpen: true }) === "no-owner",
+		journalAudienceMatch(rows, "w3", scope, { sessionFile: SELF }, { legacyFailOpen: true }) === "no-owner",
 	);
 	check(
 		"P6.4 a degraded self-id → 'no-self-id' even with legacyFailOpen",
-		journalAudienceMatch(rows, "w1", {}, { legacyFailOpen: true }) === "no-self-id",
+		journalAudienceMatch(rows, "w1", scope, {}, { legacyFailOpen: true }) === "no-self-id",
 	);
 	check(
 		"P6.5 garbage journal payloads prove nothing (tolerant) — 'no-owner'",
-		Object.keys(ownerFieldsFromJournalRows([{ kind: "spawn", worker: "w9", seq: 9, payload: "garbage" }], "w9")).length === 0,
+		Object.keys(ownerFieldsFromJournalRows([{ kind: "spawn", worker: "w9", seq: 9, sessionId: "s1", task: "t1", payload: "garbage" }], "w9", scope)).length === 0,
+	);
+	// Regression (orchestrator ruling 2b): a SAME-NAMED worker in a FOREIGN
+	// fleet must never fold owner fields — scope is (session_id AND task).
+	const foreignRows = [
+		{ kind: "spawn", worker: "w1", seq: 10, sessionId: "s1", task: "t1", payload: { entry: { orchestratorSessionPath: SELF } } },
+		{ kind: "spawn", worker: "w1", seq: 11, sessionId: "s2", task: "t1", payload: { entry: { orchestratorSessionPath: "/tmp/sessions/foreign.jsonl" } } },
+		{ kind: "spawn", worker: "w1", seq: 12, sessionId: "s1", task: "t2", payload: { entry: { orchestratorSessionPath: "/tmp/sessions/foreign2.jsonl" } } },
+	];
+	const folded = ownerFieldsFromJournalRows(foreignRows, "w1", scope);
+	check(
+		"P6.6 a same-named worker in a foreign fleet (session_id OR task mismatch) does NOT fold owner fields",
+		folded.orchestratorSessionPath === SELF,
+		JSON.stringify(folded),
+	);
+	check(
+		"P6.7 an unscoped read proves nothing (never worker-name alone)",
+		Object.keys(ownerFieldsFromJournalRows(foreignRows, "w1", {})).length === 0,
 	);
 }
 

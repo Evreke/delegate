@@ -245,7 +245,10 @@ export default function (pi: ExtensionAPI) {
 
 		// Resume reconciliation (§4.1.4): after the watcher mount, make a
 		// post-reboot fleet picture honest — mark dead placements and append ONE
-		// per-fleet reconcile-summary event (the watcher delivers the wake).
+		// per-fleet reconcile-summary event. NOTE: the watcher delivers the wake
+		// only once #26 (journal-cursor detection) merges; on current main the
+		// watcher is still FS-diff based, so the wake is pending that merge — the
+		// reconciliation's acceptance is journal-state correctness, not wake UI.
 		// Advisory by contract: `reconcileSessionStart` is total (it degrades to
 		// "no reconciliation this session") and the void/catch keeps it off the
 		// session-start path entirely.

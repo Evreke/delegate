@@ -75,8 +75,9 @@ deviation.
 
 ### Law 3 — Session lifetime owns everything mounted in it.
 
-Everything a `session_start` handler mounts — the watcher, timers, file
-handles — is owned by a **per-session context object**
+Everything a `session_start` handler mounts — the watcher, the ambient fleet
+widget (the live indicator of running workers), timers, file handles — is
+owned by a **per-session context object**
 created in that handler and torn down in the paired `session_shutdown` of the
 same session. Module-global registries are deprecated as a mechanism: one
 session's shutdown must never dispose another session's watcher, and a double

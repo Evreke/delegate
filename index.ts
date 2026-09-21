@@ -16,6 +16,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { SelfIdentity } from "./src/watch-detect.ts";
+import { buildWorkerView, type SelfIdentity as FleetSelfIdentity } from "./src/fleet.ts";
+import { buildWidgetRows, disposeFleetUI, mountFleetUI, type FleetWidgetRow as FleetRow, type FleetUIDeps } from "./src/fleet-widget.ts";
 import { registerCommands } from "./src/commands.ts";
 import { registerStatusTool } from "./src/status-tool.ts";
 import { mountSessionWatcher } from "./src/compose.ts";
@@ -134,6 +136,8 @@ interface SessionLifecycle {
 	/** This session's file identity (degradable: undefined when the session
 	 *  manager cannot prove it — the gates decide with what is known). */
 	sessionFile?: string;
+	/** Ambient fleet widget dispose (no-op when headless or not mounted). */
+	fleetDispose: () => void;
 	/** Watcher stop handle — undefined when the composer did not mount (a
 	 *  pure worker session mounts no watcher, F6 two-tier contract). */
 	watcherStop?: () => void;
@@ -152,14 +156,16 @@ let currentSession: SessionLifecycle | null = null;
  *   - creates ONE herdr transport and registers delegate/status/mailbox tools
  *     and the /delegate-* commands on it
  *   - session_start (ONE handler): builds the per-session lifecycle context
- *     (Law 3) — session file identity, the watcher stop handle — and mounts:
+ *     (Law 3) — session file identity, the fleet dispose handle, the watcher
+ *     stop handle — and mounts:
+ *     · the ambient fleet widget (hasUI-guarded; replace-on-reload contract),
  *     · the watcher via the composer (src/compose.ts) — the "worker or
  *       orchestrator" mount decision lives there; the composer returns the
  *       stop handle; a second mount for the same session file is refused in
  *       observe.ts (double module-load guard); the archive is pruned
  *   - session_shutdown: tears down EXACTLY this session's context handles
- *     (watcher stop). The module-global clears
- *     (stopWatcher) are NOT called here anymore — one
+ *     (fleet dispose + watcher stop). The module-global clears
+ *     (disposeFleetUI/stopWatcher) are NOT called here anymore — one
  *     session's shutdown must never touch another session's mounts (Law 3,
  *     audit: the D2 double-delivery mechanism).
  *   - degraded self-id (sessionManager throws) degrades ownership
@@ -196,6 +202,29 @@ export default function (pi: ExtensionAPI) {
 		}
 		const self: SelfIdentity = { sessionFile, cwd: ctx.cwd };
 
+		// Ambient fleet UI (the live-rows widget): mount on session_start (fires
+		// on startup AND on new/resume/fork). Replace-on-reload stays the
+		// documented contract — mountFleetUI disposes the old handle when
+		// replacing (never leaks); inert headless — the hasUI guard is
+		// belt-and-braces so deps are not even built headless. THE ONLY visual
+		// indicator that workers are running (operator decision: the widget
+		// stays; the /delegate-fleet overlay was removed).
+		let fleetDispose: () => void = () => {};
+		if (ctx.hasUI) {
+			const deps: FleetUIDeps = {
+				async getRows(): Promise<FleetRow[]> {
+					// Called every 2 s by the fleet UI; each call is a full read sweep:
+					// EXTERNAL_DEPENDENCY: herdr statuses (transport), manifest files,
+					// worker session JSONLs (usage gauges) and p-<name>.jsonl pings.
+					// The row assembly lives in fleet.ts/fleet-widget.ts — ONE
+					// implementation.
+					const views = await buildWorkerView(transport);
+					return buildWidgetRows(views, self as FleetSelfIdentity);
+				},
+			};
+			fleetDispose = mountFleetUI(ctx, deps);
+		}
+
 		// Event-driven watcher: the replacement for the
 		// improvised bash sleep after E_TIMEOUT. Mounted for EVERY session —
 		// deliberately NOT behind ctx.hasUI: the wake-up matters headless too
@@ -211,21 +240,25 @@ export default function (pi: ExtensionAPI) {
 			sessionManager: ctx.sessionManager,
 		});
 
-		currentSession = { sessionFile, watcherStop: watcher.stop };
+		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop };
 	});
 
-	// Session-end cleanup (quality fix A7 + Wave 2 Law 3): the watcher's
-	// interval must not outlive the session — but teardown touches ONLY this
-	// session's handles (the context object above), never the global
-	// registries: one session's shutdown must not stop another session's
-	// watcher. Event name verified in pi docs (extensions.md):
-	// "session_shutdown" fires before teardown for quit/reload/new/resume/fork.
-	// (The ambient fleet UI was removed — operator decision; its dispose handle
-	// went with it.)
+	// Session-end cleanup (quality fix A7 + Wave 2 Law 3): the fleet widget's
+	// 2 s poll (herdr `agent list` + manifest reads) and the watcher's interval
+	// must not outlive the session — but teardown touches ONLY this session's
+	// handles (the context object above), never the global registries: one
+	// session's shutdown must not stop another session's watcher. Event name
+	// verified in pi docs (extensions.md): "session_shutdown" fires before
+	// teardown for quit/reload/new/resume/fork.
 	pi.on("session_shutdown", async (_event, _ctx) => {
 		const session = currentSession;
 		currentSession = null;
 		if (!session) return;
+		try {
+			session.fleetDispose();
+		} catch {
+			// advisory — never throw past session_shutdown
+		}
 		try {
 			session.watcherStop?.();
 		} catch {

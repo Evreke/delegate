@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/version.ts`, byte-matched by a static pin); git tags mirror them as `vX.Y.Z`.
 
+## [Unreleased]
+
+### Changed
+
+- **Worker prompt now speaks the `swarm` CLI verbs (#25).** `briefPrompt` instructs
+  the worker to interact through `bun <extension>/src/swarm/cli.ts` —
+  `read-brief`, `ask`, `poll-answer`, `write-progress`, `write-report` — instead
+  of hand-writing exchange files by path. Every example carries explicit
+  `--brief` / `--task` / `--worker` flags, so the invocation is
+  backend-independent; the exported env vars remain the canonical identity
+  when present. The pre-#25 raw-file phrasing survives
+  one release as a documented fallback behind the config flag
+  `swarm.verbsFallback` (default `true`; `false` drops the fallback paragraph).
+  The verb invocation is always the primary instruction; the flag controls only
+  the fallback's availability.
+- **The spawn flow exports the swarm identity into the worker environment**
+  (`StartReq.env`): `SWARM_TASK`, `SWARM_WORKER` and the orchestrator-resolved
+  project schema dir `SWARM_SCHEMA_DIR`. The rpc backend delivers it to the child
+  process; the herdr backend applies it to the `herdr agent start` CLI subprocess
+  (documented propagation caveat).
+
+Regression: `test/report-contract-check.ts` (fallback/verb phrasing),
+`test/rpc-host-unit-check.ts` (R9 env delivery), `test/profile-check.ts` (P12
+resolver) and the opt-in `test/swarm-verbs-e2e-check.ts` (`RPC_E2E=1`: a live rpc
+worker writes its report through `swarm write-report`).
+
 ## [1.18.0] — 2026-09-21
 
 ### Removed

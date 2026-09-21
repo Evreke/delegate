@@ -695,7 +695,8 @@ export class HerdrTransport implements Transport {
 	 * <p>
 	 * FUNCTION_CONTRACT:
 	 * Input: req — StartReq (worker name, paneId, timeoutMs, provider/model/
-	 *   thinking flags, optional extraArgs passed through after "--")
+	 *   thinking flags, optional extraArgs passed through after "--", optional
+	 *   env applied to the `herdr agent start` CLI subprocess — issue #25)
 	 * Output: StartResult — the canonical agent name (extractAgentName) plus
 	 *   sessionPath when herdr reports agent.agent_session.value
 	 * Guarantees:
@@ -735,7 +736,21 @@ export class HerdrTransport implements Transport {
 			...(req.extraArgs ?? []),
 		];
 		try {
-			const { stdout } = await runHerdr(args);
+			// Issue #25 / §4.1.1: the spawn flow's swarm identity env (SWARM_TASK /
+			// SWARM_WORKER / SWARM_SCHEMA_DIR) is applied to the `herdr agent start`
+			// CLI subprocess. KNOWN GAP (documented, Law 2): herdr's agent-start path
+			// types the canonical executable into an EXISTING pane at its shell
+			// prompt — the pane's environment is the herdr server's, so this build
+			// does NOT guarantee the CLI process env reaches the worker. The rpc
+			// backend (direct child spawn) delivers it exactly; herdr workers whose
+			// pane env lacks the identity still see the brief's explicit path and the
+			// prompt's documented raw-file fallback.
+			const { stdout } = await runHerdr(
+				args,
+				undefined,
+				undefined,
+				req.env ? { ...process.env, ...req.env } : undefined,
+			);
 			const { result } = parseHerdrResult(stdout);
 			return {
 				name: extractAgentName(result, req.name),

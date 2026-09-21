@@ -417,6 +417,21 @@ const allSrc = spawnSrc + "\n" + preSrc;
 	}
 }
 
+// ---------------------------------------------------------------------------
+// P8. Issue #25: the swarm identity env the spawn flow exports.
+// ---------------------------------------------------------------------------
+
+{
+	const { buildSwarmEnv } = await import("../src/spawn.ts");
+	const env = buildSwarmEnv({ task: "t-x", worker: "w-1", schemaDir: "/proj/.pi/delegate-schemas" });
+	check(
+		"P8.1 buildSwarmEnv exports exactly SWARM_TASK / SWARM_WORKER / SWARM_SCHEMA_DIR",
+		JSON.stringify(env) ===
+			JSON.stringify({ SWARM_TASK: "t-x", SWARM_WORKER: "w-1", SWARM_SCHEMA_DIR: "/proj/.pi/delegate-schemas" }),
+		JSON.stringify(env),
+	);
+}
+
 clearTimeout(watchdog);
 if (failures > 0) {
 	console.error(`\n${failures} SPAWN-SHRINK CHECK(S) FAILED`);

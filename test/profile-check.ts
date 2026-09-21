@@ -205,6 +205,35 @@ function loadMerged(env: Record<string, string>): { ok: true; cfg: Record<string
 	writeFileSync(BASE, JSON.stringify(BASE_CFG)); // restore fixture A
 }
 
+// --- P12: swarm.verbsFallback resolver (issue #25) -------------------------
+{
+	const runSwarm = (cfg: Record<string, unknown>) => {
+		writeFileSync(BASE, JSON.stringify(cfg));
+		const src = `import {resolveSwarmConfig} from ${JSON.stringify(WATCHCFG)};
+			console.log(JSON.stringify(resolveSwarmConfig()));`;
+		return runInChild(src, {});
+	};
+	const dflt = runSwarm(BASE_CFG);
+	check(
+		"P12.1 swarm config absent → verbsFallback defaults ON (issue #25 release)",
+		dflt.code === 0 && JSON.parse(dflt.stdout.trim()).verbsFallback === true,
+		dflt.stdout + dflt.stderr,
+	);
+	const off = runSwarm({ ...BASE_CFG, swarm: { verbsFallback: false } });
+	check(
+		"P12.2 swarm.verbsFallback:false is honored (operator can drop the raw-file fallback)",
+		off.code === 0 && JSON.parse(off.stdout.trim()).verbsFallback === false,
+		off.stdout + off.stderr,
+	);
+	const bad = runSwarm({ ...BASE_CFG, swarm: { verbsFallback: "yes" } });
+	check(
+		"P12.3 garbage swarm.verbsFallback → default ON, never throws",
+		bad.code === 0 && JSON.parse(bad.stdout.trim()).verbsFallback === true,
+		bad.stdout + bad.stderr,
+	);
+	writeFileSync(BASE, JSON.stringify(BASE_CFG)); // restore fixture
+}
+
 rmSync(AGENT_DIR, { recursive: true, force: true });
 
 if (failures > 0) {

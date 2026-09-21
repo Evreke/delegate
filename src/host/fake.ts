@@ -84,6 +84,9 @@ export class FakeWorkerHost implements Transport {
 	teardownCalls = 0;
 	/** Prompts accepted by submitPrompt (the seam returns after acceptance). */
 	prompts: string[] = [];
+	/** StartReq.env values observed by startAgent (issue #25 seam proof) —
+	 *  one entry per start, undefined when no env was passed. */
+	startEnvs: Array<Record<string, string> | undefined> = [];
 
 	constructor(opts: FakeHostOptions) {
 		this.opts = opts;
@@ -126,6 +129,7 @@ export class FakeWorkerHost implements Transport {
 	}
 
 	async startAgent(req: StartReq): Promise<StartResult> {
+		this.startEnvs.push(req.env);
 		// Keyed by the opaque placementRef (migration step 3); a legacy raw id
 		// (req.paneId-style legacy alternate id fallback key) still resolves.
 		const placement = this.placements.get(req.placementRef);

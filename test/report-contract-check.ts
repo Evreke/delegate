@@ -31,6 +31,7 @@ import { join } from "node:path";
 import { validateReport } from "../src/exchange.ts";
 import {
 	REPORT_EXAMPLE,
+	SWARM_CLI_PATH,
 	WORKER_NAME_RE,
 	briefPrompt,
 } from "../src/host.ts";
@@ -170,6 +171,65 @@ const root = mkdtempSync(join(tmpdir(), "report-contract-check-"));
 	check(
 		"briefPrompt: clause carries the escape hatch (extra fields) + the override trigger (brief OUTPUT section)",
 		/keep ALL required contract fields anyway/.test(base) && /brief-specific data in extra fields/.test(base),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// 6. Issue #25: verb phrasing is PRIMARY; the raw-file fallback lives behind
+//    BriefPromptOptions.verbsFallback (config swarm.verbsFallback, default on)
+// ---------------------------------------------------------------------------
+
+{
+	const base = briefPrompt("/tmp/exchange/t/brief-x.md", NAME);
+	const explicitOn = briefPrompt("/tmp/exchange/t/brief-x.md", NAME, null, { verbsFallback: true });
+	const explicitOff = briefPrompt("/tmp/exchange/t/brief-x.md", NAME, null, { verbsFallback: false });
+
+	check(
+		"#25 the prompt carries the resolvable swarm CLI invocation path",
+		base.includes(`bun ${SWARM_CLI_PATH}`) && SWARM_CLI_PATH.endsWith(join("swarm", "cli.ts")),
+		SWARM_CLI_PATH,
+	);
+	check(
+		"#25 verb phrasing is primary: all five worker verbs are named in one prompt",
+		["read-brief", "ask", "poll-answer", "write-progress", "write-report"].every((v) => base.includes(v)),
+	);
+	check("#25 the prompt forbids hand-writing report/mailbox/progress files", base.includes("Never hand-write report"));
+	check(
+		"#25 default verbsFallback is ON — explicit true is byte-identical to the default",
+		base === explicitOn,
+	);
+	check(
+		"#25 the PRIMARY write-report instruction carries explicit --brief/--task/--worker flags (backend-independent)",
+		base.includes(`write-report --brief /tmp/exchange/t/brief-x.md --task t --worker ${NAME}`),
+	);
+	check(
+		"#25 the env identity is qualified (not claimed unconditionally) and the flags are the always-sufficient spine",
+		base.includes("when the backend supports it") &&
+			base.includes("works regardless") &&
+			!base.includes("already exported into your environment"),
+	);
+	check(
+		"#25 fallback names the exact raw exchange files (q-/a-/p-/report-)",
+		base.includes(`q-${NAME}.json`) &&
+			base.includes(`a-${NAME}.json`) &&
+			base.includes(`p-${NAME}.jsonl`) &&
+			base.includes(`report-${NAME}.json`),
+	);
+	check(
+		"#25 the fallback does NOT claim byte-for-byte parity for hand-written raw files (only the verbs are byte-pinned)",
+		base.includes("byte-exact reference") && !base.includes("These are exactly the files the verbs write, byte-for-byte"),
+	);
+	check(
+		"#25 verbsFallback:false drops the raw-file paragraph but keeps the verbs primary",
+		!explicitOff.includes("Fallback (only if the swarm CLI") &&
+			!explicitOff.includes(`report-${NAME}.json`) &&
+			explicitOff.includes("write-report") &&
+			explicitOff.includes("Never hand-write report"),
+	);
+	check(
+		"#25 fallback survives a brief-declared schema fragment (report contract intact both ways)",
+		briefPrompt("/tmp/exchange/t/brief-x.md", NAME, { type: "object" }).includes("Fallback (only if the swarm CLI") &&
+			explicitOff.includes(`"worker" must be exactly "${NAME}"`),
 	);
 }
 

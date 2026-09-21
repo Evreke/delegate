@@ -57,10 +57,17 @@ Identity: SWARM_TASK / SWARM_WORKER (--task / --worker override).
 function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
 	switch (parsed.verb) {
 		case "read-brief":
+			// Fail-fast: read-brief accepts at most ONE positional (the brief path).
+			if (parsed.positionals.length > 1) {
+				throw new SwarmError(
+					"E_SWARM_USAGE",
+					`read-brief takes at most one positional brief path, got ${parsed.positionals.length}: ${parsed.positionals.join(" ")}`,
+				);
+			}
 			runReadBrief(resolveContext(parsed, env, parsed.positionals[0]));
 			return;
 		case "write-report":
-			runWriteReport(resolveContext(parsed, env), parsed);
+			runWriteReport(resolveContext(parsed, env), parsed, env);
 			return;
 		case "ask":
 			runAsk(resolveContext(parsed, env), parsed);

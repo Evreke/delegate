@@ -89,7 +89,16 @@ export function resolveContext(parsed: ParsedArgs, env: NodeJS.ProcessEnv, posit
 	const briefArg = flagStr(parsed, "brief") ?? positionalBrief;
 	if (briefArg) {
 		const d = openExchangeDir(briefArg);
-		return { task: taskFlag || d.task, worker, dir: d.dir, briefPath: d.briefPath };
+		// Fail-fast: the brief's own task dir is authoritative — a conflicting
+		// --task/SWARM_TASK must never be silently kept as a label while the
+		// paths follow the brief (the two would name different fleets).
+		if (taskFlag && taskFlag !== d.task) {
+			throw new SwarmError(
+				"E_SWARM_USAGE",
+				`task conflict: --task/SWARM_TASK says "${taskFlag}" but the brief lives under task "${d.task}" (${d.dir})`,
+			);
+		}
+		return { task: d.task, worker, dir: d.dir, briefPath: d.briefPath };
 	}
 
 	if (!taskFlag) {

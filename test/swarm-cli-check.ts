@@ -70,13 +70,16 @@ interface RunResult {
 /** Spawn the CLI (bounded) with a sandboxed exchange root + identity env. */
 function runCli(
 	args: string[],
-	opts: { input?: string; env?: Record<string, string>; dropEnv?: string[] } = {},
+	opts: { input?: string; env?: Record<string, string>; dropEnv?: string[]; cwd?: string } = {},
 ): RunResult {
 	const env: Record<string, string> = {};
 	for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
 	env.PI_DELEGATE_EXCHANGE_ROOT = SANDBOX;
 	env.SWARM_TASK = TASK;
 	env.SWARM_WORKER = WORKER;
+	// Hermetic user-level schema tier: the CLI's getAgentDir() must not pick up
+	// any real ~/.pi/agent/pi-delegate-schemas fixture.
+	env.PI_CODING_AGENT_DIR = join(SANDBOX, "agent");
 	Object.assign(env, opts.env);
 	for (const key of opts.dropEnv ?? []) delete env[key];
 	const res = spawnSync("bun", [CLI, ...args], {
@@ -84,6 +87,7 @@ function runCli(
 		input: opts.input,
 		encoding: "utf8",
 		timeout: 15_000,
+		cwd: opts.cwd,
 	});
 	let json: Record<string, unknown> | null = null;
 	try {
@@ -119,6 +123,9 @@ const errCode = (r: RunResult): unknown =>
 
 	const missing = runCli(["read-brief", join(SANDBOX, "nowhere", "brief-x.md")]);
 	check("R1.3 read-brief of a foreign path → structured E_BRIEF", missing.status !== 0 && errCode(missing) === "E_BRIEF", missing.stdout);
+
+	const extra = runCli(["read-brief", BRIEF_PATH, "extra-positional"]);
+	check("R1.4 read-brief rejects stray extra positionals (fail-fast)", extra.status !== 0 && errCode(extra) === "E_SWARM_USAGE", extra.stdout);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +174,9 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 
 	const notJson = runCli(["write-report"], { input: "not json" });
 	check("R3.4 malformed JSON → E_REPORT_INVALID", notJson.status !== 0 && errCode(notJson) === "E_REPORT_INVALID", notJson.stdout);
+
+	const orphans = readdirSync(DIR).filter((f) => f.includes(".validate-"));
+	check("R3.5 a rejected report leaves no validate-temp orphan (try/finally unlink)", orphans.length === 0, JSON.stringify(orphans));
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +227,34 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 		"R4.5 named library schema resolved via --schema-dir passes",
 		libOk.status === 0 && JSON.stringify(libOk.json?.schemaProvenance) === '["impl"]',
 		libOk.stdout,
+	);
+
+	// Schema-tier precedence regression (fix/cli-schema-tier): SWARM_SCHEMA_DIR
+	// (the spawn flow's orchestrator-cwd export) must beat the worker's cwd-derived
+	// project tier, and the cwd fallback must still work when the env var is absent.
+	const TASK_E = "task-env-schema";
+	const DIR_E = join(SANDBOX, TASK_E);
+	mkdirSync(DIR_E, { recursive: true });
+	writeFileSync(join(DIR_E, "brief-cli-w4.md"), `---\nreportSchema: envs\n---\n# Brief\n`, "utf8");
+	const cwdProj = join(SANDBOX, "cwd-proj");
+	mkdirSync(join(cwdProj, ".pi", "delegate-schemas"), { recursive: true });
+	writeFileSync(join(cwdProj, ".pi", "delegate-schemas", "envs.json"), JSON.stringify({ type: "object", required: ["aField"], properties: { aField: { type: "boolean" } } }), "utf8");
+	const envSchemas = join(SANDBOX, "env-schemas");
+	mkdirSync(envSchemas, { recursive: true });
+	writeFileSync(join(envSchemas, "envs.json"), JSON.stringify({ type: "object", required: ["bField"], properties: { bField: { type: "boolean" } } }), "utf8");
+	const baseE = { worker: "cli-w4", status: "pass", summary: "s", artifacts: [], evidence: [] };
+	const envE = { SWARM_TASK: TASK_E, SWARM_WORKER: "cli-w4" };
+	const envWins = runCli(["write-report"], { input: JSON.stringify({ ...baseE, bField: true }), env: { ...envE, SWARM_SCHEMA_DIR: envSchemas }, cwd: cwdProj });
+	check(
+		"R4.6 SWARM_SCHEMA_DIR beats the cwd-derived project schema tier (env schema satisfies, cwd schema would reject)",
+		envWins.status === 0 && JSON.stringify(envWins.json?.schemaProvenance) === '["envs"]',
+		envWins.stdout,
+	);
+	const cwdFallback = runCli(["write-report"], { input: JSON.stringify({ ...baseE, bField: true }), env: envE, cwd: cwdProj });
+	check(
+		"R4.7 without SWARM_SCHEMA_DIR the cwd-derived project tier still applies (cwd schema rejects)",
+		cwdFallback.status !== 0 && errCode(cwdFallback) === "E_REPORT_INVALID",
+		cwdFallback.stdout,
 	);
 }
 
@@ -318,6 +356,9 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 
 	const noTask = runCli(["write-progress", "--phase", "x"], { dropEnv: ["SWARM_TASK", "SWARM_WORKER"] });
 	check("R8.4 no identity at all → E_SWARM_IDENTITY", noTask.status !== 0 && errCode(noTask) === "E_SWARM_IDENTITY", noTask.stdout);
+
+	const conflict = runCli(["read-brief", "--brief", BRIEF_PATH, "--task", "some-other-task"]);
+	check("R8.5 --task conflicting with the brief's task dir → E_SWARM_USAGE", conflict.status !== 0 && errCode(conflict) === "E_SWARM_USAGE", conflict.stdout);
 }
 
 // ---------------------------------------------------------------------------

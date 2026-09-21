@@ -32,7 +32,8 @@
  */
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 // ============================================================================
@@ -144,6 +145,14 @@ export interface StartReq {
 	thinking: string;
 	/** Extra args appended after `--` (e.g. ["--session", path]). */
 	extraArgs?: string[];
+	/** Extra environment variables for the WORKER process (backend-neutral).
+	 *  Issue #25 / ARCHITECTURE.md §4.1.1: the spawn flow exports the swarm
+	 *  identity here (SWARM_TASK / SWARM_WORKER / SWARM_SCHEMA_DIR) so a worker
+	 *  interacts through the `swarm` verbs without path flags. Adapters apply
+	 *  it as their backend allows (rpc: the child process env; herdr: the CLI
+	 *  subprocess env — see the adapter's FUNCTION_CONTRACT for the documented
+	 *  propagation caveat); absent → the backend's own inherited environment. */
+	env?: Record<string, string>;
 	/** Interactive-readiness timeout in ms (skill: 60_000–180_000). */
 	timeoutMs: number;
 }
@@ -534,23 +543,66 @@ export const REPORT_EXAMPLE: WorkerReport = {
 };
 
 /**
+ * Options for the worker-prompt phrasing (issue #25).
+ * <p>
+ * `verbsFallback` mirrors the config key `swarm.verbsFallback` (default true):
+ * true appends the documented RAW-FILE fallback paragraph (the pre-#25
+ * phrasing survives one release behind the flag); false drops it, leaving the
+ * verb invocation as the only instruction. The verb phrasing is ALWAYS the
+ * primary instruction — the flag controls the fallback's availability, not
+ * which instruction leads.
+ */
+export interface BriefPromptOptions {
+	verbsFallback?: boolean;
+}
+
+/** Absolute path of the `swarm` CLI entry shipped with this extension — the
+ *  resolvable invocation target embedded in every worker prompt (#25: invoke
+ *  as `bun <path>/src/swarm/cli.ts <verb>`; bin registration is deferred).
+ *  Resolved from THIS module's own location (the package ships `src/` and
+ *  `src/swarm/` together), never from a hardcoded repository path. Pure — no
+ *  filesystem access; a runtime without import.meta.url keeps the relative
+ *  fallback. */
+export const SWARM_CLI_PATH: string = (() => {
+	try {
+		return join(dirname(fileURLToPath(import.meta.url)), "swarm", "cli.ts");
+	} catch {
+		return join("src", "swarm", "cli.ts");
+	}
+})();
+
+/**
  * Fixed prompt template — the one line sent to the worker console.
  *  Explicit tool-use instruction: flash-class models may otherwise treat
 	 *  "reply with the file path" as the whole task and never read the brief.
 	 *  Carries the canonical worker name so briefs can stay name-agnostic
 	 *  (demo run 2: brief/manifest name mismatch caused a false collect miss).
-	 *  v1.2: standing mailbox line — questions/answers are files, never consoles.
+	 *  Issue #25: worker interaction is phrased over the `swarm` CLI verbs
+	 *  (read-brief / ask / poll-answer / write-progress / write-report) with
+	 *  the resolvable invocation path; the raw-file phrasing survives one
+	 *  release as the documented fallback behind BriefPromptOptions.verbsFallback.
 	 *  Report contract: required fields + canonical example (REPORT_EXAMPLE,
 	 *  worker name substituted). Since v1.2 a brief MAY declare a reportSchema
 	 *  fragment; when the caller passes one, it is echoed
 	 *  verbatim after the base contract so the worker sees the exact schema its
 	 *  report will be validated against at settle. */
-export function briefPrompt(briefPath: string, workerName: string, briefSchema?: Record<string, unknown> | null): string {
+export function briefPrompt(
+	briefPath: string,
+	workerName: string,
+	briefSchema?: Record<string, unknown> | null,
+	options?: BriefPromptOptions,
+): string {
 	const schemaEcho =
 		briefSchema !== null && briefSchema !== undefined
 			? ` Task-specific report schema (this brief declares reportSchema): on top of the base contract above, the report MUST also satisfy this JSON schema: ${JSON.stringify(briefSchema)}. Extra fields still allowed unless the fragment says otherwise.`
 			: "";
-	return `Use your read tool to read ${briefPath}, then carry out the task it describes exactly, including its OUTPUT section. Your assigned worker name is "${workerName}": wherever the brief names the worker or its report file, use "${workerName}" (and report-${workerName}.json) instead of any name written in the brief. If blocked on a decision the brief does not resolve, write your question to q-${workerName}.json next to the brief and go idle — an answer will appear at a-${workerName}.json; when the brief says steering is expected, poll that file between steps. When the task is complete, reply with only the file path. Report contract — this contract ALWAYS overrides the brief on report format/shape: if the brief's OUTPUT section specifies a different report shape, keep ALL required contract fields anyway and put the brief-specific data in extra fields. Required fields: "worker" must be exactly "${workerName}"; "status" strictly "pass" or "fail" (never "done"/"ok"/"success" — a report with any other status is rejected at collect and wakes your orchestrator); "summary" a non-empty string; "artifacts" an array of strings; "evidence" an array of objects, each with non-empty string "claim" and "file". Extra fields allowed. Canonical example (write the report as JSON in exactly this shape): ${JSON.stringify({ ...REPORT_EXAMPLE, worker: workerName })}.${schemaEcho}`;
+	// Issue #25: verbs are the PRIMARY instruction; the flag only decides
+	// whether the one-release raw-file fallback paragraph is present.
+	const verbsFallback = options?.verbsFallback ?? true;
+	const fallbackText = verbsFallback
+		? ` Fallback (only if the swarm CLI cannot run in your environment): write the raw exchange files directly — your question to q-${workerName}.json next to the brief (the answer appears at a-${workerName}.json), progress pings to p-${workerName}.jsonl, and your final report to report-${workerName}.json. These are exactly the files the verbs write, byte-for-byte, so the orchestrator reads them identically.`
+		: "";
+	return `Use your read tool to read ${briefPath}, then carry out the task it describes exactly, including its OUTPUT section. Your assigned worker name is "${workerName}": wherever the brief names the worker, use "${workerName}" instead of any name written in the brief. Interact with the orchestrator ONLY through the \`swarm\` CLI — run it from bash as \`bun ${SWARM_CLI_PATH} <verb>\`; your SWARM_TASK / SWARM_WORKER / SWARM_SCHEMA_DIR identity is already exported into your environment, so no path flags are needed. Verbs: \`read-brief\` (bun ${SWARM_CLI_PATH} read-brief ${briefPath}) reads your brief; \`ask --question "<text>"\` posts a question (then go idle and use \`poll-answer\`, bun ${SWARM_CLI_PATH} poll-answer, to fetch the answer; poll again between steps when the brief says steering is expected); \`write-progress --phase "<label>" [--pct <0-100>]\` records a liveness ping; and \`write-report\` (report JSON on stdin) writes your final report. Never hand-write report, mailbox, or progress files — the verbs own those paths and formats.${fallbackText} When the task is complete, write your report with \`write-report\` and reply with only the file path. Report contract — this contract ALWAYS overrides the brief on report format/shape: if the brief's OUTPUT section specifies a different report shape, keep ALL required contract fields anyway and put the brief-specific data in extra fields. Required fields: "worker" must be exactly "${workerName}"; "status" strictly "pass" or "fail" (never "done"/"ok"/"success" — a report with any other status is rejected at collect and wakes your orchestrator); "summary" a non-empty string; "artifacts" an array of strings; "evidence" an array of objects, each with non-empty string "claim" and "file". Extra fields allowed. Canonical example (write the report as JSON in exactly this shape): ${JSON.stringify({ ...REPORT_EXAMPLE, worker: workerName })}.${schemaEcho}`;
 }
 
 // ---------------------------------------------------------------------------

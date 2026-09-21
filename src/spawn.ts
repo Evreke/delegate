@@ -6,8 +6,10 @@
  * MODULE_CONTRACT: orchestrator-side pipeline — worker-name validation, tier/
  * provider/model resolution, dual-gauge budget governor (E_CONTEXT/E_BUDGET),
  * brief reportSchema resolution, the spawn flow (place → manifest append →
- * startAgent → brief/probe prompt → waitSettle → grace rechecks → strict
- * collect + archive + collectedAt stamp + advisory auto-teardown), the
+ * startAgent with the exported swarm identity env (SWARM_TASK /
+ * SWARM_WORKER / SWARM_SCHEMA_DIR, issue #25) → brief/probe prompt →
+ * waitSettle → grace rechecks → strict collect + archive + collectedAt stamp
+ * + advisory auto-teardown), the
  * mailbox tool actions (read/answer/steer/release) and the LLM-facing
  * promptGuidelines contract text. Migration stage 2 (audit step 7): the
  * execute pipeline's settle→collect seam is an explicit state machine
@@ -116,10 +118,10 @@
 // ./observe.ts, ui render helpers in ./fleet.ts, the transport surface in
 // ./transport.ts (facades remain at the old paths until W5).
 import { appendFile, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
-import { type Theme } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	aggregateTaskUsage,
 	applyFleetTaskFields,
@@ -151,7 +153,7 @@ import {
 	resolveSpawnDefaults,
 	resolveTierTable,
 } from "./usage.ts";
-import { resolveCollectConfig, resolveWatchConfig } from "./watch-config.ts";
+import { resolveCollectConfig, resolveSwarmConfig, resolveWatchConfig } from "./watch-config.ts";
 import {
 	type ReportWitness,
 	witnessEmbodimentReport,
@@ -268,6 +270,35 @@ const PROBE_PROMPT = "Reply with exactly: OUTPUT: OK";
  *  case). A schema rejection over a readable file is stable — never retried. */
 const GRACE_RECHECKS = 5;
 const GRACE_DELAY_MS = 2_000;
+
+/**
+ * Worker identity environment the spawn flow exports at startAgent time
+ * (issue #25 / ARCHITECTURE.md §4.1.1): the canonical mechanism for the
+ * `swarm` verbs. Pure — the caller resolves the task dir and the orchestrator's
+ * project schema tier; probes get no env (no brief, no verb contract).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: task (exchange task slug), worker (requested worker name — the name
+ *   passed to startAgent), schemaDir (the ORCHESTRATOR-resolved project
+ *   schema tier, `<session cwd>/.pi/delegate-schemas`)
+ * Output: a fresh {SWARM_TASK, SWARM_WORKER, SWARM_SCHEMA_DIR} object
+ * Guarantees:
+ *   - SWARM_SCHEMA_DIR carries the orchestrator's tier, NOT the worker's cwd
+ *     (a worktree worker's cwd differs — see src/swarm/write-report.ts)
+ *   - pure: no I/O, no environment reads
+ * Raises: never
+ */
+export function buildSwarmEnv(input: {
+	task: string;
+	worker: string;
+	schemaDir: string;
+}): Record<string, string> {
+	return {
+		SWARM_TASK: input.task,
+		SWARM_WORKER: input.worker,
+		SWARM_SCHEMA_DIR: input.schemaDir,
+	};
+}
 
 const delegateParams = Type.Object({
 	name: Type.String({ description: "Worker name; must match [a-z][a-z0-9_-]{0,31}" }),
@@ -483,7 +514,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			return { ...input, waitMs: Math.min(legacy, WAIT_CAP_MS) } as Static<typeof delegateParams>;
 		},
 		promptGuidelines: [
-			"Use delegate only after the brief file exists under ${exchangeRoot()}/<task>/ — pass its path as briefPath; the brief is the worker's instructions and its OUTPUT section must point at report-<name>.json.",
+			"Use delegate only after the brief file exists under ${exchangeRoot()}/<task>/ — pass its path as briefPath; the brief is the worker's instructions and the worker reports back through the `swarm write-report` verb (report-<name>.json is the file collect validates; the spawn flow exports the worker's SWARM_TASK/SWARM_WORKER identity).",
 			"delegate blocks until the worker settles; the worker's report file is the completion criterion, not the agent status — status fail in the report is still an honest completion.",
 			"If delegate returns E_REPORT_MISSING or E_REPORT_INVALID, do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate); never repeat verbatim. " +
 			RETRY_MANDATE,
@@ -833,6 +864,18 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				name: params.name,
 				placementRef,
 			});
+			// Issue #25 / §4.1.1: export the swarm identity into the worker's
+			// environment (backend-neutral StartReq.env). SWARM_SCHEMA_DIR carries
+			// the ORCHESTRATOR-resolved project schema tier — a worktree worker's
+			// cwd is not the orchestrator's session cwd. Probes carry no brief and
+			// never use the verbs, so they get no identity env.
+			const swarmEnv = isProbe
+				? undefined
+				: buildSwarmEnv({
+						task: basename(manifestDir),
+						worker: params.name,
+						schemaDir: resolve(ctx.cwd, CONFIG_DIR_NAME, "delegate-schemas"),
+					});
 			let start;
 			try {
 				start = await transport.startAgent({
@@ -844,6 +887,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					model: model as string,
 					thinking: thinking as string,
 					extraArgs: params.extraArgs,
+					...(swarmEnv ? { env: swarmEnv } : {}),
 					timeoutMs: START_TIMEOUT_MS,
 				});
 			} catch (err) {
@@ -1329,7 +1373,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					// v1.5: echo the resolved brief reportSchema fragment (§16–§17) so the
 					// worker sees the exact schema its report is validated against at
 					// settle. Null for probes / briefs without reportSchema → base-only.
-					text: isProbe ? PROBE_PROMPT : briefPrompt(briefPath, canonical, briefSchema),
+					text: isProbe ? PROBE_PROMPT : briefPrompt(briefPath, canonical, briefSchema, { verbsFallback: resolveSwarmConfig().verbsFallback }),
 					timeoutMs: SUBMIT_TIMEOUT_MS,
 				});
 			} catch (err) {

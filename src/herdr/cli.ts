@@ -198,9 +198,10 @@ export async function runHerdr(
 	args: string[],
 	timeoutMs: number = CLI_TIMEOUT_MS,
 	platform: NodeJS.Platform = DEFAULT_PLATFORM,
+	env?: NodeJS.ProcessEnv,
 ): Promise<HerdrRunResult> {
 	try {
-		return await spawnHerdr(args, timeoutMs, platform);
+		return await spawnHerdr(args, timeoutMs, platform, env);
 	} catch (err) {
 		const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: unknown };
 		const details = [e.stderr?.trim(), e.stdout?.trim(), e.message].filter(Boolean).join("\n");
@@ -253,12 +254,18 @@ function herdrSpawnError(args: string[], fields: { message: string; code?: unkno
  *   shell-less: CVE-2024-27980); taskkill.exe — the Windows tree-kill used by
  *   the escalation (child.kill("SIGKILL") cannot reach herdr's own children).
  */
-function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform = DEFAULT_PLATFORM): Promise<HerdrRunResult> {
+function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform = DEFAULT_PLATFORM, env?: NodeJS.ProcessEnv): Promise<HerdrRunResult> {
 	return new Promise((resolve, reject) => {
 		// Platform policy applied HERE and in armSigkill only — the rest of the
 		// lifecycle (timeout shape, stdio destruction, error mapping) is shared.
 		const policy = spawnPolicyCommand("herdr", args, platform);
-		const child = spawn(policy.command, policy.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+		// Issue #25: an explicit env (the spawn flow's swarm identity) replaces
+		// the inherited process environment for this CLI call; absent → inherit.
+		const child = spawn(policy.command, policy.args, {
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+			...(env ? { env } : {}),
+		});
 		let stdout = "";
 		let stderr = "";
 		let timedOut = false;

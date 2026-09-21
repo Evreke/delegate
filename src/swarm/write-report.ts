@@ -17,10 +17,10 @@
  *
  * Phase B (issue #23, §4.1.3): under `swarm.storage: "journal"` the verb
  * appends the journal event (kind `report` — the operator-approved 14th
- * kind; payload = the validated report JSON verbatim) AFTER validation and
- * BEFORE the atomic publish (journal = truth, the file is the projection);
- * the append is advisory (Law 8) and surfaces in the success envelope's
- * `journal` field.
+ * kind; payload = the validated report JSON verbatim) AFTER a successful
+ * atomic publish (the journal never announces an unpublished report); the
+ * append is advisory (Law 8: swallowed + structured stderr note) and surfaces
+ * in the success envelope's `journal` field.
  *
  * Schema-tier resolution ORDER (fix/cli-schema-tier, 2026-09-21): the brief's
  * `reportSchema` fragment is resolved against a PROJECT-tier library dir chosen
@@ -106,12 +106,14 @@ export async function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env:
 			// name the report path, and write-time must read identically.
 			throw new SwarmError("E_REPORT_INVALID", verdict.error.replaceAll(tmpPath, reportPath));
 		}
-		// Phase B ordering (§4.1.3): the validated report is journaled (kind
-		// `report`, payload = the validated report JSON verbatim) BEFORE the
-		// publish; a journal failure is advisory (Law 8) and never blocks the
-		// projection rename. A REJECTED report is journaled nowhere.
-		journal = await appendSwarmEvent({ task: d.task, worker: ctx.worker, dir: d.dir }, "report", parsedReport, env);
+		// Phase B ordering (§4.1.3, brief CONTEXT): the reporter is the terminal
+		// artifact the watcher reacts to, so it is journaled (kind `report`,
+		// payload = the validated report JSON verbatim) AFTER the atomic publish —
+		// the journal never announces a report that did not reach its path. A
+		// journal failure is advisory (Law 8: swallowed + a structured stderr
+		// note) and never fails the write. A REJECTED report is journaled nowhere.
 		renameSync(tmpPath, reportPath);
+		journal = await appendSwarmEvent({ task: d.task, worker: ctx.worker, dir: d.dir }, "report", parsedReport, env);
 	} finally {
 		// Success renamed the temp away; every failure path unlinks it here so a
 		// rejected report can never leave an orphan beside the real report.

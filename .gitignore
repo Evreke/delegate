@@ -1,1 +1,7 @@
 node_modules/
+
+# Secrets never belong in the repo (Law 11)
+.env*
+*.key
+*.pem
+auth.json

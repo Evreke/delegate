@@ -23,18 +23,34 @@
  * backend status is an advisory sensor, never the criterion. W4 refactor:
  * verbatim concatenation of the
  * old src/tools/mailbox.ts (leaf, first) and src/tools/delegate.ts. The
- * ~1140-line execute() closure is kept AS-IS by design (user decision): its
+ * ~1300-line execute() closure is kept AS-IS by design (user decision): its
  * closure-scoped mutables (sessionPath, manifestWarning, reportPath,
  * tierWarning, questionDetected, lastBeat, settleAbort) ARE the shared phase
  * state — no splitting into phase files, no ctx object; only zero-closure-
  * state pure helpers may ever be extracted.
+ * Extraction state (Law 5, the wave-3 line — the rule above is what makes it
+ * legal): every phase that reads NONE of the seven mutables is a pure
+ * function over explicit args with a discriminated result the closure
+ * consumes — tier/provider/model resolution, brief report-schema resolution,
+ * the tier-mismatch detection, the brief-reportSchema violation note and the
+ * last-live-worker nudge (src/spawn-phases.ts), the pre-placement name/brief
+ * validation and the dual-gauge governor (src/pre-placement.ts). What stays
+ * closure-bound is (a) the code that
+ * reads or writes one of the seven — the gauge summary, detach, the settle
+ * proof, probe salvage, the strict collect, the success-result builder, the
+ * heartbeat + mailbox-question interrupt, the probe verdict (every branch of
+ * it ends with the manifestWarning note), the manifest writes and the
+ * timeout/release-window computation (its shape is pinned by
+ * test/watcher-check.ts W1.3/W1.4); and (b) the collect-time auto-teardown,
+ * which reads none but whose source text is pinned to this file by
+ * test/collect-teardown-check.ts C4.
  * Dependencies: ./host.ts (the Transport seam + E_* taxonomy + briefPrompt),
  * exchange.ts (manifest/report/mailbox lifecycle + archive), usage.ts
  * (session-JSONL gauges), observe.ts (watch/collect config resolution),
- * fleet.ts (render helpers + idle nudge). Never imports the transport
+ * ui-text.ts (render helpers). Never imports the transport
  * implementation (dependency rule, ARCHITECTURE.md Law 4 — the Transport instance is
  * injected from index.ts). Import graph: spawn is the root consumer —
- * transport/exchange/fleet/observe are all imported BY this module and none
+ * transport/exchange/observe are all imported BY this module and none
  * of them import it (DAG holds, no module-eval cycles).
  * Exported surface: registerDelegateTool (the delegate_mailbox tool moved
  * verbatim to src/mailbox-tool.ts in Wave 3 — registerDelegateTool keeps its
@@ -63,7 +79,7 @@
  *     embodiment placement ref — a same-name retry never re-stamps its
  *     predecessor's entry.
  *   - no-direct-herdr-for-reportless-verdicts (probe flow): probes NEVER
- *     write a report file — pane readback "OUTPUT: OK" is the final smoke
+ *     write a report file — console readback "OUTPUT: OK" is the final smoke
  *     verdict; probe salvage recovers it across aborts.
  *   - fleet-accounting-set-once (F1, EXECUTION side; exchange.ts owns the
  *     merge rule): the FIRST delegate call of a task fixes the task-level
@@ -103,12 +119,11 @@ import { appendFile, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
-import { CONFIG_DIR_NAME, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	aggregateTaskUsage,
 	applyFleetTaskFields,
 	describeFleet,
-	ensureExchangeDir,
 	exchangeRoot,
 	isProbeDir,
 	persistTaskUsageSnapshot,
@@ -118,8 +133,10 @@ import {
 	teardownLogLine,
 } from "./exchange.ts";
 import { archiveReport } from "./archive.ts";
+import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
+import { EXTENSION_VERSION } from "./version.ts";
 import { manifestStore, type ManifestWorker } from "./manifest-store.ts";
-import { parseBriefSchema, resolveReportSchema, validateReport, validateReportAgainstSchema } from "./report-schema.ts";
+import { parseBriefSchema, validateReportAgainstSchema } from "./report-schema.ts";
 import {
 	questionPathFor,
 	readQuestion,
@@ -128,10 +145,8 @@ import {
 	contextPct,
 	formatBudgetLine,
 	formatGaugeLine,
-	overContext,
 	overOutputBudget,
 	parseSessionUsage,
-	resolveContextWindow,
 	resolvePiSessionCandidates,
 	resolveSpawnDefaults,
 	resolveTierTable,
@@ -165,14 +180,18 @@ import { registerMailboxTool } from "./mailbox-tool.ts";
 // Wave 3 decomposition (step 4.2): the clock port moved verbatim to
 // src/clock.ts — the grace loop deps keep consuming it through the import.
 import { type ClockPort, systemClock } from "./clock.ts";
-import { probeDirPathFor, TEARDOWN_LOG_NAME } from "./expaths.ts";
-import { clampLines, notifyFleetIdle, renderDelegateLines } from "./fleet.ts";
+import { TEARDOWN_LOG_NAME } from "./expaths.ts";
+// Wave 3 decomposition (Law 5 continuation): the pre-placement validation region
+// — name guard, brief → exchange-dir resolution, the dual-gauge governor —
+// moved verbatim to src/pre-placement.ts; execute() consumes the discriminated
+// results.
+import { applyGaugeGovernor, validateNameAndBrief } from "./pre-placement.ts";
+import { clampLines, renderDelegateLines } from "./ui-text.ts";
 import {
 	CONTEXT_CRITICAL_PCT,
 	CONTEXT_TURNS_WARN,
 	CONTEXT_WARN_PCT,
 	DEFAULT_BUDGET_TOKENS,
-	WORKER_NAME_RE,
 	briefPrompt,
 	DelegateErrorImpl,
 	type AgentStatusName,
@@ -241,13 +260,6 @@ const PROBE_TIMEOUT_MS = 120_000;
  *  timeoutMs must never hold the session hostage — folded into waitMs capped
  *  here AND clamped again in execute()'s wait computation. ONE spelling. */
 const WAIT_CAP_MS = 120_000;
-/** Exchange dir for probe runs — no brief/task, but placements must stay
- *  teardown- and status-visible (manifestStore.scan() covers every manifest under
- *  the exchange root). Derived from exchangeRoot() so sandboxed tests
- *  ($PI_DELEGATE_EXCHANGE_ROOT) never touch the live /tmp/exchange root. */
-function probeExchangeDir(): string {
-	return probeDirPathFor(exchangeRoot());
-}
 /** Fixed probe prompt. */
 const PROBE_PROMPT = "Reply with exactly: OUTPUT: OK";
 /** Settle-vs-report race grace window: settle can fire before the report file
@@ -263,9 +275,9 @@ const delegateParams = Type.Object({
 		description:
 			`Absolute or cwd-relative path to the brief file under ${exchangeRoot()}/<task>/; a leading @ is stripped (ignored for probe)`,
 	}),
-	mode: Type.Optional(StringEnum(["worktree", "tab", "probe"] as const, {
+	mode: Type.Optional(StringEnum(["worktree", "shared", "tab", "probe"] as const, {
 		description:
-			"worktree = isolated checkout+branch (default); tab = shared checkout; probe = explicit smoke gate — run one probe before any ≥3 fan-out",
+			"worktree = isolated checkout+branch (default); shared = placement in the shared checkout without isolation; tab = deprecated alias of shared; probe = explicit smoke gate — run one probe before any ≥3 fan-out",
 	})),
 	repoPath: Type.Optional(Type.String({ description: "Repo to place the worker in (default session cwd)" })),
 	branch: Type.Optional(Type.String({ description: "Worktree branch (default delegate/<name>)" })),
@@ -278,7 +290,7 @@ const delegateParams = Type.Object({
 	timeoutMs: Type.Optional(Type.Number({ description: "Deprecated alias for waitMs — CAPPED at 120000 ms unless waitMs is set explicitly." })),
 	releaseOn: Type.Optional(StringEnum(["started", "settle"] as const, {
 		description:
-			"When to release this call: 'settle' (default) blocks the full window unless the worker settles inline; 'started' releases as soon as the worker is proven started and working — the background watcher wakes you on report-ready/question/death. Default from watch.releaseOn in ~/.pi/agent/pi-delegate.config.json. Never applies to probes.",
+			"When to release this call: 'started' (default) releases as soon as the worker is proven started and working — the background watcher wakes you on report-ready/question/death; 'settle' (opt-out) blocks the full window unless the worker settles inline. Default from watch.releaseOn in ~/.pi/agent/pi-delegate.config.json. Never applies to probes.",
 	})),
 
 	budgetTokens: Type.Optional(Type.Number({ minimum: 1, description: "Optional OUTPUT-token cap (sum of assistant output); over-budget workers are refused on retry with E_BUDGET." })),
@@ -399,177 +411,20 @@ function liveSessionFile(ctx: {
 import { appendWatcherAudit } from "./watcher.ts";
 
 // ===========================================================================
-// Wave 3 decomposition (step 4.5, the audit's "shrink its blast radius"):
-// the two execute() phases that read NO closure mutable state become pure
-// functions with explicit args — tier/provider/model resolution and
-// report-schema resolution. NOT a rewrite of execute(): each phase keeps its
-// exact decision logic, E_* texts and details payloads verbatim; only the
-// phase boundary becomes a discriminated result the closure returns (E_TIER/
-// E_BRIEF) or consumes. The remaining execute() closure shrink is the
-// written next-cycle plan (README "Future work").
-// ===========================================================================
-
-/** Explicit inputs of the tier-resolution phase (no closure state). */
-interface TierResolutionInput {
-	name: string;
-	tier?: string;
-	provider?: string;
-	model?: string;
-	thinking?: string;
-}
-
-/**
- * v1.9.2 tier resolution as a PURE function (verbatim decision logic from
- * the execute closure).
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - input: the call's explicit tier/provider/model/thinking params + the
- *     worker name (for the E_TIER details payload)
- *   - tierTable: resolveTierTable() result (the config "tiers" section)
- *   - spawnDefaults: resolveSpawnDefaults() result (the config "defaults")
- * Output: {ok:true, provider, model, thinking} — every key resolved (string),
- *   or {ok:false, failure} — the E_TIER tool result to return verbatim
- * Guarantees:
- *   - explicit params > tiers[<tier>] > defaults, per key; there is NO
- *     built-in worker tier — an unconfigured environment fails with E_TIER
- *     (never a guessed provider)
- *   - pure: no I/O, no closure reads; the config reads happen in the CALLER
- * Raises: never
- */
-function resolveTierPlacement(
-	input: TierResolutionInput,
-	tierTable: Record<string, SpawnTier>,
-	spawnDefaults: { provider?: string; model?: string; thinking?: string; tier?: string },
-): { ok: true; provider: string; model: string; thinking: string } | { ok: false; failure: ToolResult } {
-	const requestedTier = input.tier ?? spawnDefaults.tier;
-	let tierEntry: SpawnTier | undefined;
-	if (requestedTier !== undefined) {
-		tierEntry = tierTable[requestedTier];
-		if (tierEntry === undefined) {
-			const available = Object.keys(tierTable).sort();
-			return {
-				ok: false,
-				failure: fail(
-					"E_TIER",
-					`E_TIER — unknown worker tier "${requestedTier}"` +
-						` (configured tiers: ${available.length > 0 ? available.join(", ") : "none"}). ` +
-						"Add it to ~/.pi/agent/pi-delegate.config.json under \"tiers\", drop the tier param, " +
-						"or pass provider/model/thinking explicitly.",
-					{ tier: requestedTier, availableTiers: available, name: input.name },
-				),
-			};
-		}
-	}
-	const pickTier = (
-		explicit: string | undefined,
-		fromTier: string | undefined,
-		fromDefaults: string | undefined,
-	): string | undefined => explicit ?? fromTier ?? fromDefaults;
-	const provider = pickTier(input.provider, tierEntry?.provider, spawnDefaults.provider);
-	const model = pickTier(input.model, tierEntry?.model, spawnDefaults.model);
-	const thinking = pickTier(input.thinking, tierEntry?.thinking, spawnDefaults.thinking);
-	const missingTierKeys = [
-		provider === undefined ? "provider" : undefined,
-		model === undefined ? "model" : undefined,
-		thinking === undefined ? "thinking" : undefined,
-	].filter((k): k is string => typeof k === "string");
-	if (missingTierKeys.length > 0) {
-		return {
-			ok: false,
-			failure: fail(
-				"E_TIER",
-				`E_TIER — no worker ${missingTierKeys.join("/")} configured (no built-in tier exists). ` +
-					"Set \"tiers\" / \"defaults\" in ~/.pi/agent/pi-delegate.config.json, e.g. " +
-					'{"tiers": {"flash": {"provider": "zai", "model": "glm-5.3-flash", "thinking": "high"}}, ' +
-					"\"defaults\": {\"tier\": \"flash\"}} — or pass provider/model/thinking explicitly.",
-				{ missing: missingTierKeys, name: input.name },
-			),
-		};
-	}
-	// The E_TIER guard above guarantees all three keys are defined (the same
-	// shape the execute closure's later `provider as string` sites relied on).
-	return { ok: true, provider: provider as string, model: model as string, thinking: thinking as string };
-}
-
-/** Explicit inputs of the report-schema resolution phase (no closure state). */
-interface SchemaResolutionInput {
-	name: string;
-	/** Resolved brief path (empty for probes). */
-	briefPath: string;
-	/** Session cwd — the project-local schema library root is resolved from it. */
-	cwd: string;
-	isProbe: boolean;
-}
-
-/**
- * v1.5 report-schema resolution as a PURE function (verbatim decision logic
- * from the execute closure; the one advisory side effect — the
- * "schema resolver threw" progress line — comes back as degradedWarning for
- * the caller to emit, keeping the function itself side-effect-free).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: name (worker name, for the E_BRIEF payload); briefPath (resolved);
- *   cwd; isProbe (probes have no brief → base schema only, no I/O)
- * Output: {ok:true, briefSchema, schemaProvenance, resolvedSchema,
- *   degradedWarning?} — the three closure variables' values, or
- *   {ok:false, failure} — the E_BRIEF tool result to return verbatim
- * Guarantees:
- *   - a bad schema rejects the spawn with E_BRIEF BEFORE place() (never
- *     wastes a worker)
- *   - an unexpected resolver THROW degrades to base-schema-only validation
- *     (ok:true + degradedWarning) — the {ok:false} path is the real
- *     rejection; schema null = the brief has no reportSchema key (base-only
- *     validation, never a rejection)
- *   - pure except the resolver's own documented fs reads (resolveReportSchema)
- * Raises: never (the resolver's throws are caught here, per the contract)
- */
-function resolveBriefReportSchema(input: SchemaResolutionInput): {
-	ok: true;
-	briefSchema: Record<string, unknown> | null;
-	schemaProvenance: string[];
-	resolvedSchema: Record<string, unknown> | null;
-	degradedWarning?: string;
-} | { ok: false; failure: ToolResult } {
-	const { name, briefPath, cwd, isProbe } = input;
-	if (isProbe) return { ok: true, briefSchema: null, schemaProvenance: [], resolvedSchema: null };
-	let resolved: ReturnType<typeof resolveReportSchema>;
-	let degradedWarning: string | undefined;
-	try {
-		// EXTERNAL_DEPENDENCY: filesystem — <cwd>/.pi/delegate-schemas/
-		// (via pi's CONFIG_DIR_NAME — the literal ".pi" honoring pi's
-		// project-config convention) and ~/.pi/agent/pi-delegate-schemas/
-		// (library type files <name>.json).
-		// Two-tier schema library: project-local
-		// <cwd>/.pi/delegate-schemas/ searched FIRST, user-level second.
-		resolved = resolveReportSchema(briefPath, resolve(cwd, CONFIG_DIR_NAME, "delegate-schemas"));
-	} catch (err) {
-		// A throw is not a resolution failure per the contract ({ok:false} is) —
-		// degrade to base-schema-only validation instead of rejecting the spawn.
-		resolved = { ok: true, schema: null, provenance: [] };
-		degradedWarning = errText(err);
-	}
-	if (!resolved.ok) {
-		return {
-			ok: false,
-			failure: fail(
-				"E_BRIEF",
-				`E_BRIEF — report schema resolution failed for ${name}: ${resolved.error}\n` +
-					"Fix the brief's reportSchema reference or inline fragment before spawning.",
-				{ briefPath, name, resolutionError: resolved.error },
-			),
-		};
-	}
-	// Corrected contract (merge gate): schema is null when the brief has no
-	// reportSchema key — ok-with-null → base-only validation, never a rejection.
-	return {
-		ok: true,
-		briefSchema: resolved.schema,
-		schemaProvenance: resolved.provenance,
-		resolvedSchema: resolved.schema,
-		...(degradedWarning !== undefined ? { degradedWarning } : {}),
-	};
-}
+// Law 5 execution (the wave-3 continuation this banner region planned): the
+// pure execute() phases — tier/provider/model resolution, brief report-schema
+// resolution, tier-mismatch detection, the brief-reportSchema violation note
+// and the last-live-worker nudge — moved verbatim to src/spawn-phases.ts
+// (the src/pre-placement.ts precedent). A phase that reads one of the seven
+// closure mutables stays in the closure — the MODULE_CONTRACT carries the
+// extraction state; the structural edges are pinned by
+// test/spawn-shrink-check.ts.
+import {
+	briefSchemaViolationNote,
+	detectBriefTierMismatch,
+	resolveBriefReportSchema,
+	resolveTierPlacement,
+} from "./spawn-phases.ts";
 
 /**
  * Register the `delegate` tool on the extension API.
@@ -585,7 +440,7 @@ function resolveBriefReportSchema(input: SchemaResolutionInput): {
  *   - blocking by design up to the settle gate (or explicit waitMs); Esc/abort
  *     detaches — after the agent exists the worker is NEVER killed
  *   - the report file is the completion criterion; probes are the exception
- *     (pane/status verdict, no report file ever expected)
+ *     (console/status verdict, no report file ever expected)
  *   - manifest written between place() and startAgent (teardown visibility);
  *     canonical-name reconcile + sessionPath recorded when known
  *   - dual-gauge governor (E_CONTEXT / E_BUDGET) refuses re-spawns of workers
@@ -604,7 +459,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 		name: "delegate",
 		label: "Delegate",
 		description:
-			"Spawn one worker (worktree or tab), brief it, block until it settles, and validate its JSON report. " +
+			"Spawn one worker (worktree or shared placement), brief it, block until it settles, and validate its JSON report. " +
 			"mode 'probe' is the explicit smoke gate — run one probe before any ≥3 fan-out. " +
 			"Esc detaches without killing the worker. Report status 'fail' still means the worker ran and reported honestly.",
 		promptSnippet: "Spawn a worker with a brief file and block until its report lands",
@@ -632,7 +487,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			"delegate blocks until the worker settles; the worker's report file is the completion criterion, not the agent status — status fail in the report is still an honest completion.",
 			"If delegate returns E_REPORT_MISSING or E_REPORT_INVALID, do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate); never repeat verbatim. " +
 			RETRY_MANDATE,
-			"delegate mode 'probe' is OPTIONAL (enterprise cost): only for untrusted environments — the first real worker's structured failures (E_PLACE/E_START/E_NAME) are just as cheap a smoke signal. Probes verify the pane reply \"OUTPUT: OK\" by streaming readback.",
+			"delegate mode 'probe' is OPTIONAL (enterprise cost): only for untrusted environments — the first real worker's structured failures (E_PLACE/E_START/E_NAME) are just as cheap a smoke signal. Probes verify the console reply \"OUTPUT: OK\" by streaming readback.",
 			"delegate probe workers NEVER write a report file — a 'probe OK/FAIL' result is final by itself; never wait for or read a probe's report-<name>.json (only real workers produce reports).",
 			"After delegate returns E_TIMEOUT or a detach, END YOUR TURN: the background watcher wakes you when the report lands, a question arrives, grill_deck is invoked, context goes critical, or the worker dies. Never sleep in bash to wait for a worker and never re-call delegate to wait; delegate_status polling is the only in-turn alternative (bash sleep only when the watcher is absent — old extension build).",
 		],
@@ -665,6 +520,11 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const step = (text: string, details: Record<string, unknown>) => {
 				onUpdate?.({ content: [{ type: "text", text }], details });
 			};
+			// Mode alias normalization: "shared" is the new accepted spelling of the
+			// shared placement; the canonical internal/wire value stays "tab" (frozen
+			// manifest kind value, frozen PlacementMode type) — everything downstream
+			// (manifest, placement objects, journal events) keeps writing "tab".
+			if (params.mode === "shared") params.mode = "tab";
 			const startedAtDate = new Date();
 			const isProbe = params.mode === "probe";
 			// BUG_FIX_CONTEXT (v1.8b §20.1 hardened + v1.11 §21): the DEFAULT blocking
@@ -685,10 +545,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					: isProbe
 						? PROBE_TIMEOUT_MS
 						: settleGateMs);
-		// v1.14 early release — watch.releaseOn=started (or per-call override):
+		// Early release — watch.releaseOn, default "started" (per-call override):
 		// once the worker is proven started and working, hand off to the watcher
-		// instead of blocking the rest of the settle gate. Probes are exempt:
-		// their full window IS the smoke verdict.
+		// right away. The opt-out "settle" blocks the rest of the settle gate.
+		// Probes are exempt: their full window IS the smoke verdict.
 		const releaseOn = params.releaseOn ?? resolveWatchConfig().releaseOn;
 		const releaseOnStarted = !isProbe && releaseOn === "started";
 			// EXTERNAL_DEPENDENCY: ~/.pi/agent/pi-delegate.config.json — "tiers" and
@@ -697,6 +557,23 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// Wave 3 (step 4.5): the phase is a pure function over explicit args
 			// (resolveTierPlacement) — the decision logic, E_TIER texts and details
 			// payloads are verbatim; only the boundary is a discriminated result.
+			// Profiles (gap 0): the tier/defaults tables come from the merged
+			// config view (src/profile.ts). A broken NAMED profile is an
+			// operator-intent config error — surfaced here as a structured
+			// E_START fail (never a raw throw past the tool boundary), with the
+			// profile file + way out in the guidance.
+			let tierTable: Record<string, SpawnTier>;
+			let spawnDefaults: ReturnType<typeof resolveSpawnDefaults>;
+			try {
+				tierTable = resolveTierTable();
+				spawnDefaults = resolveSpawnDefaults();
+			} catch (err) {
+				const de = asDelegateError(err);
+				return fail("E_START", `E_START — ${errText(err)}\n${de?.guidance ?? ""}`.trim(), {
+					name: params.name,
+					profile: process.env.PI_DELEGATE_PROFILE?.trim() || undefined,
+				});
+			}
 			const tierResolution = resolveTierPlacement(
 				{
 					name: params.name,
@@ -705,71 +582,40 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					model: params.model,
 					thinking: params.thinking,
 				},
-				resolveTierTable(),
-				resolveSpawnDefaults(),
+				tierTable,
+				spawnDefaults,
 			);
 			if (!tierResolution.ok) return tierResolution.failure;
 			const { provider, model, thinking } = tierResolution;
 			const mode = params.mode ?? "worktree";
-			// Probe is not a placement mode: it uses the cheapest real placement (tab).
+			// Probe is not a placement mode: it uses the cheapest real placement (tab — the frozen wire value for the shared placement).
 			const placementMode: PlacementMode = mode === "probe" ? "tab" : mode;
 			const repoPath = resolve(ctx.cwd, params.repoPath ?? ctx.cwd);
 			const branch = params.branch ?? `delegate/${params.name}`;
 			const briefPath = isProbe ? "" : resolve(ctx.cwd, params.briefPath.replace(/^@/, ""));
 
-			// 1. Validate name + brief (fail fast, before touching herdr).
-			if (!WORKER_NAME_RE.test(params.name)) {
-				return fail(
-					"E_NAME",
-					`E_NAME — invalid worker name "${params.name}". ` +
-						"Names must match [a-z][a-z0-9_-]{0,31}; use the canonical name (read back at start) when retrying.",
-				);
-			}
-
-			let exchangeDir: string | null = null;
-			if (!isProbe) {
-				try {
-					exchangeDir = ensureExchangeDir(briefPath).dir;
-				} catch (err) {
-					const de = asDelegateError(err);
-					const guidance =
-						de?.guidance ?? `Write the brief file under ${exchangeRoot()}/<task>/ first, then call delegate again.`;
-					return fail("E_BRIEF", `E_BRIEF — ${errText(err)}\n${guidance}`, {
-						briefPath,
-						name: params.name,
-					});
-				}
-			}
-			const manifestDir = exchangeDir ?? probeExchangeDir();
-
-			// Dual-gauge governor: refuse to re-spawn a worker whose
-			// recorded session tripped EITHER gauge — context % (primary, pi's own
-			// formula) or output budget (secondary, when set).
-			const maxPct = params.maxContextPct ?? CONTEXT_WARN_PCT;
-			const contextWindow = resolveContextWindow(model);
-			const priorWorker = manifestStore.read(manifestDir)?.workers.find(
-				(w) => w.name === params.name && typeof w.sessionPath === "string" && w.sessionPath.length > 0,
-			);
-			if (priorWorker?.sessionPath) {
-				const priorUsage = parseSessionUsage(priorWorker.sessionPath);
-				if (overContext(priorUsage, contextWindow, maxPct)) {
-					const pct = contextPct(priorUsage, contextWindow);
-					return fail(
-						"E_CONTEXT",
-						`E_CONTEXT — worker session near compaction (ctx ${pct}% ≥ ${maxPct}%): its next prompt would compact and lose the brief. ` +
-							"Start a NEW worker name (diagnosed retry = new brief + fresh context).",
-						{ usage: priorUsage, contextWindow, maxPct, sessionPath: priorWorker.sessionPath, name: params.name },
-					);
-				}
-				if (overOutputBudget(priorUsage, params.budgetTokens)) {
-					return fail(
-						"E_BUDGET",
-						`E_BUDGET — worker over OUTPUT budget (${priorUsage.output} > ${params.budgetTokens} tokens). ` +
-							"Pick a NEW worker name or pass an explicit higher budgetTokens; budget decline across diagnosed retries is orchestrator policy.",
-						{ usage: priorUsage, budget: params.budgetTokens, sessionPath: priorWorker.sessionPath, name: params.name },
-					);
-				}
-			}
+			// 1. Validate name + brief, then the dual-gauge governor (fail fast,
+			// before touching herdr). Wave 3 decomposition (Law 5 continuation): the
+			// region is TWO pure functions over explicit args
+			// (src/pre-placement.ts) — the decision logic, the E_NAME/E_BRIEF/
+			// E_CONTEXT/E_BUDGET texts and details payloads are verbatim; only the
+			// phase boundary became a discriminated result the closure returns.
+			const nameBrief = validateNameAndBrief({
+				name: params.name,
+				briefPath,
+				isProbe,
+			});
+			if (!nameBrief.ok) return nameBrief.failure;
+			const manifestDir = nameBrief.manifestDir;
+			const governor = applyGaugeGovernor({
+				name: params.name,
+				model,
+				manifestDir,
+				maxContextPct: params.maxContextPct,
+				budgetTokens: params.budgetTokens,
+			});
+			if (!governor.ok) return governor.failure;
+			const { maxPct, contextWindow } = governor;
 
 			// v1.5: resolve the brief's report schema — inline
 			// fragment or named library type — once, BEFORE place(): a bad schema must
@@ -839,7 +685,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			}
 			const placementRef: string = placementHandle;
 
-			//    BUG_FIX_CONTEXT: symptom — a failed start left an orphaned pane/
+			//    BUG_FIX_CONTEXT: symptom — a failed start left an orphaned console/
 			//    worktree invisible to teardown because the manifest entry was only
 			//    written after a successful start. Why the old order did not work:
 			//    start failure skipped the manifest write entirely. What was done:
@@ -939,6 +785,12 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					schemaProvenance,
 					embodiment: { run: embodiment.run, placementRef: embodiment.placementRef },
 					...(orchestratorSessionPath ? { orchestratorSessionPath } : {}),
+					// Passport: the pre-run git snapshot stamps ONLY worktree placements
+					// (a tab shares the checkout with other workers and the orchestrator —
+					// a snapshot there would falsely attribute others' edits to this run).
+					// Advisory by contract: probe failures yield an empty snapshot and
+					// never fail the spawn.
+					...(placement.kind === "worktree" ? readPreRunGitSnapshot(placement.checkoutPath) : {}),
 				};
 				// F1 fleet accounting: the FIRST delegate call of a task fixes the
 				// task-level description (derived from THIS call's brief via
@@ -982,7 +834,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				start = await transport.startAgent({
 					name: params.name,
 					// Workerhost inversion (design §3): StartReq keyed by the opaque ref;
-					// legacy pane id as fallback so pre-ref placement records still start.
+					// legacy alternate id as fallback so pre-ref placement records still start.
 					placementRef,
 					provider: provider as string,
 					model: model as string,
@@ -998,7 +850,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// teardown-safety invariant — do not move the append). A refused start
 				// would leave a phantom entry with no sessionPath, so roll back ONLY the
 				// entry THIS call appended: match by requested name + this call's
-				// placement ref (legacy pane id fallback) and only if it never gained a
+				// placement ref (legacy alternate id fallback) and only if it never gained a
 				// sessionPath — a pre-existing same-name
 				// worker (its own placement / a real sessionPath) is preserved.
 				// Wave 4 item 6 (reliability finding 7): a failed BEST-EFFORT rollback
@@ -1028,7 +880,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				return fail(
 					code,
 					`${code} — agent start failed for ${params.name}: ${errText(err)}\n` +
-						"Check pane readiness; a retry is a new delegate call. " +
+						"Check console readiness; a retry is a new delegate call. " +
 						(manifestWarning
 							? `Placement NOT tracked in manifest (${manifestWarning}) — clean it up manually via /delegate-teardown or the host workspace listing.`
 							: "Placement tracked in manifest — run /delegate-teardown to clean up.") +
@@ -1056,21 +908,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// Tier-mismatch guard: when the brief text declares a
 			// tier ("frontier tier"/"flash tier"/"execution tier") and the spawned
 			// model contradicts it, surface a warning on every terminal result.
-			let tierWarning = "";
-			if (!isProbe) {
-				try {
-					const briefText = await readFile(briefPath, "utf8");
-					const tierMatch = briefText.match(/frontier tier|flash tier|execution tier/i);
-					if (tierMatch) {
-						const declared = /frontier/i.test(tierMatch[0]) ? "frontier" : "flash";
-						const modelStr = model as string; // guaranteed by the E_TIER guard above
-						const ok = declared === "frontier" ? /frontier/i.test(modelStr) : /flash|glm/i.test(modelStr);
-						if (!ok) tierWarning = `brief declares ${declared} tier but worker runs ${modelStr} — tier mismatch`;
-					}
-				} catch {
-					// unreadable brief → guard is advisory, never blocks the run
-				}
-			}
+			// Wave 3 decomposition (Law 5 continuation): the detection is a pure
+			// module-level function over explicit args (verbatim logic + text); the
+			// closure keeps the tierWarning phase state it feeds.
+			const tierWarning = await detectBriefTierMismatch({ briefPath, model, isProbe });
 
 			// Canonical differs: reconcile the manifest record so audit/teardown and
 			// report collection use the canonical name + report path. Also records the
@@ -1183,28 +1024,9 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				);
 			};
 
-			//
-			// FUNCTION_CONTRACT:
-			// Input: none (closure: transport, manifestDir, ctx)
-			// Output: resolves when the (skippable) nudge attempt is done
-			// Guarantees:
-			//   - fires only when zero workers are working/blocked; any failure
-			//     (herdr unreachable) is swallowed — advisory only
-			// Raises: never
-			// Last-live-worker nudge: when no worker is live
-			// (working/blocked) anymore after this collect, fire notifyFleetIdle with
-			// the task manifest's worker count. Advisory — never affects outcomes.
-			const maybeNotifyFleetIdle = async (): Promise<void> => {
-				try {
-					const statuses = await transport.listStatuses();
-					const live = statuses.filter((s) => s.status === "working" || s.status === "blocked");
-					if (live.length === 0) {
-						notifyFleetIdle(ctx, manifestStore.read(manifestDir)?.workers.length ?? 1);
-					}
-				} catch {
-					// advisory only — herdr unreachable → skip the nudge
-				}
-			};
+			// Last-live-worker nudge (wave 3 decomposition, Law 5 continuation):
+						// reads no closure state, only the injected transport, ctx and the
+			// manifest dir passed at each call site.
 
 			//
 			// FUNCTION_CONTRACT:
@@ -1229,16 +1051,16 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// collect (fix: requested-name report) and the detached-after-settle path.
 			// v1.12.1 lifecycle hygiene: after a VALID strict collect
 			// (report delivered, collectedAt stamped) the worker is torn down
-			// automatically — the pane/worktree has served its purpose. USER DECISIONS
+			// automatically — the console/worktree has served its purpose. USER DECISIONS
 			// locked: default ON (collect.teardownAfterCollect), grace 0, only on VALID
-			// collect. Guards: SKIP for probes (no report expected; panes stay this
+			// collect. Guards: SKIP for probes (no report expected; consoles stay this
 			// wave), SKIP when a mailbox question file exists (the worker is still in
 			// a conversation). ADVISORY by contract (§21): every skip/failure is a
 			// note line + audit entry — a teardown failure NEVER alters the collect
 			// result (ok stays true, verdict/report untouched) and never throws past
 			// the tool boundary.
 			const teardownAfterCollect = async (): Promise<string> => {
-				if (isProbe) return ""; // probes keep their panes this wave
+				if (isProbe) return ""; // probes keep their consoles this wave
 				if (!resolveCollectConfig().teardownAfterCollect) return ""; // config off
 				try {
 					// A pending question means the worker is still in a conversation.
@@ -1248,11 +1070,11 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				}
 				await logTeardownAudit(
 					manifestDir,
-					`plan: teardown worker=${canonical} kind=${placement.kind} workspace=${placement.workspaceId ?? "-"} pane=${placement.paneId ?? "-"} (auto-after-collect)`,
+					`plan: teardown worker=${canonical} kind=${placement.kind} workspace=${placement.workspaceId ?? "-"} legacy-id=${placement.paneId ?? "-"} (auto-after-collect)`,
 				);
 				try {
 					// Migration stage 1 (extensibility-defect 1): the close result says
-					// whether the pane was ALREADY gone (structured field, no message
+					// whether the console was ALREADY gone (structured field, no message
 					// parsing) — the audit trail keeps the distinction without the
 					// tool layer ever regexing "not found".
 					const res = await transport.teardown({ name: canonical, placement, force: true });
@@ -1317,6 +1139,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// too). Best-effort by contract: a failure warns like the archive note,
 				// never fails the collect.
 				let collectedNote = "";
+				// Passport: the post-run git delta (worktree placements only — same
+				// shared-checkout attribution rule as the pre-run snapshot). Computed
+				// ONCE here, before the collectedAt stamp; advisory, never throws.
+				const gitDelta = placement.kind === "worktree" ? readPostRunGitDelta(placement.checkoutPath) : undefined;
 				try {
 					// Migration stage 2 (audit step 6): the collectedAt stamp is now a
 					// REDUCER TRANSITION (lifecycle.stampCollected) — an illegal stamp
@@ -1340,7 +1166,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 								return w; // a different embodiment of the same name — not ours to stamp
 							}
 							const stamped = stampCollected(w, collectedAt);
-							return stamped.ok ? stamped.entry : w;
+							if (!stamped.ok) return w;
+							// Passport: the collect that stamps collectedAt also stamps
+							// the post-run delta — one write, one witness.
+							return gitDelta ? { ...stamped.entry, gitDelta } : stamped.entry;
 						}),
 					}));
 					// F1: a collect is a manifest WRITER — stamp the recomputed usage
@@ -1355,8 +1184,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				const collectedStampNote = collectedNote ? `\nWarning: ${collectedNote}` : "";
 				journal(pi, "collect", canonical, report.status, archivePath ?? undefined);
 				// Last live worker settled → teardown nudge.
-				void maybeNotifyFleetIdle();
-				// v1.12.1: the collect is DONE here (report valid, collectedAt
+								// v1.12.1: the collect is DONE here (report valid, collectedAt
 				// stamped) — the auto-teardown below can only append an advisory
 				// note, never change this result's verdict.
 				const teardownNote = await teardownAfterCollect();
@@ -1376,7 +1204,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						? `Report OK: status=pass — ${summaryCap.text}`
 						: `Report OK: status=fail (honest failure — the worker ran and reported) — ${summaryCap.text}`;
 				return textResult(
-					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}).\n` +
+					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}) · pi-delegate v${EXTENSION_VERSION}.\n` +
 						`${verdictLine}\n` +
 						`Artifacts: ${artifactsList ? artifactsCap.text : "(none)"}` +
 						archiveNote +
@@ -1391,6 +1219,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						canonical,
 						requestedName: params.name,
 						nameUniquified: canonical !== params.name,
+						version: EXTENSION_VERSION,
 						placement,
 						branch: placement.branch,
 						status: settleStatus,
@@ -1468,8 +1297,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const probeSalvage = (): ToolResult | null => {
 				if (!isProbe) return null;
 				if (!sessionPath || parseSessionUsage(sessionPath).turns === 0) return null;
-				void maybeNotifyFleetIdle();
-				return textResult(
+								return textResult(
 					`probe OK (detached after settle) — smoke gate passed before the abort (agent ${canonical}, smoke reply in session). ` +
 						"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
 						"Run one probe before any ≥3 fan-out." +
@@ -1507,7 +1335,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				return fail(
 					code,
 					`${code} — prompt for ${canonical} was not accepted: ${errText(err)}\n` +
-						"The worker pane may not be at a prompt; inspect via delegate_status, then answer or re-brief." +
+						"The worker console may not be at a prompt; inspect via delegate_status, then answer or re-brief." +
 						`${uniquified ? ` ${uniquified}` : ""}`,
 					{ canonical, placement, stderr: errText(err) },
 				);
@@ -1740,17 +1568,16 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				);
 			}
 
-			// --- Probe flow: no report validation; pane status is the verdict.
+			// --- Probe flow: no report validation; console status is the verdict.
 			if (isProbe) {
 				// Honest-settle v1.6 (R6 blocker fix): a never-started
-				// probe is probe FAIL — never let the pane status produce a spurious
+				// probe is probe FAIL — never let the console status produce a spurious
 				// 'probe OK' (the original spurious-pass bug half-survived here).
 				if (settle.kind === "never-started") {
-					void maybeNotifyFleetIdle();
-					return fail(
+										return fail(
 						"E_START",
 						`probe FAIL — worker never started (prompt never consumed) for ${canonical}; ` +
-							"inspect the pane via a pane read (readPane); do NOT fan out. Probes write no report file." +
+							"inspect the console via a console read (readConsole); do NOT fan out. Probes write no report file." +
 							`${uniquified ? ` ${uniquified}` : ""}` +
 							`${manifestWarning ? ` Warning: ${manifestWarning}` : ""}`,
 						{ probe: "fail", canonical, placement, settleKind: settle.kind, elapsedMs },
@@ -1762,24 +1589,23 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				} catch {
 					live = "unknown";
 				}
-				// v1.8.x: verdict from STREAMING (pane readback) — did the worker actually
+				// v1.8.x: verdict from STREAMING (console readback) — did the worker actually
 				// reply "OUTPUT: OK"? Status alone (idle/done) is necessary, not sufficient.
 				const reminder =
 					"Probe is optional — a real worker's first structured failure (E_PLACE/E_START/E_NAME) is just as cheap a smoke signal.";
-				let paneText: string | undefined;
-				const readPane = (transport as { readPane?: (name: string, opts?: { maxChars?: number }) => Promise<string> })
-					.readPane;
-				if (typeof readPane === "function") {
+				let consoleText: string | undefined;
+				const readConsole = (transport as { readConsole?: (name: string, opts?: { maxChars?: number }) => Promise<string> })
+					.readConsole;
+				if (typeof readConsole === "function") {
 					try {
-						paneText = await readPane(canonical, { maxChars: 4000 });
+						consoleText = await readConsole(canonical, { maxChars: 4000 });
 					} catch {
-						paneText = undefined; // pane readback unavailable → status-based fallback
+						consoleText = undefined; // console readback unavailable → status-based fallback
 					}
 				}
-				const markerSeen = typeof paneText === "string" && /OUTPUT:\s*OK/i.test(paneText);
+				const markerSeen = typeof consoleText === "string" && /OUTPUT:\s*OK/i.test(consoleText);
 				if (markerSeen) {
-					void maybeNotifyFleetIdle();
-					return textResult(
+										return textResult(
 						`probe OK — smoke reply verified in worker output ("OUTPUT: OK", agent ${canonical}, status ${live}). ` +
 							"Probes write NO report file — this verdict is final; do not wait for or read report-<name>.json. " +
 							"Probe is optional: skip it when the environment is already trusted. " +
@@ -1791,32 +1617,31 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 							requestedName: params.name,
 							placement,
 							status: live,
-							verified: "pane-marker",
+							verified: "console-marker",
 							elapsedMs,
 							...(manifestWarning ? { warning: manifestWarning } : {}),
 						},
 					);
 				}
-				const paneEvidence =
-					typeof paneText === "string" && paneText.trim().length > 0
-						? ` Pane tail: …${paneText.trim().slice(-300)}`
-						: " Pane readback unavailable — verdict from status only.";
-				void maybeNotifyFleetIdle();
-				if (live === "idle" || live === "done") {
+				const consoleEvidence =
+					typeof consoleText === "string" && consoleText.trim().length > 0
+						? ` Console tail: …${consoleText.trim().slice(-300)}`
+						: " Console readback unavailable — verdict from status only.";
+								if (live === "idle" || live === "done") {
 					return fail(
 						"E_START",
-						`probe FAIL — agent ${canonical} ${live} but the smoke reply "OUTPUT: OK" was not found in its output.${paneEvidence} ` +
+						`probe FAIL — agent ${canonical} ${live} but the smoke reply "OUTPUT: OK" was not found in its output.${consoleEvidence} ` +
 							"Fix before fanning out. Probes write no report file. " +
 							`${reminder}${uniquified ? ` ${uniquified}` : ""}` +
 							`${manifestWarning ? ` Warning: ${manifestWarning}` : ""}`,
-						{ probe: "fail", canonical, placement, status: live, verified: "pane-marker-missing", timedOut: settle.kind === "timeout", elapsedMs },
+						{ probe: "fail", canonical, placement, status: live, verified: "console-marker-missing", timedOut: settle.kind === "timeout", elapsedMs },
 					);
 				}
 				return fail(
 					"E_START",
 					`probe FAIL — agent ${canonical} status ${live}` +
-						`${settle.kind === "timeout" ? " (settle timed out)" : ""}: pane/agent did not reach a healthy state.${paneEvidence} ` +
-						"Check pane readiness and model flags (provider/model/thinking); fix before fanning out. Probes write no report file. " +
+						`${settle.kind === "timeout" ? " (settle timed out)" : ""}: console/agent did not reach a healthy state.${consoleEvidence} ` +
+						"Check console readiness and model flags (provider/model/thinking); fix before fanning out. Probes write no report file. " +
 						`${reminder}${uniquified ? ` ${uniquified}` : ""}` +
 						`${manifestWarning ? ` Warning: ${manifestWarning}` : ""}`,
 					{ probe: "fail", canonical, placement, status: live, timedOut: settle.kind === "timeout", elapsedMs },
@@ -1968,36 +1793,25 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// v1.2: distinguish a brief-reportSchema violation — base
 			// schema passes but the declared fragment rejects. The fragment error is
 			// already quoted verbatim in `what`; add dedicated guidance.
-			let schemaNote = "";
-			if (!missing) {
-				const base = validateReport(collected.usedPath, canonical);
-				if (base.ok) {
-					schemaNote =
-						"\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — " +
-						"either the worker or the schema fragment is wrong; compare evidence, then fix the brief or re-brief.";
-					// v1.5: the audit trail answers "what schema was this
-					// report held to" — quote the merged fragment (truncated) + provenance.
-					if (resolvedSchema) {
-						const fragmentJson = JSON.stringify(resolvedSchema);
-						schemaNote +=
-							`\nschema held: ${fragmentJson.length > 300 ? `${fragmentJson.slice(0, 300)}…` : fragmentJson}`;
-					}
-					if (schemaProvenance.length > 0) {
-						schemaNote += `\nschema provenance: ${schemaProvenance.join(" → ")}`;
-					}
-				}
-			}
+			// Wave 3 decomposition (Law 5 continuation): the violation note is built
+			// by a pure module-level function over explicit args (verbatim texts).
+			const schemaNote = briefSchemaViolationNote({
+				missing,
+				usedReportPath: collected.usedPath,
+				canonical,
+				resolvedSchema,
+				schemaProvenance,
+			});
 			const b = gaugeSummary();
 			// A settle (even a failed one) that empties the fleet still fires the
 			// teardown nudge.
-			void maybeNotifyFleetIdle();
-			return fail(
+						return fail(
 				code,
 				`${code} — worker ${canonical} settled but ${what}.\n` +
 					"Treat as a failed spawn: do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate). " +
 					RETRY_MANDATE +
 					" " +
-					"Read the worker's pane before retrying to find the actual root cause." +
+					"Read the worker's console before retrying to find the actual root cause." +
 					schemaNote +
 					`${uniquified ? ` ${uniquified}` : ""}` +
 					b.line,

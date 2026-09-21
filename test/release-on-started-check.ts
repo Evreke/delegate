@@ -91,6 +91,32 @@ try {
 		check("T-rel.3 resolveWatchConfig parses releaseOn=started", out === '"started"', out || child.stderr.toString());
 		rmSync(home, { recursive: true, force: true });
 	}
+
+	// 3b. Default flip: no config at all → "started" (the settle gate is no
+	// longer the inline default — it never settled a real worker, only
+	// produced a guaranteed timeout).
+	{
+		const home = mkdtempSync(join(tmpdir(), "rel-def-"));
+		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home }, stdout: "pipe", timeout: 20_000 });
+		const out = child.stdout.toString().trim();
+		check("T-rel.4 default releaseOn (no config) is started", out === '"started"', out || child.stderr.toString());
+		rmSync(home, { recursive: true, force: true });
+	}
+
+	// 3c. Opt-out: an explicit "settle" in the config is still honored.
+	{
+		const home = mkdtempSync(join(tmpdir(), "rel-settle-"));
+		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+		writeFileSync(
+			join(home, ".pi", "agent", "pi-delegate.config.json"),
+			JSON.stringify({ watch: { releaseOn: "settle" } }),
+		);
+		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home }, stdout: "pipe", timeout: 20_000 });
+		const out = child.stdout.toString().trim();
+		check("T-rel.5 explicit releaseOn=settle stays settle", out === '"settle"', out || child.stderr.toString());
+		rmSync(home, { recursive: true, force: true });
+	}
 } finally {
 	process.env.PATH = envPathBackup;
 	rmSync(stubDir, { recursive: true, force: true });

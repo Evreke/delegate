@@ -8,7 +8,8 @@
  * same verdict into their own vocabulary: delivery (observe.ts
  * detectWorkerEvents — deliver only on a proven owner), the mount gate
  * (observe.ts isWorkerSession/ownsChildManifests via sessionRole) and the UI
- * display (fleet.ts classifyOwnership). This module is a LEAF: it imports
+ * display (the former fleet.ts classifyOwnership, removed with the ambient
+ * UI). This module is a LEAF: it imports
  * NOTHING from production code — manifest and session shapes are declared
  * structurally here — because observe.ts already imports fleet.ts, so
  * fleet.ts cannot import observe.ts (a module cycle breaks the extension
@@ -209,7 +210,7 @@ export interface SessionRole {
 	 *  not an audience): EXACT match between the entry's own `sessionPath`
 	 *  (the worker session's JSONL path) and this session's proven
 	 *  sessionFile. The former checkoutPath === cwd mounting equivalent was
-	 *  REMOVED (stage C fix): it is ambiguous by construction — tab workers
+	 *  REMOVED (stage C fix): it is ambiguous by construction — shared-checkout workers
 	 *  share the orchestrator's checkout, and a HISTORICAL worker entry
 	 *  poisoned the gate for every future session started in that cwd (an
 	 *  orchestrator silently lost its watcher). A cwd match alone proves
@@ -255,7 +256,7 @@ export interface ManifestLike {
  *     known behavior);
  *   - isWorker is matched by the entry's OWN sessionPath only — the
  *     former cwd/checkoutPath branch was removed as ambiguous (stage C
- *     fix): tab workers share the orchestrator's checkout, and a
+ *     fix): shared-checkout workers share the orchestrator's checkout, and a
  *     historical worker entry used to poison the gate for ANY new session
  *     started in that cwd. Consequence: during the spawn race (the
  *     manifest record predates the worker's sessionPath) a worker session

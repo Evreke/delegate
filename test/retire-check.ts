@@ -1,5 +1,5 @@
 /**
- * R-check — §23 retire: extension-side auto-teardown of drained worker panes.
+ * R-check — §23 retire: extension-side auto-teardown of drained worker consoles.
  *
  * Run with: bun test/retire-check.ts   (from the extension dir)
  *
@@ -362,7 +362,7 @@ function workerView(w: ManifestWorker, statuses: AgentStatus[] | null = [DONE(w.
 	const dir = taskDir("silent");
 	const w = mkWorker(dir, "r-silent", { retiredAt: new Date(NOW - 60_000).toISOString() });
 	writeValidReport(dir, "r-silent");
-	// Herdr no longer knows the agent (the pane WAS closed) — without the
+	// Herdr no longer knows the agent (the console WAS closed) — without the
 	// retiredAt guard this would fire a bogus worker-dead.
 	const snap = snapshotFor([w], null);
 	const seen = new Map<string, import("../src/observe.ts").DeliveryKey>();
@@ -386,7 +386,7 @@ function workerView(w: ManifestWorker, statuses: AgentStatus[] | null = [DONE(w.
 	const tOff = fakeTransport();
 	const dOff = await retirePass(tOff, snapshotFor([w], [DONE("r-off")]), { nowMs: NOW, retireEnabled: false, retireTtlMs: 900_000 });
 	check("R0.1 disabled → the pass is a no-op (no decisions)", dOff.length === 0);
-	check("R0.2 disabled → panes NEVER close, even on ACK/TTL", tOff.teardownCalls.length === 0);
+	check("R0.2 disabled → consoles NEVER close, even on ACK/TTL", tOff.teardownCalls.length === 0);
 	check("R0.3 disabled → the manifest never gains stamps (no satellite layer either)", manifestFromDisk(dir).workers[0]?.retiredAt === undefined && stampsFromDisk(dir, "r-off").retiredAt === undefined, JSON.stringify(manifestFromDisk(dir).workers[0]));
 	check("R0.4 disabled → an existing release marker is left unconsumed (mailbox deletes it)", existsSync(releasePathFor(dir, "r-off")));
 
@@ -412,7 +412,7 @@ interface FakeTransport extends Transport {
 	teardownCalls: Array<{ name: string; placement: Placement }>;
 	failTeardown?: boolean;
 	/** When set, teardown resolves with { alreadyGone: true } — the structured
-	 *  idempotent-close signal (migration stage 1: the pane was ALREADY gone;
+	 *  idempotent-close signal (migration stage 1: the console was ALREADY gone;
 	 *  before this step the mock THREW a herdr "not found" message and the
 	 *  retire pass re-parsed the text — the contract this migration removes). */
 	alreadyGoneTeardown?: boolean;
@@ -519,7 +519,7 @@ function dOwnCheckLegacy(t: FakeTransport): boolean {
 	await retirePass(tFail, snapshotFor([wC], [DONE("r-throw")]), { nowMs: NOW, retireEnabled: true, retireTtlMs: 900_000 });
 	check("R5.7b next tick retries and succeeds", stampsFromDisk(dirC, "r-throw").retiredAt !== undefined);
 
-	// Teardown reports the structured ALREADY-GONE signal → the pane is ALREADY
+	// Teardown reports the structured ALREADY-GONE signal → the console is ALREADY
 	// gone (closed by herdr, the user, or another session): IDEMPOTENT close —
 	// retiredAt stamped THIS tick, no error log, and every later tick is silent
 	// (no spam). Migration stage 1: the signal is the teardown RESULT's

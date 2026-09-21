@@ -9,9 +9,9 @@
  *   answer → write a-<name>.json, then nudge idle/blocked/done workers to continue
  *   steer  → same as answer, for mid-run guidance
  *   release → post release-<name>.json (the §23 retire ACK — the watcher
- *     closes the drained worker's pane)
+ *     closes the drained worker's console)
  *
- * The mailbox is files, never panes: the worker is briefed (briefPrompt) to
+ * The mailbox is files, never consoles: the worker is briefed (briefPrompt) to
  * write q-<name>.json when blocked and poll a-<name>.json for answers.
  * <p>
  * MODULE_CONTRACT: registers the `delegate_mailbox` tool (exact name, exact
@@ -54,7 +54,8 @@ import { errText, fail, textResult, type ToolResult } from "./tool-result.ts";
 // capped in the rendered result via pi's own truncation helpers.
 import { capWorkerText } from "./text-cap.ts";
 import { resolveWatchConfig } from "./watch-config.ts";
-import { clampLines, renderDelegateLines } from "./fleet.ts";
+import { clampLines } from "./ui-text.ts";
+import { renderDelegateLines } from "./ui-text.ts";
 import { WORKER_NAME_RE, type QuestionEnvelope, type Transport } from "./host.ts";
 
 // SECTION 1/2 — delegate_mailbox tool (mailbox + retire ACK)
@@ -72,7 +73,7 @@ import { WORKER_NAME_RE, type QuestionEnvelope, type Transport } from "./host.ts
  *   answer → write a-<name>.json, then nudge idle/blocked/done workers to continue
  *   steer  → same as answer, for mid-run guidance
  *
- * The mailbox is files, never panes: the worker is briefed (briefPrompt) to
+ * The mailbox is files, never consoles: the worker is briefed (briefPrompt) to
  * write q-<name>.json when blocked and poll a-<name>.json for answers.
  *
  * Dependency rule: imports transport.ts and exchange.ts only — never the
@@ -117,7 +118,7 @@ function findWorkerDir(backendName: string, name: string): string | null {
  *     archived (renamed to q-<name>.answered-<ts>.json) so it can never
  *     re-fire AWAITING_ANSWER on a later run; nudge failures do not fail the
  *     action (the answer file is already posted)
- *   - F6 nudge resilience: the pane nudge is retried with backoff
+ *   - F6 nudge resilience: the console nudge is retried with backoff
  *     (NUDGE_ATTEMPTS total); on repeated failure a watcher-visible
  *     nudge-failed-<name>.json marker is written so the orchestrator's
  *     watcher delivers the wake-up instead, and a SUBSEQUENT successful
@@ -136,10 +137,10 @@ export function registerMailboxTool(pi: import("@earendil-works/pi-coding-agent"
 			"Two-way file mailbox with a delegate worker. action 'read' shows pending worker " +
 			"questions (q-<name>.json) without mutating anything; 'answer' posts a-<name>.json with your reply and " +
 			"nudges an idle/blocked worker to continue; 'steer' posts mid-run guidance the same way; " +
-			"'release' (§23) posts release-<name>.json — the retire ACK: the watcher closes the worker's pane " +
+			"'release' (§23) posts release-<name>.json — the retire ACK: the watcher closes the worker's console " +
 			"once it is retirable (valid report + drained mailbox + done/idle; probes immediately). " +
 			"Use this when delegate returns an AWAITING_ANSWER result.",
-		promptSnippet: "Read/answer a delegate worker's file mailbox (never touches the pane directly)",
+		promptSnippet: "Read/answer a delegate worker's file mailbox (never touches the console directly)",
 		promptGuidelines: [
 			"When delegate returns AWAITING_ANSWER, answer the worker's question here (action 'answer'); the worker will be nudged to continue.",
 			"delegate_mailbox action 'read' is side-effect-free — use it to check for pending questions before/after a delegate run.",
@@ -148,7 +149,7 @@ export function registerMailboxTool(pi: import("@earendil-works/pi-coding-agent"
 			action: StringEnum(["read", "answer", "steer", "release"] as const, {
 				description:
 					"read = show pending question(s); answer = reply to a question; steer = mid-run guidance; " +
-					"release = post the §23 retire ACK (watcher closes the pane when the worker is retirable)",
+					"release = post the §23 retire ACK (watcher closes the console when the worker is retirable)",
 			}),
 			name: Type.String({ description: "Worker name; must match [a-z][a-z0-9_-]{0,31}" }),
 			text: Type.Optional(
@@ -232,7 +233,7 @@ export function registerMailboxTool(pi: import("@earendil-works/pi-coding-agent"
 
 			// --- release (§23 retire ACK): post the marker; the WATCHER consumes it.
 			// No nudge is sent: release is a retirement signal, not worker mail — a
-			// nudged worker would start a NEW turn on a pane that is about to close.
+			// nudged worker would start a NEW turn on a console that is about to close.
 			// Needs no text, so it is handled BEFORE the answer/steer text guard.
 			if (params.action === "release") {
 				const releasePath = releasePathFor(dir, params.name);
@@ -285,14 +286,14 @@ export function registerMailboxTool(pi: import("@earendil-works/pi-coding-agent"
 			// EXTERNAL_DEPENDENCY: exchange dir on disk — answer file at
 			// /tmp/exchange/<task>/a-<name>.json (atomic write inside mailbox-store.ts).
 			// The ONE posting core (postSteerAndNudge) writes the envelope, then runs
-			// the afterPost hook, then nudges the pane — posting and nudging are no
+			// the afterPost hook, then nudges the console — posting and nudging are no
 			// longer duplicated here (Law 9; shared with the watcher auto-nudge).
 			let steer: SteerPostResult;
 			let archiveNote = "";
 			try {
 				steer = await postSteerAndNudge(transport, params.name, dir, params.text, {
 					// afterPost — runs AFTER the envelope is durably posted and BEFORE
-					// the pane nudge.
+					// the console nudge.
 					//
 					// EXTERNAL_DEPENDENCY: fs rename inside the exchange dir
 					// (/tmp/exchange/<task>/q-<name>.json → q-<name>.answered-<ts>.json).

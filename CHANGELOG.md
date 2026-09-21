@@ -4,8 +4,125 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Version numbers align with the iteration numbering in DESIGN.md (v1.x sections).
+Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/version.ts`, byte-matched by a static pin); git tags mirror them as `vX.Y.Z`.
 
+## [1.18.0] — 2026-09-21
+
+### Removed
+
+- The `/delegate-fleet` full-screen overlay (`fleet-overlay.ts`) and its checks. The ambient fleet widget — the live indicator of running workers — is KEPT (operator decision after the initial removal round); `fleet-widget.ts` was slimmed: the tool-result transcript rendering (`renderDelegateLines`) moved to `ui-text.ts` (consumed by `delegate`, `delegate_status`, `delegate_mailbox`), and the fleet-idle TUI nudge was retired with the overlay. `delegate_status` and `/delegate-teardown` are unchanged. The `delegate-fleet` journal event name is kept (frozen surface).
+
+### Added — Task passport (per-run provenance)
+
+Every delegated run now leaves a passport in the task manifest:
+
+- **Executing version.** Every `delegate` result carries the extension version that
+  actually ran the call — both in the human-readable completion line
+  (`· pi-delegate vX.Y.Z`) and in the result details (`version`). Single runtime
+  source: `src/version.ts`, byte-matched to `package.json` by a static pin
+  (Law 9: one artifact, one source of truth).
+- **Pre-run git snapshot** (worktree placements only): the checkout's base commit
+  and a capped `git status --porcelain` stamped into the worker's manifest entry
+  at spawn. Tab placements are deliberately NOT stamped — a tab shares its checkout
+  with other workers and the orchestrator, so a snapshot there would falsely attribute
+  others' edits to this run.
+- **Post-run git delta** (worktree placements only): a capped `git diff --stat`
+  plus the untracked-file list, stamped by the same collect that stamps
+  `collectedAt` — one write, one witness.
+- **Advisory by contract (Law 8).** Both probes are failure-tolerant: a probe
+  error or a non-git checkout yields an empty/absent passport and never affects
+  spawn or collect.
+- **Additive on-disk format (Law 7).** `gitBase` / `gitStatus` / `gitDelta` are
+  optional manifest fields; no `schemaVersion` bump.
+
+Regression: `test/passport-check.ts` (P1–P5).
+
+### Changed
+
+
+- **Default `releaseOn` flipped to `"started"`.** A blocking `delegate` call no longer
+  stands in the settle gate for the full 15 s window: as soon as the worker is proven
+  started and working, the call releases and the background watcher owns the wait
+  (wakes the orchestrator on report-ready / question / death). The old inline block
+  never settled a real worker in practice — it only produced a guaranteed timeout
+  before the handover. The old behavior stays available as the explicit opt-out:
+  `watch.releaseOn: "settle"` in the config or `releaseOn: "settle"` per call (the
+  whitelist normalizer now honors exactly `"settle"`; everything else falls back to
+  the default `"started"`). Probes are exempt in both modes — their full window IS
+  the smoke verdict. Regression: `test/release-on-started-check.ts` (T-rel.4/T-rel.5).
+
+- **Constitution v2 and machine-verified gates.** ARCHITECTURE.md: a direction statement and the eleventh law (independent reviewer agent with a structured verdict file, one canonical serialized main verdict, red-main freeze); the Law 5 module-size threshold is an exact 400 lines with a machine-verified decomposition ledger (the static check computes the over-threshold list and fails CI in both directions); Law 6 waivers are enumerated data, not prose; unfalsifiable wording rewritten to measurable form; audit history moved out per the closed-set law. AGENTS.md: three blocking QA layers (smoke / critical path / regression — no scheduled nightly), the acceptance list as a mandatory PR artifact, the binding-rule conflict rule.
+- **Law 5 slice 1 executed.** The pure execute() phases moved from `src/spawn.ts` (2147 → 1833 lines) to the new `src/spawn-phases.ts` (MODULE_CONTRACT); the Law 6 pins updated in the same commit. The stale herdr ledger plan was corrected to the landed split state.
+- **Pre-commit smoke gate.** `hooks/pre-commit` (typecheck + static pins, each bounded at 40s); installed via `git config core.hooksPath hooks/`.
+- **Runner verdict telemetry.** Every `test/run-checks.sh` verdict line carries host load, available memory and the concurrent-runner count — ENV-FAILs become attributed evidence instead of folklore.
+- **Language unification.** The threat catalog and all agent-facing binding documents are now uniformly English; `rpc-jsonl.ts` carries its MODULE_CONTRACT marker.
+
+## [1.17.1] — 2026-09-16
+### Added
+
+- **`streamConsole` explicit unsubscribe.** The seam method's return type now
+  carries optional `unsubscribe()` — consumers that stop consuming early (a
+  closed stream consumer) must call it: a bare for-await break does not
+  unregister the subscriber. Contract documented in src/host.ts; pinned by
+  `test/stream-seam-check.ts` (unsubscribe spy over a real `FidelityStore`).
+- **Named config profiles (gap 0).** Config presets live at
+  `~/.pi/agent/pi-delegate.d/<name>.json` (same shape as the base config) and
+  are selected by `PI_DELEGATE_PROFILE` (env) or the base config's `"profile"`
+  key (env wins). Sections replace the base wholesale; absent sections fall
+  through. A selected-but-missing/corrupt profile is a structured `E_START`
+  on delegate calls (advisory surfaces degrade to defaults). All config
+  readers now route through the single merged view (`src/profile.ts`); with
+  no profile selected behavior is byte-identical to before. Regression:
+  `test/profile-check.ts`.
+
+- **`"rpc"` worker-host backend (herdr-free delegation).** New config key `"host": "rpc"`
+  binds `src/host/rpc.ts` — workers run as headless `pi --mode rpc` child processes of the
+  orchestrator session, no herdr anywhere. Worktree placement is a plain `git worktree add`
+  under `~/.pi/agent/worktrees/` (sub-orchestrator authority guard mirrors the herdr
+  adapter's); prompts go over the worker's stdin (mid-stream submits re-sent as `steer`);
+  settle is proven by pi's own `agent_settled` rpc event — event-driven, zero polling, and
+  immune to the herdr-era sensor gaps (§19.1b/§19.1c); worker session JSONL is captured via
+  `get_state` for the budget gauges; `readConsole` is assembled from captured rpc output
+  (assistant text + tool activity) and bound at construction (spawn.ts's probe flow extracts
+  it unbound — herdr's `this`-free readConsole survived, this one initially did not);
+  extension-UI dialogs are auto-cancelled so a headless worker cannot deadlock. Known
+  limitation: rpc workers live with the orchestrator process — after it exits they finish
+  and exit (stdin EOF); a later session reads their reports but cannot nudge them. POSIX-only
+  for now (bare `pi` spawn, no Windows shim).
+  Regression: `test/rpc-host-check.ts` + `test/rpc-host-unit-check.ts` (deterministic, no pi
+  subprocess) + `test/host-parity-check.ts` rpc leg (real pi, never prompted — no LLM
+  traffic) + `test/rpc-host-e2e-check.ts` (live, opt-in via `RPC_E2E=1`).
+
+- **Full-fidelity worker console streaming (`streamConsole` seam method, rpc backend).**
+  New OPTIONAL `Transport` method `streamConsole?(name, opts?: { afterSeq? }): AsyncIterable<ConsoleEvent>`
+  (src/host.ts) — same optionality pattern as `readConsole`: implementations without an event
+  store omit it (herdr adapter and the fake host do) and callers probe with
+  `typeof transport.streamConsole === "function"` and degrade to `readConsole` polling. The
+  envelope is `ConsoleEvent` (workerName, seq, timestamp, kind, payload — raw text, no
+  re-encoding). The rpc adapter implements it: its stdout pump (single writer) mirrors every
+  parsed rpc record into a new per-host `FidelityStore` (src/stream-seam/) — drop-oldest ring
+  capped at 20,000 events per worker (~4.6 MB/worker at realistic payload sizes, ~235 MB at 50
+  workers), replay-from-cursor exact and gap-free within the retained window, seq numbers
+  monotonic across eviction, a backlog truncated by eviction opens with a `gap` marker naming
+  the first retained seq (the `readConsole` last-maxChars snapshot stays the fallback beyond
+  the window), and slow subscribers get drop-with-gap-marker backpressure (one merged marker
+  naming the recovery cursor; per-subscriber memory O(bufferLimit)). Subscribers attach via
+  `afterSeq`; teardown releases the worker's ring. Zero new data sources — fidelity
+  preservation of the stream the pump already received. Regression: `test/stream-seam-check.ts`
+  + the rpc leg `test/rpc-stream-check.ts`.
+
+- **Dialog-relay policy flag (rpc backend, additive, default OFF).** New rpc adapter option
+  `dialogRelay` (default false — behavior byte-identical to the auto-cancel default: blocking
+  extension-UI dialogs are answered `cancelled: true` over stdin exactly as before, proven by
+  the byte-identical stdin-write assertion in `test/rpc-stream-check.ts`). When enabled, a
+  blocking dialog offer is relayed onto the console stream as a `dialog` ConsoleEvent and stays
+  pending (status honestly reads `blocked`); the consumer answers via the adapter-level
+  `answerDialog()` method, which writes the same raw `extension_ui_response` stdin command the
+  auto-cancel path writes (the `rpcCommand` correlation wrapper would clobber the dialog's wire
+  id). Fire-and-forget UI records (setWidget/notify/…) mirror as `ui` ConsoleEvents only when
+  the flag is on. Regression: `test/rpc-stream-check.ts` (S4–S6).
+### Changed
+### Removed
 ## [1.17.0] — 2026-09-12
 
 The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned into law and executed across waves 0–4 (see STABILIZATION.md and the new ARCHITECTURE.md).
@@ -21,6 +138,7 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
 
 ### Changed
 
+- **Fleet UI is registry-driven (Law 9).** The ambient fleet widget and the `/delegate-fleet` overlay render from the fleet registry read-model (`snapshot()`/`tree()`/`subscribe()`) instead of each running its own `manifestStore` scan + `listStatuses` poll; the widget additionally refreshes on the registry's advisory events. Row assembly is one implementation (`buildWorkerViewsFromSource` → `buildWidgetRows`); liveness comes from the registry's status poll (a `retiredAt` worker reads done — console closed). Advisory invariants unchanged (failed reads keep the last snapshot; spawn/collect untouched); ownership glyphs, fold, mega-fold and width clamps unchanged. The shared text helpers moved to the leaf `src/ui-text.ts` (one implementation for widget, overlay and detail pane). Regression: `test/fleet-source-check.ts` (registry↔legacy parity, event-driven refresh, degradation, dispose teardown).
 - **placementRef-only seam (Law 4).** `workspaceId`/`paneId` are now optional compatibility fields on `Placement`; `placementRef` is the only required handle — a second backend (tmux) no longer must fake herdr-shaped ids. Parity pinned by `test/host-parity-check.ts`.
 - **Decomposition to layout v3 (Law 5).** The exchange/observe/spawn god-modules split into single-responsibility modules (archive, manifest-store, report-schema, mailbox-store, watch-store; watch-config, watch-detect, watcher, watch-retire, status-tool, commands; tool-result, clock, grace, mailbox-tool) with the duplicate helper clusters deduplicated (fs-probe, text-cap, one mailbox-state reader, one audit sink). Verbatim moves; the user-visible surface (tool names, params, commands, E_* codes) is unchanged.
 - **Cheaper watcher tick.** Satellite stamp layers are mtime-cached per mount and the session-JSONL tail parse is fingerprint-gated — no more up-to-1MB re-reads per worker per tick. Regression: `test/watch-tick-cost-check.ts`.
@@ -28,50 +146,24 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
 - **typebox moved to peerDependencies** per pi's packaging contract.
 - **Single-sourced skill (Law 9).** The stale repo-root `pi/skills/delegate` copy is deleted; both install layouts load the extension's copy.
 
-### Fixed
-
-- **Google-model-breaking enum parameter shape:** tool enums use `StringEnum` instead of `Type.Union` of literals.
-- **Hardcoded `~/.pi/agent` paths** (7 sites) replaced by pi's `getAgentDir()`/`CONFIG_DIR_NAME` exports, with a static pin banning literal joins.
-- **Double-delivery bug class closed:** accept-then-log delivery classification ("accepted by pi" counts as delivered; rollback only for genuine pre-delivery failures — `test/watcher-check.ts` W19) and the watcher-vs-collect `collectedAt` race (report wake dropped when the stamp lands between snapshot and send — W20).
-- **Lying contracts corrected** (seam module header, fleet stale fail-open paragraph); six production TypeScript errors resolved; `tsc --noEmit` is now a gate; both commands guard dialog/notify calls with `ctx.hasUI`.
-- **Silent-catch residue surfaced:** archive failures carry a reason, start-failure manifest-rollback failures are logged, audit-append failures are counted. Regression: `test/silent-catch-check.ts`.
-- **False worker-dead for worker-orchestrators:** a worker that ended its turn while its own fleet was still running was classified "settled with no report", causing retries and E_NAME collisions; now the parent watcher sees the in-flight fleet and gets an honest `fleet-in-flight` state instead. Regression: `test/watcher-check.ts` (new block).
-- **Schema-violating reports self-heal:** a report rejected at collect (e.g. `status: "done"`) no longer forces a full re-spawn — the watcher automatically posts a fix steer (the exact validator error) to a live worker, which rewrites the report in place; the report-invalid guidance is cheapest-first (steer first, re-spawn only if the worker is gone) and the spawn prompt carries a status anti-example. Regression: `test/watcher-check.ts` (+ auto-nudge block), `test/report-contract-check.ts` (prompt pin).
-
-### Windows path support
-
-- **Windows default exchange root.** On Windows the default exchange root is now
-  `%LOCALAPPDATA%\pi\exchange` (fallback `homedir()\AppData\Local\pi\exchange`); the
-  `PI_DELEGATE_EXCHANGE_ROOT` environment variable overrides it (absolute path). The
-  POSIX default `/tmp/exchange` is unchanged in this release.
-- **Single portable path builder.** Every exchange-layer path (manifest, brief, report,
-  mailbox, probe dir, teardown log) is assembled through the platform-aware builder
-  `src/expaths.ts` (`node:path`, injectable in tests) — no more mixed-separator paths
-  from raw `/` template literals. POSIX output stays byte-identical to previous
-  releases.
-- **No spurious `E_BRIEF` on Windows.** Brief validation (`ensureExchangeDir`) compares
-  directories case- and separator-stable on Windows (`c:\…` vs `C:\…`, `/` vs `\`);
-  POSIX comparison remains exact.
-- **Windows-correct classification and ownership.** Fleet grouping slugs and probe-dir
-  classification are separator-agnostic; the session-owner compare
-  (`sameSessionPath`, `src/watch-role.ts`) folds case and separators on Windows only —
-  a case-differing POSIX path still reads as foreign.
-- **herdr adapter on Windows.** Worktree containment uses a segment-aware compare;
-  the Windows CLI launch policy is `cmd.exe /d /s /c` with per-argument quoting and
-  `windowsHide`; kill escalation on Windows is `taskkill /pid … /T /F`. The POSIX
-  SIGTERM→SIGKILL escalation is unchanged.
-- **Scope note.** Windows-shaped tests (path.win32 fixtures) run on the POSIX CI; a
-  real-Windows E2E run is not part of CI — it stays an explicit manual QA gate. The
-  exchange/path layer is Windows-portable in 1.17.0; running the host backend on Windows
-  requires herdr for Windows.
-
-### Removed
-
-- **DESIGN.md** — the frozen historical design log (v1 → v1.17.0) — removed from the repo and the npm package; decision history lives in git.
-
-## [Unreleased]
+### Changed (restored 2026-09-21 — shipped with 1.17.0; misplaced out of this section during the release edit)
 
 ### Changed
+
+- **Herdr vocabulary retired in favor of backend-neutral terms.** The worker's
+  output/readback surface is now the **worker console**: the transport seam method
+  `readPane` is `readConsole`, and prose, guidance strings and comments say
+  "console read", "console readback" and "Worker console not at prompt". The
+  shared-checkout placement is now **shared placement**: the `delegate` tool's `mode`
+  parameter accepts `"shared"` — "placement in the shared checkout without
+  isolation" — and the existing `"tab"` value keeps working as a deprecated alias,
+  normalized to the same placement (the on-disk manifest `kind` value stays `"tab"`,
+  frozen while older sessions read those manifests). The herdr-shaped legacy id
+  fields keep their names and are described as "legacy alternate id
+  (herdr-shaped)"; consumers keep preferring `placementRef`. The herdr backend itself
+  is untouched: herdr CLI strings, the JSON field names parsed from herdr output,
+  manifest `kind` values, journal event names, tool names/params, the
+  `not_linked_worktree` token and every `E_*` error code stay byte-identical.
 
 - **An orchestrator session running in a directory where a worker once ran
   again receives wake-ups (stage C mount-gate fix).** The mount gate
@@ -81,8 +173,8 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
   watcher and lost every child wake-up (reproduced in live acceptance
   testing). Worker identity on the mount side is now proven ONLY by the
   entry's own `sessionPath` (the worker session's JSONL path); the
-  checkoutPath === cwd branch is removed as ambiguous by construction (tab
-  workers always share the orchestrator's checkout, and a historical entry
+  checkoutPath === cwd branch is removed as ambiguous by construction (shared-
+  placement workers always share the orchestrator's checkout, and a historical entry
   poisoned the gate for every future session in that cwd). Unproven reads as
   "not a worker" and the session mounts — safe because delivery stays
   fail-closed (watcher stage A): a mounted watcher without a proven identity
@@ -134,6 +226,48 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
   configuration escape. Skipped deliveries are recorded in the watcher audit
   file (`~/.pi/agent/delegate-watch.log`) with the reason; a spawn that
   could not record an owner path warns the orchestrator explicitly.
+
+### Fixed
+
+- **Google-model-breaking enum parameter shape:** tool enums use `StringEnum` instead of `Type.Union` of literals.
+- **Hardcoded `~/.pi/agent` paths** (7 sites) replaced by pi's `getAgentDir()`/`CONFIG_DIR_NAME` exports, with a static pin banning literal joins.
+- **Double-delivery bug class closed:** accept-then-log delivery classification ("accepted by pi" counts as delivered; rollback only for genuine pre-delivery failures — `test/watcher-check.ts` W19) and the watcher-vs-collect `collectedAt` race (report wake dropped when the stamp lands between snapshot and send — W20).
+- **Lying contracts corrected** (seam module header, fleet stale fail-open paragraph); six production TypeScript errors resolved; `tsc --noEmit` is now a gate; both commands guard dialog/notify calls with `ctx.hasUI`.
+- **Silent-catch residue surfaced:** archive failures carry a reason, start-failure manifest-rollback failures are logged, audit-append failures are counted. Regression: `test/silent-catch-check.ts`.
+- **False worker-dead for worker-orchestrators:** a worker that ended its turn while its own fleet was still running was classified "settled with no report", causing retries and E_NAME collisions; now the parent watcher sees the in-flight fleet and gets an honest `fleet-in-flight` state instead. Regression: `test/watcher-check.ts` (new block).
+- **Schema-violating reports self-heal:** a report rejected at collect (e.g. `status: "done"`) no longer forces a full re-spawn — the watcher automatically posts a fix steer (the exact validator error) to a live worker, which rewrites the report in place; the report-invalid guidance is cheapest-first (steer first, re-spawn only if the worker is gone) and the spawn prompt carries a status anti-example. Regression: `test/watcher-check.ts` (+ auto-nudge block), `test/report-contract-check.ts` (prompt pin).
+
+### Windows path support
+
+- **Windows default exchange root.** On Windows the default exchange root is now
+  `%LOCALAPPDATA%\pi\exchange` (fallback `homedir()\AppData\Local\pi\exchange`); the
+  `PI_DELEGATE_EXCHANGE_ROOT` environment variable overrides it (absolute path). The
+  POSIX default `/tmp/exchange` is unchanged in this release.
+- **Single portable path builder.** Every exchange-layer path (manifest, brief, report,
+  mailbox, probe dir, teardown log) is assembled through the platform-aware builder
+  `src/expaths.ts` (`node:path`, injectable in tests) — no more mixed-separator paths
+  from raw `/` template literals. POSIX output stays byte-identical to previous
+  releases.
+- **No spurious `E_BRIEF` on Windows.** Brief validation (`ensureExchangeDir`) compares
+  directories case- and separator-stable on Windows (`c:\…` vs `C:\…`, `/` vs `\`);
+  POSIX comparison remains exact.
+- **Windows-correct classification and ownership.** Fleet grouping slugs and probe-dir
+  classification are separator-agnostic; the session-owner compare
+  (`sameSessionPath`, `src/watch-role.ts`) folds case and separators on Windows only —
+  a case-differing POSIX path still reads as foreign.
+- **herdr adapter on Windows.** Worktree containment uses a segment-aware compare;
+  the Windows CLI launch policy is `cmd.exe /d /s /c` with per-argument quoting and
+  `windowsHide`; kill escalation on Windows is `taskkill /pid … /T /F`. The POSIX
+  SIGTERM→SIGKILL escalation is unchanged.
+- **Scope note.** Windows-shaped tests (path.win32 fixtures) run on the POSIX CI; a
+  real-Windows E2E run is not part of CI — it stays an explicit manual QA gate. The
+  exchange/path layer is Windows-portable in 1.17.0; running the host backend on Windows
+  requires herdr for Windows.
+
+### Removed
+
+- **DESIGN.md** — the frozen historical design log (v1 → v1.17.0) — removed from the repo and the npm package; decision history lives in git.
+
 
 ## [1.16.1] — 2026-09-11
 

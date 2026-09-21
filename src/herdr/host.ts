@@ -1,53 +1,51 @@
 /**
  * pi-delegate — src/herdr/host.ts (herdr implementation of the Transport seam).
  *
- * MODULE_CONTRACT — the single herdr backend adapter: HerdrTransport (CLI +
- * NDJSON socket), runHerdr/SIGKILL escalation, HerdrSocketClient (W3 read-only
- * path), result mappers, createHerdrTransport binding helper. Extracted from
- * src/transport.ts SECTION 2 byte-verbatim (workerhost seam split, PoC).
+ * MODULE_CONTRACT — the herdr backend adapter's TRANSPORT layer: HerdrTransport
+ * (the Transport implementation — serialized mutating ops with a per-op queue
+ * deadline, the W3 socket read-only path, the two-phase settle state machine,
+ * the root/sub worktree authority guard) and createHerdrTransport. The
+ * adapter's other three responsibilities are separate modules in this
+ * directory, extracted verbatim from this file by the ARCHITECTURE.md Law 5
+ * decomposition:
+ *   - ./cli.ts    — the herdr CLI subprocess runner: platform launch policy,
+ *                   the always-settling timeout + SIGTERM→SIGKILL escalation,
+ *                   the stdout result-line parse, and the extension's single
+ *                   documented raw-throw deviation (Law 8);
+ *   - ./socket.ts — the NDJSON-over-unix-socket client (W3 read-only path)
+ *                   with its own MODULE_CONTRACT;
+ *   - ./map.ts    — the herdr-JSON → seam-type result mappers, the
+ *                   placementRef codec, and the adapter-internal read model
+ *                   HerdrAgentStatus (herdr ids stop inside src/herdr/, they
+ *                   never cross the seam).
+ * This file is the adapter's facade: it re-exports the moved symbols, so the
+ * adapter keeps exactly ONE import surface (package.json "./herdr" → this
+ * file) and the frozen CLI/OS strings still stop at src/herdr/.
  *
- * Dependencies: node builtins (child_process, os, path, net) + the seam module
- * ../host.ts ONLY (no other src/ imports). Bound ONCE in index.ts (the
- * composition root — the sole sanctioned importer of this file; static-check
- * T1.1/T1.1c, watcher-check W1.1).
+ * Dependencies: node builtins (os, path) + ../expaths.ts (isDirUnder) + the
+ * seam module ../host.ts + the three herdr modules above. Nothing outside
+ * src/herdr/ imports ./cli.ts / ./socket.ts / ./map.ts (test/herdr-split-check.ts);
+ * this file is bound ONCE in index.ts (the composition root — the sole
+ * sanctioned importer of the adapter; the boundary is module-resolution
+ * enforced through the package exports map, static-check T1.1e).
  *
- * Windows launch policy (TZ §3.6): on win32 the herdr CLI is typically an npm
- * shim (`herdr.cmd`), which modern Node refuses to spawn shell-less
- * (CVE-2024-27980 → EINVAL) and a bare spawn does not resolve at all (ENOENT).
- * The win32 launch goes through `cmd.exe /d /s /c` with per-argument quoting
- * in one tested helper (winQuoteArg); the argv stays an array end-to-end —
- * never a pre-joined shell string. The platform is injectable (optional
- * trailing `platform` parameter, module-level default) so tests on a POSIX
- * host drive the win32 branch without a real Windows machine. The POSIX
- * default path is byte-identical to the pre-1.17 spawn shape. Windows kill
- * escalation uses `taskkill /pid <pid> /T /F` (tree kill — herdr's own child
- * processes die too) instead of child.kill("SIGKILL"), which on Windows kills
- * only the direct child and leaves agent orphans. These herdr CLI/OS details
- * never leak above this file (ARCHITECTURE.md: herdr CLI strings stop at the
- * adapter).
- *
- * Critical invariants carried over verbatim: serialized-mutations (one mutating
- * op in flight), settle-before-start-race-d3, aged-finish-blind-spot (via
- * sessionHasReply from ../host.ts), abort-detaches-never-kills,
- * worktree-authority (~/.herdr/worktrees root).
+ * Critical invariants that live HERE: serialized-mutations (one mutating op in
+ * flight, enqueue) + its per-op queue deadline, listStatuses pile-up de-dup,
+ * settle-before-start-race-d3, aged-finish-blind-spot (via sessionHasReply
+ * from ../host.ts), abort-detaches-never-kills, worktree-authority
+ * (~/.herdr/worktrees root/sub guard, isSubOrchestratorCwd).
  */
 
-import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { connect as netConnect, type Socket } from "node:net";
 import { isDirUnder } from "../expaths.ts";
 import {
 	type AgentStatus,
 	type AgentStatusName,
-	type AuthorityMode,
 	delegateError,
 	delegateErrorWithDetail,
 	DelegateErrorImpl,
-	type DelegateError,
-	type DelegateErrorCode,
 	type Placement,
-	type PlacementMode,
 	type PlacementReq,
 	type PromptReq,
 	sessionHasReply,
@@ -59,6 +57,42 @@ import {
 	type Transport,
 	type TransportCapabilities,
 } from "../host.ts";
+import { parseHerdrResult, runHerdr } from "./cli.ts";
+import { HERDR_SOCKET_TRANSPORT_ENV, HerdrSocketClient, HerdrSocketError } from "./socket.ts";
+import {
+	agentStatusFromResult,
+	asString,
+	extractAgentName,
+	herdrStatusFromResult,
+	isRecord,
+	paneFromHerdrRef,
+	pick,
+	placementFromTabResult,
+	placementFromWorktreeResult,
+	statusFromResult,
+	stripToSeamStatuses,
+} from "./map.ts";
+import type { HerdrAgentStatus } from "./map.ts";
+
+// The adapter keeps ONE import surface: the symbols that moved to ./cli.ts,
+// ./socket.ts and ./map.ts stay importable from this module under the same
+// names (package.json "./herdr" subpath; tests and index.ts import the facade).
+export { parseHerdrResult, runHerdr, SIGKILL_GRACE_MS, winQuoteArg } from "./cli.ts";
+export type { HerdrRunResult } from "./cli.ts";
+export {
+	DEFAULT_HERDR_SOCK,
+	HERDR_SOCKET_TRANSPORT_ENV,
+	HerdrSocketClient,
+	HerdrSocketError,
+	SOCKET_CONNECT_TIMEOUT_MS,
+	SOCKET_REQUEST_TIMEOUT_MS,
+} from "./socket.ts";
+export type { HerdrSocketClientOptions } from "./socket.ts";
+export {
+	placementFromTabResult,
+	reconcileTabClose,
+} from "./map.ts";
+export type { HerdrPlacement } from "./map.ts";
 
 // ============================================================================
 // SECTION 2 — src/transport/herdr.ts (verbatim, incl. its review header)
@@ -90,90 +124,11 @@ const WORKTREE_DIR = join(homedir(), ".herdr", "worktrees");
 /** Env var carrying the herdr workspace id of the current session's pane. */
 const WORKSPACE_ID_ENV = "HERDR_WORKSPACE_ID";
 
-/** Per-CLI-call timeout for mutating/fast commands (ms). */
-const CLI_TIMEOUT_MS = 30_000;
-
 /** Single `agent wait` iteration window (ms) — short, per clock-churn mitigation. */
 const WAIT_SLICE_MS = 3_000;
 
 /** Extra budget around a wait slice before we declare the CLI call itself hung. */
 const WAIT_EXEC_BUDGET_MS = WAIT_SLICE_MS + 7_000;
-
-/** Grace between the timeout SIGTERM and the SIGKILL escalation (ms). A herdr
- *  build with a graceful-shutdown SIGTERM handler must not be able to turn the
- *  exec timeout into a permanently hung child + permanently hung promise. */
-export const SIGKILL_GRACE_MS = 5_000;
-
-/** Per-stream output cap mirroring node's execFile default maxBuffer. */
-const EXEC_MAX_BUFFER = 1024 * 1024;
-
-/** Module-level platform default for the spawn/kill policy (TZ §3.6): every
- *  spawn-policy-taking function defaults to this, so production behavior is
- *  the process's own platform and tests inject "win32" explicitly. Mirrors
- *  the optional-trailing-param pattern of src/expaths.ts builders. */
-const DEFAULT_PLATFORM: NodeJS.Platform = process.platform;
-
-/**
- * Windows argument quoting for the cmd.exe launch policy.
- * <p>
- * Why it exists (and stays here, per-argument): the "never shell strings"
- * law forbids handing cmd.exe one pre-joined opaque command line built from
- * call-site data. Instead the argv stays an array end-to-end and quoting
- * happens HERE, per argument, in one unit-tested helper — an argument with
- * spaces/quotes survives the cmd.exe layer as ONE argv element on the other
- * side. Windows convention implemented: wrap in double quotes when the arg
- * contains a space, tab or quote; double the quotes inside
- * (`say "hi"` → `"say ""hi"""`). Private to the adapter — the quoting rule
- * is a herdr/OS-launch detail that must never leak above the seam; exported
- * solely so the transport tests can pin its convention.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: arg — one raw argv element (never contains a newline here; herdr
- *   CLI args do not)
- * Output: the cmd.exe-safe spelling of that element
- * Guarantees:
- *   - plain args (no space/tab/quote) pass through UNCHANGED (byte-identical,
- *     so `taskkill /pid 123 /T /F` shapes stay clean)
- *   - quoting is idempotent-safe for the round-trip test: quote-wrap + ""-doubling
- *     is reversible by the documented cmd de-quoting (strip outer quotes, "" → ")
- * Raises: never
- */
-export function winQuoteArg(arg: string): string {
-	if (!/[ \t"]/.test(arg)) return arg;
-	return `"${arg.replace(/"/g, '""')}"`;
-}
-
-/** One platform-resolved launch: the command to spawn and its argv.
- *  Adapter-internal — the win32 shape never crosses the seam. */
-interface SpawnPolicy {
-	command: string;
-	args: string[];
-}
-
-/**
- * Apply the platform spawn policy to one CLI launch (TZ §3.6.3).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: command — the CLI binary name as invoked on POSIX ("herdr",
- *   "taskkill"); args — the raw argv array; platform — the (possibly
- *   injected) platform
- * Output: the spawn policy for THAT platform
- * Guarantees:
- *   - POSIX: { command, args } returned UNCHANGED (byte-identical launch —
- *     the regression pin for the pre-1.17 shape)
- *   - win32: `cmd.exe /d /s /c` followed by the per-argument-quoted command
- *     and argv (argv stays an array; winQuoteArg does the quoting)
- * Raises: never
- */
-function spawnPolicyCommand(command: string, args: string[], platform: NodeJS.Platform): SpawnPolicy {
-	if (platform === "win32") {
-		return {
-			command: "cmd.exe",
-			args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
-		};
-	}
-	return { command, args };
-}
 
 /** Sleep between wait iterations (ms). */
 const WAIT_SLEEP_MS = 1_000;
@@ -190,337 +145,6 @@ const SETTLED: readonly AgentStatusName[] = ["idle", "done", "blocked"];
 const STARTED: readonly AgentStatusName[] = ["working", "blocked", "done"];
 
 // ---------------------------------------------------------------------------
-// placementRef codec (workerhost inversion, design §3/§4) — adapter-private.
-// The ref format is herdr-internal; the seam only ever compares refs opaquely.
-// ---------------------------------------------------------------------------
-
-/** Synthesize the opaque placementRef for a herdr pane. Written into manifest
- *  records ALONGSIDE the legacy id fields (design §4: never delete legacy). */
-function herdrRefFromPane(paneId: string): string {
-	return `herdr:pane:${paneId}`;
-}
-
-/** herdrRefFromPane for possibly-absent ids: no pane id → undefined (no ref). */
-function herdrRefOrNull(paneId: string | undefined): string | undefined {
-	return paneId ? herdrRefFromPane(paneId) : undefined;
-}
-
-/** Decode a placementRef back to the herdr pane id. Accepts the current
- *  `herdr:pane:<paneId>` shape AND a raw pane id (legacy callers/tests that
- *  pass a bare id where a ref is expected) — anything else → undefined.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: ref — opaque placement reference (or legacy raw pane id)
- * Output: the herdr pane id, or undefined when the ref is not decodable
- * Guarantees: pure; never throws
- */
-function paneFromHerdrRef(ref: string | undefined): string | undefined {
-	if (!ref) return undefined;
-	const m = /^herdr:pane:(.+)$/.exec(ref);
-	return m?.[1] || ref;
-}
-
-
-
-// ---------------------------------------------------------------------------
-// CLI plumbing
-// ---------------------------------------------------------------------------
-
-export interface HerdrRunResult {
-	stdout: string;
-	stderr: string;
-}
-
-/**
- * Run one `herdr <args>` CLI call with a hard time bound and SIGKILL escalation.
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - args: herdr CLI argv (array — never shell strings)
- *   - timeoutMs: hard bound on the call (default CLI_TIMEOUT_MS = 30_000)
- * Output: { stdout, stderr } of a zero-exit run
- * Guarantees:
- *   - the promise ALWAYS settles: at timeoutMs the child gets SIGTERM (execFile
- *     parity), its stdio is destroyed (parity with node's exec timeout), and
- *     after a further SIGKILL_GRACE_MS it gets SIGKILL — so a herdr build with
- *     a graceful-shutdown SIGTERM handler cannot hang this promise forever
- *     (BUG_FIX_CONTEXT below). The promise rejects AT timeoutMs, not when the
- *     escalated kill lands.
- *   - failure shape preserved from the promisified-execFile implementation:
- *     the thrown error carries .killed/.signal/.code/.stdout/.stderr and its
- *     message carries stderr text — callers match error text (isNotFound,
- *     agent_name_taken, agent_prompt_stalled regexes) against it unchanged
- *   - the child is reaped even when it dies AFTER the rejection (external or
- *     escalated SIGKILL): the parent's loop reaps it via the still-open libuv
- *     process handle — no zombie while the loop is healthy
- * Raises:
- *   - Error (wrapped by callers) for non-zero exit, spawn failure (ENOENT),
- *     maxBuffer overrun, or timeout
- * EXTERNAL_DEPENDENCY: `herdr` CLI binary on PATH (resolved at spawn time).
- *   On the injected win32 policy additionally: cmd.exe (the Windows command
- *   interpreter — the launch shim for npm .cmd shims) and, on kill escalation,
- *   taskkill.exe (the Windows tree-kill) via the same policy.
- * <p>
- * BUG_FIX_CONTEXT (SIGKILL escalation, 2026-09-09 herdr incident follow-up):
- * symptom — the promisified execFile timeout sends SIGTERM only; a herdr build
- * with a graceful-shutdown SIGTERM handler survives it forever, the promise
- * NEVER settles (leak-probe sig.log; re-reproduced with a silent-trap stub:
- * pending past the 30s timeout mark), and via the serialized-mutations queue
- * in HerdrTransport every later mutating op (place/start/prompt/teardown)
- * stalls behind it while read-only ops and the event loop stay healthy
- * (h3-queue-stall repro). Why SIGTERM-only did not work: node's exec timeout
- * cannot recover a child that ignores SIGTERM, and D-state children would
- * ignore it too. What was done: kept the SIGTERM-at-timeout contract, then
- * escalated to SIGKILL after SIGKILL_GRACE_MS (armed at spawn, cleared on
- * close); the promise rejects at the timeout mark. Side-effect fix: the old
- * implementation RESOLVED ok-with-empty-stdout when the direct child had
- * already exited but a descendant kept the stdio pipes open (the timeout
- * "kill" hit a dead pid and node's close-on-timeout surfaced as success) —
- * the spawn-based escalation destroys stdio at timeout and rejects properly.
- * Exported for tests (transport-sigkill.ts drives it with stub CLIs).
- * <p>
- * FUNCTION_CONTRACT (Windows policy, TZ §3.6):
- * Input:
- *   - platform: optional trailing NodeJS.Platform (default DEFAULT_PLATFORM —
- *     the process's own platform). "win32" switches BOTH the launch and the
- *     kill escalation to the Windows shape; tests on a POSIX host inject it
- *     to drive the win32 branch without a real Windows machine.
- * Guarantees (win32 branch):
- *   - launch: cmd.exe /d /s /c <quoted herdr argv> — an npm .cmd shim is
- *     reachable where a shell-less spawn would fail EINVAL (CVE-2024-27980)
- *     or ENOENT; stdio/windowsHide identical to the POSIX branch
- *   - kill escalation: taskkill /pid <childPid> /T /F (tree kill — herdr's
- *     agent children die with the CLI process) instead of child.kill("SIGKILL"),
- *     which on Windows terminates only the direct child
- *   - the timeout rejection shape (killed:true, signal SIGTERM) is IDENTICAL
- *     to POSIX — callers' E_* mapping and message regexes are platform-blind
- */
-export async function runHerdr(
-	args: string[],
-	timeoutMs: number = CLI_TIMEOUT_MS,
-	platform: NodeJS.Platform = DEFAULT_PLATFORM,
-): Promise<HerdrRunResult> {
-	try {
-		return await spawnHerdr(args, timeoutMs, platform);
-	} catch (err) {
-		const e = err as NodeJS.ErrnoException & { stdout?: string; stderr?: string; code?: unknown };
-		const details = [e.stderr?.trim(), e.stdout?.trim(), e.message].filter(Boolean).join("\n");
-		throw new Error(`herdr ${args[0]} ${args[1] ?? ""} failed\n${details}`.trim(), { cause: err });
-	}
-}
-
-/** Exec-like error: parity with what promisified execFile used to throw so the
- *  runHerdr wrapper's detail-shaping (and callers' message regexes) keep working. */
-function herdrSpawnError(args: string[], fields: { message: string; code?: unknown; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string }): Error {
-	const err = new Error(fields.message) as Error & {
-		code?: unknown; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string;
-	};
-	err.code = fields.code;
-	err.killed = fields.killed ?? false;
-	err.signal = fields.signal ?? null;
-	err.stdout = fields.stdout ?? "";
-	err.stderr = fields.stderr ?? "";
-	return err;
-}
-
-/**
- * Spawn one `herdr <args>` CLI call under the platform spawn/kill policy and
- * wait for it with the execFile-parity timeout shape.
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - args: herdr CLI argv (array — never shell strings)
- *   - timeoutMs: hard bound on the call
- *   - platform: spawn/kill policy selector (default DEFAULT_PLATFORM);
- *     injected "win32" in tests drives the Windows branch on a POSIX host
- * Output: { stdout, stderr } of a zero-exit run
- * Guarantees:
- *   - POSIX (default): the spawn is BYTE-IDENTICAL to the pre-1.17 shape —
- *     spawn("herdr", args, { stdio: ["ignore","pipe","pipe"], windowsHide:
- *     true }); escalation stays SIGTERM → (SIGKILL_GRACE_MS) → SIGKILL and
- *     is cleared when the child closes, exactly as before
- *   - win32 (injected): launch via cmd.exe /d /s /c with per-argument quoting
- *     (winQuoteArg — BUG_FIX_CONTEXT below); kill escalation via
- *     `taskkill /pid <pid> /T /F` fire-and-forget, no second grace timer,
- *     SIGKILL_GRACE_MS unchanged; the escalation SURVIVES the direct child's
- *     close (the timeout SIGTERM = TerminateProcess kills only the direct
- *     child — the herdr tree may outlive it and needs the tree-kill)
- *   - spawn errors (EINVAL/ENOENT) flow through herdrSpawnError so callers'
- *     E_* mapping and message regexes keep working on BOTH branches
- * Raises:
- *   - exec-like Error (see herdrSpawnError) — never a raw child-process error
- * EXTERNAL_DEPENDENCY (win32): cmd.exe — the Windows command interpreter used
- *   as the launch shim (modern Node refuses to spawn .cmd/.bat shims
- *   shell-less: CVE-2024-27980); taskkill.exe — the Windows tree-kill used by
- *   the escalation (child.kill("SIGKILL") cannot reach herdr's own children).
- */
-function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform = DEFAULT_PLATFORM): Promise<HerdrRunResult> {
-	return new Promise((resolve, reject) => {
-		// Platform policy applied HERE and in armSigkill only — the rest of the
-		// lifecycle (timeout shape, stdio destruction, error mapping) is shared.
-		const policy = spawnPolicyCommand("herdr", args, platform);
-		const child = spawn(policy.command, policy.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-		let stdout = "";
-		let stderr = "";
-		let timedOut = false;
-		let overBuffer: string | null = null;
-		let settled = false;
-		let sigkillTimer: NodeJS.Timeout | undefined;
-
-		const clearEscalation = () => {
-			if (sigkillTimer !== undefined) {
-				clearTimeout(sigkillTimer);
-				sigkillTimer = undefined;
-			}
-		};
-		// SIGKILL escalation: armed whenever we demand shutdown (timeout or
-		// maxBuffer); cleared on close. Fire-and-forget — the promise has already
-		// rejected by the time it lands; this only makes sure the child dies.
-		// BUG_FIX_CONTEXT (Windows tree-kill, TZ §3.6.2): symptom — on Windows the
-		// escalation's child.kill("SIGKILL") maps to TerminateProcess of the DIRECT
-		// child only, so herdr's own child processes (the spawned agents) survive
-		// as orphans; also, Windows Node has no graceful SIGTERM window (documented
-		// behavior: both SIGTERM and SIGKILL terminate unconditionally), so the
-		// first-step child.kill("SIGTERM") at timeout already hard-terminates — it
-		// is KEPT as the first step precisely because of that documented shape.
-		// Why the old escalation did not work on Windows: a direct-child-only kill
-		// leaks the whole agent tree. What was done: on the injected win32 policy
-		// the escalation fires `taskkill /pid <childPid> /T /F` (tree + force)
-		// through the same spawn-policy machinery (array argv, windowsHide,
-		// winQuoteArg where needed) instead of child.kill("SIGKILL"). Fire-and-
-		// forget semantics preserved exactly (the promise has already rejected;
-		// no second grace timer; SIGKILL_GRACE_MS unchanged). The escalation is
-		// NOT cleared on the direct child's close on win32 (see the close handler):
-		// the first TerminateProcess kills only cmd.exe, the herdr tree survives
-		// it, and the tree-kill is exactly what must still land. POSIX branch is
-		// byte-identical to the pre-1.17 SIGKILL escalation.
-		const armSigkill = () => {
-			clearEscalation();
-			sigkillTimer = setTimeout(() => {
-				if (platform === "win32") {
-					// EXTERNAL_DEPENDENCY: taskkill.exe (Windows tree-kill). The pid may
-					// be undefined when the spawn itself failed — nothing to escalate.
-					const pid = child.pid;
-					if (pid !== undefined) {
-						const tk = spawnPolicyCommand("taskkill", ["/pid", String(pid), "/T", "/F"], platform);
-						const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true });
-						// Fire-and-forget: a failed taskkill must never crash the process
-						// with an unhandled 'error' event — the promise is already settled.
-						killer.on("error", () => {});
-					}
-					return;
-				}
-				child.kill("SIGKILL");
-			}, SIGKILL_GRACE_MS);
-			(sigkillTimer as unknown as { unref?: () => void }).unref?.();
-		};
-
-		const finish = (err?: Error) => {
-			if (settled) return;
-			settled = true;
-			if (err) {
-				reject(err);
-			} else {
-				resolve({ stdout, stderr });
-			}
-		};
-
-		const failLike = (fields: Parameters<typeof herdrSpawnError>[1]) => {
-			finish(herdrSpawnError(args, { ...fields, stdout, stderr }));
-		};
-
-		// Hard bound: SIGTERM (execFile parity) + stdio destruction (exec parity:
-		// a trap handler writing to a destroyed pipe dies EPIPE instead of hanging)
-		// + reject NOW (do not wait for the escalated kill to land), then arm SIGKILL.
-		// The SIGKILL timer is NOT cleared here — it must survive the rejection;
-		// it is cleared when the child actually closes (or fires on a dead pid,
-		// which is a harmless no-op).
-		const timer = setTimeout(() => {
-			timedOut = true;
-			child.kill("SIGTERM");
-			child.stdout?.destroy();
-			child.stderr?.destroy();
-			armSigkill();
-			failLike({ message: `Command timed out after ${timeoutMs}ms: herdr ${args.join(" ")}`, killed: true, signal: "SIGTERM" });
-		}, timeoutMs);
-		(timer as unknown as { unref?: () => void }).unref?.();
-
-		child.stdout?.setEncoding("utf8");
-		child.stderr?.setEncoding("utf8");
-		child.stdout?.on("data", (chunk: string) => {
-			stdout += chunk;
-			if (stdout.length > EXEC_MAX_BUFFER && !overBuffer) {
-				overBuffer = "stdout";
-				child.kill("SIGTERM");
-				child.stdout?.destroy();
-				child.stderr?.destroy();
-				armSigkill();
-			}
-		});
-		child.stderr?.on("data", (chunk: string) => {
-			stderr += chunk;
-			if (stderr.length > EXEC_MAX_BUFFER && !overBuffer) {
-				overBuffer = "stderr";
-				child.kill("SIGTERM");
-				child.stdout?.destroy();
-				child.stderr?.destroy();
-				armSigkill();
-			}
-		});
-
-		// spawn failure (ENOENT: no herdr on PATH) — err carries .code. Flows
-		// through herdrSpawnError (exec-like shape) so callers' E_* mapping and
-		// message regexes keep working on both platform branches.
-		child.on("error", (err) => {
-			clearTimeout(timer);
-			clearEscalation();
-			const e = err as NodeJS.ErrnoException;
-			failLike({ message: e.message, code: e.code });
-		});
-
-		// 'close' = exited AND stdio settled — the execFile settlement point.
-		child.on("close", (code, signal) => {
-			// Runs even after a timeout/maxBuffer rejection: reap bookkeeping ends here.
-			clearTimeout(timer);
-			// POSIX: the child closing means it is dead — the SIGKILL escalation is
-			// moot, clear it. win32: KEEP the escalation armed — the timeout step's
-			// child.kill("SIGTERM") is documented-Node TerminateProcess of the DIRECT
-			// child (cmd.exe) only, so the herdr tree (the CLI shim's node process and
-			// its agent children) can outlive the close event; the taskkill tree-kill
-			// is exactly what must still land. A taskkill on a pid whose whole tree
-			// already died is a harmless fire-and-forget no-op (same no-op contract
-			// as the POSIX SIGKILL-on-dead-pid).
-			if (platform !== "win32") clearEscalation();
-			if (overBuffer) {
-				failLike({ message: `${overBuffer} maxBuffer length exceeded`, code: null, killed: true, signal });
-				return;
-			}
-			if (code === 0) {
-				finish();
-				return;
-			}
-			failLike({ message: `Command failed: herdr ${args.join(" ")}\n${stderr}`, code, killed: false, signal });
-		});
-	});
-}
-
-/**
- * Parse herdr stdout: take the last non-empty line, JSON.parse it, return
- * `.result`. Tolerant: non-JSON output resolves to `null` with the raw text
- * carried alongside so callers can attach it to errors.
- */
-export function parseHerdrResult(stdout: string): { result: unknown; raw: string } {
-	const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
-	const last = lines[lines.length - 1] ?? "";
-	try {
-		const parsed = JSON.parse(last) as { result?: unknown };
-		return { result: parsed.result !== undefined ? parsed.result : parsed, raw: stdout };
-	} catch {
-		return { result: null, raw: stdout };
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Internal mutation queue — one mutating herdr op in flight at a time
 // ---------------------------------------------------------------------------
 
@@ -534,313 +158,6 @@ function isSubOrchestratorCwd(): boolean {
 	// matched. expaths.isDirUnder compares segment-wise on normalized keys
 	// (case/separator-folded on win32; byte-identical on posix).
 	return isDirUnder(cwd, WORKTREE_DIR);
-}
-
-// ============================================================================
-// SECTION — herdr socket client (W3 read-only transport path)
-// ============================================================================
-
-/** NDJSON-over-unix-socket client for the herdr server's raw API.
- *
- * MODULE_CONTRACT (productionized from the leak-probe prototype, live-validated
- * against herdr 0.8.2):
- * Dependencies: node:net, node:os, node:path only.
- * Protocol (per /tmp/herdr-socket-api.mdx + live validation): newline-delimited
- *   JSON over ~/.config/herdr/herdr.sock; request {"id","method","params"};
- *   response {"id","result"} or {"id","error":{code,message}}; pushed events
- *   arrive as lines carrying an "event" key with the payload under "data".
- * Critical invariants:
- *   - every request has a hard timeout (default SOCKET_REQUEST_TIMEOUT_MS) — a
- *     hung server rejects the request, it can never hang a caller forever
- *   - connection establishment is bounded by SOCKET_CONNECT_TIMEOUT_MS
- *   - ZERO subprocesses: a frozen/dead server costs a bounded per-call error —
- *     never a spawned CLI child (the 2026-09-09 pile-up ammunition)
- *   - the server is ONE-REQUEST-PER-CONNECTION for plain requests (answers,
- *     then closes; only subscriptions keep a connection open — verified: a
- *     pipelined request #2 is never answered, the client sees ECONNRESET), so
- *     a plain-request close is the NORMAL lifecycle: the client transparently
- *     reconnects and retries exactly once; subscriptions live on their own
- *     connection state and a close there is a genuine failure (surfaced via
- *     onClose, never silently retried)
- * Error modes: HerdrSocketError with a stable `code` (connect_timeout,
- *   connect_error, request_timeout, connection_closed, or the server's own
- *   code, e.g. not_found) — mapped by callers into the E_* taxonomy.
- * EXTERNAL_DEPENDENCY: the herdr server's unix socket — $HERDR_SOCKET_PATH
- *   (herdr's documented low-level override) or ~/.config/herdr/herdr.sock.
- */
-
-/** Default socket location (herdr docs; named sessions live under sessions/<name>/). */
-export const DEFAULT_HERDR_SOCK = join(homedir(), ".config", "herdr", "herdr.sock");
-
-/** Kill-switch for the W3 socket read-only path: HERDR_SOCKET_TRANSPORT=cli
- *  restores the all-CLI legacy behavior; unset/"auto"/"socket" → read-only ops
- *  (agent list/get) go over the unix socket with zero subprocesses. */
-export const HERDR_SOCKET_TRANSPORT_ENV = "HERDR_SOCKET_TRANSPORT";
-
-/** Per-request hard timeout (ms). A hung server rejects; it can never hang a caller. */
-export const SOCKET_REQUEST_TIMEOUT_MS = 5_000;
-
-/** Connection-establishment timeout (ms). */
-export const SOCKET_CONNECT_TIMEOUT_MS = 5_000;
-
-/** Error shape mirroring the E_* taxonomy style: typed, stable `code`, never a
- *  raw throw past the mapping layer (HerdrTransport maps these into E_*). */
-export class HerdrSocketError extends Error {
-	readonly code: string;
-	constructor(code: string, message: string) {
-		super(`herdr socket: ${code}: ${message}`);
-		this.name = "HerdrSocketError";
-		this.code = code;
-	}
-}
-
-export interface HerdrSocketClientOptions {
-	/** Unix socket path. Default: $HERDR_SOCKET_PATH or DEFAULT_HERDR_SOCK. */
-	socketPath?: string;
-	/** Per-request timeout in ms. Default SOCKET_REQUEST_TIMEOUT_MS. */
-	requestTimeoutMs?: number;
-	/** Connection-establishment timeout in ms. Default SOCKET_CONNECT_TIMEOUT_MS. */
-	connectTimeoutMs?: number;
-}
-
-type SocketPendingEntry = {
-	resolve: (value: unknown) => void;
-	reject: (err: HerdrSocketError) => void;
-	timer: NodeJS.Timeout;
-};
-
-type SocketEventHandler = (eventName: string, data: unknown) => void;
-
-export class HerdrSocketClient {
-	private readonly socketPath: string;
-	private readonly requestTimeoutMs: number;
-	private readonly connectTimeoutMs: number;
-	private socket: Socket | null = null;
-	private nextId = 1;
-	private readonly pending = new Map<string, SocketPendingEntry>();
-	private readonly eventHandlers = new Set<SocketEventHandler>();
-	private buffer = "";
-	private connecting: Promise<void> | null = null;
-	private closedByUs = false;
-
-	/** Liveness callback: fired once when a connection carrying subscriptions is
-	 *  ended by the server (subscriptions are connection state — they die with
-	 *  the connection; the owner must re-subscribe). */
-	onSubscriptionLost: (() => void) | null = null;
-
-	constructor(opts: HerdrSocketClientOptions = {}) {
-		this.socketPath = opts.socketPath ?? process.env.HERDR_SOCKET_PATH ?? DEFAULT_HERDR_SOCK;
-		this.requestTimeoutMs = opts.requestTimeoutMs ?? SOCKET_REQUEST_TIMEOUT_MS;
-		this.connectTimeoutMs = opts.connectTimeoutMs ?? SOCKET_CONNECT_TIMEOUT_MS;
-	}
-
-	/** Establish (or reuse) the connection. Concurrent callers share one
-	 *  in-flight connect (idempotent); bounded by connectTimeoutMs.
-	 * Raises: HerdrSocketError "connect_timeout" / "connect_error". */
-	connect(): Promise<void> {
-		if (this.socket && !this.socket.destroyed) return Promise.resolve();
-		if (this.connecting) return this.connecting;
-		this.closedByUs = false;
-		this.connecting = new Promise<void>((resolve, reject) => {
-			const sock = netConnect(this.socketPath);
-			const connectTimer = setTimeout(() => {
-				sock.destroy();
-				this.connecting = null;
-				reject(new HerdrSocketError("connect_timeout", `no connection to ${this.socketPath} within ${this.connectTimeoutMs}ms`));
-			}, this.connectTimeoutMs);
-			(connectTimer as unknown as { unref?: () => void }).unref?.();
-			sock.once("connect", () => {
-				clearTimeout(connectTimer);
-				this.socket = sock;
-				this.buffer = "";
-				sock.setEncoding("utf8");
-				sock.on("data", (chunk: string) => this.onData(chunk));
-				sock.on("error", (err: Error) => this.onSocketError(err));
-				sock.on("close", () => this.onSocketClose());
-				this.connecting = null;
-				resolve();
-			});
-			sock.once("error", (err: NodeJS.ErrnoException) => {
-				clearTimeout(connectTimer);
-				this.connecting = null;
-				reject(new HerdrSocketError("connect_error", `${err.code ?? "error"} on ${this.socketPath}`));
-			});
-		});
-		return this.connecting;
-	}
-
-	/** Send one request and await its response (multiplexed by id).
-	 *
-	 * FUNCTION_CONTRACT:
-	 * Input: method — dot-notation herdr method ("agent.list", "agent.get"…);
-	 *   params — request params; timeoutMs — hard per-request cap
-	 * Output: the parsed `result` payload of the matching response
-	 * Guarantees:
-	 *   - NEVER hangs: settles on response / timeout / error response /
-	 *     connection loss; the pending entry is always cleaned up
-	 *   - one transparent reconnect+retry when the server ends the one-shot
-	 *     plain-request lifecycle (connection_closed without an acked
-		*     subscription) — including the write-races-close window
-	 * Raises:
-	 *   - HerdrSocketError "request_timeout" — no response within timeoutMs
-	 *   - HerdrSocketError "<server code>" — server error body (e.g. not_found)
-	 *   - HerdrSocketError "connection_closed" — socket dropped
-	 */
-	async request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
-		for (let attempt = 0; ; attempt++) {
-			await this.connect();
-			const sock = this.socket;
-			if (!sock || sock.destroyed) throw new HerdrSocketError("connection_closed", "socket not open");
-			const id = `rq-${this.nextId++}`;
-			const effectiveTimeout = timeoutMs ?? this.requestTimeoutMs;
-			try {
-				return await new Promise<T>((resolve, reject) => {
-					const timer = setTimeout(() => {
-						this.pending.delete(id);
-						reject(new HerdrSocketError("request_timeout", `${method} got no response within ${effectiveTimeout}ms`));
-					}, effectiveTimeout);
-					(timer as unknown as { unref?: () => void }).unref?.();
-					this.pending.set(id, {
-						resolve: (v) => {
-							clearTimeout(timer);
-							resolve(v as T);
-						},
-						reject: (e) => {
-							clearTimeout(timer);
-							reject(e);
-						},
-						timer,
-					});
-					sock.write(JSON.stringify({ id, method, params }) + "\n");
-				});
-			} catch (err) {
-				// One-shot plain-request lifecycle (see section invariant): a
-				// connection_closed on a subscription-less connection is NORMAL —
-				// transparently reconnect and retry exactly once. With an active
-				// subscription the connection is supposed to persist, so a close there
-				// is a genuine failure and is NOT retried. Covers subscribe() too: its
-				// handler is registered before the send, but no ack arrived → the
-				// subscription does not exist server-side and the resend is safe.
-				const closed = err instanceof HerdrSocketError && err.code === "connection_closed";
-				if (closed && attempt === 0 && this.eventHandlers.size === 0) {
-					this.socket = null;
-					continue;
-				}
-				throw err;
-			}
-		}
-	}
-
-	/** events.subscribe: open a subscription; pushed events go to onEvent. The
-	 *  subscription lives on the connection (server-side state) — if the server
-	 *  ends it, onSubscriptionLost fires once and handlers are cleared.
-	 * Raises: same as request() (subscribe IS a request; its ack is bounded by
-	 *  the per-request timeout). NOTE (live-validated): the server REJECTS a
-	 *  subscription entry missing fields the type requires — e.g.
-	 *  pane.agent_status_changed needs pane_id even though the bundled schema
-	 *  marks it optional; broad types (pane.updated, …) need only {type}. */
-	async subscribe(subscriptions: Array<{ type: string; pane_id?: string }>, onEvent: SocketEventHandler): Promise<unknown> {
-		// Connect FIRST: plain-request connections are one-shot, so the subscribe
-		// must go out on a connection that is alive NOW — otherwise the send races
-		// the already-closed socket.
-		await this.connect();
-		this.eventHandlers.add(onEvent);
-		try {
-			return await this.request("events.subscribe", { subscriptions });
-		} catch (err) {
-			this.eventHandlers.delete(onEvent);
-			throw err;
-		}
-	}
-
-	/** Close the connection; in-flight requests reject with "connection_closed". */
-	close(): void {
-		this.closedByUs = true;
-		this.socket?.destroy();
-		this.socket = null;
-	}
-
-	// -- internals ---------------------------------------------------------------
-
-	private onData(chunk: string): void {
-		this.buffer += chunk;
-		let nl: number;
-		while ((nl = this.buffer.indexOf("\n")) !== -1) {
-			const line = this.buffer.slice(0, nl).trim();
-			this.buffer = this.buffer.slice(nl + 1);
-			if (line.length === 0) continue;
-			let msg: Record<string, unknown>;
-			try {
-				msg = JSON.parse(line) as Record<string, unknown>;
-			} catch {
-				continue; // tolerate non-JSON noise
-			}
-			// Pushed event envelope (live-validated): key `event` (underscore form),
-			// payload under `data`.
-			if (typeof msg.event === "string") {
-				for (const h of this.eventHandlers) {
-					try {
-						h(msg.event, msg.data);
-					} catch {
-						// a throwing handler must not kill the connection
-					}
-				}
-				continue;
-			}
-			const entry = this.pending.get(String(msg.id));
-			if (!entry) continue;
-			this.pending.delete(String(msg.id));
-			if (msg.error !== undefined && msg.error !== null) {
-				const e = msg.error as { code?: string; message?: string };
-				entry.reject(new HerdrSocketError(e.code ?? "unknown", e.message ?? JSON.stringify(msg.error)));
-			} else {
-				entry.resolve(msg.result);
-			}
-			// BUG_FIX_CONTEXT (one-shot lifecycle race, caught by transport-socket.ts):
-			// the server answers ONE request per connection and closes it. A request
-			// issued before the client processes that close used to be written onto a
-			// connection the server had already end()ed — the response was lost and
-			// only the retry round-trip saved it (and the stub server logged
-			// ERR_STREAM_WRITE_AFTER_END). Fix: once a plain (subscription-less)
-			// response lands, the connection is SPENT — the client destroys it
-			// immediately so every following request reconnects deterministically.
-			// Subscription connections are exempt: they legitimately stay open.
-			if (this.eventHandlers.size === 0 && this.socket && !this.socket.destroyed) {
-				const spent = this.socket;
-				this.socket = null;
-				spent.destroy();
-			}
-		}
-	}
-
-	private onSocketError(err: Error): void {
-		// EPIPE/ECONNRESET on an ESTABLISHED socket is the server ending the
-		// one-shot request lifecycle — map to connection_closed so request()'s
-		// retry path engages. No pending requests → swallow (an unhandled 'error'
-		// event would crash the process; a post-response close is normal).
-		const e = new HerdrSocketError("connection_closed", err.message);
-		for (const [, entry] of this.pending) entry.reject(e);
-		this.pending.clear();
-	}
-
-	private onSocketClose(): void {
-		this.socket = null;
-		const hadSubscriptions = this.eventHandlers.size > 0;
-		const e = new HerdrSocketError(
-			"connection_closed",
-			this.closedByUs ? "closed by client" : "server closed the connection",
-		);
-		for (const [, entry] of this.pending) entry.reject(e);
-		this.pending.clear();
-		if (hadSubscriptions && !this.closedByUs) {
-			this.eventHandlers.clear();
-			try {
-				this.onSubscriptionLost?.();
-			} catch {
-				// a throwing owner callback must not break the close path
-			}
-		}
-	}
 }
 
 // ============================================================================
@@ -1278,20 +595,20 @@ export class HerdrTransport implements Transport {
 		return isRecord(result) ? asString(pick(result, "agent.agent_session.value", "agent_session.value")) : undefined;
 	}
 
-	/** Recent pane output for a worker (terminal snapshot, few hundred lines tail).
-	 *  Optional: probe-verdict from streaming; implementations without pane
+	/** Recent console output for a worker (terminal snapshot, few hundred lines tail).
+	 *  Optional: probe-verdict from streaming; implementations without console
 	 *  readback may reject — callers must fall back to status-based verdicts.
 	 * <p>
 	 * FUNCTION_CONTRACT:
 	 * Input: name — canonical agent name; opts.maxChars — tail size (default 4000)
-	 * Output: the LAST maxChars characters of the pane's recent output
+	 * Output: the LAST maxChars characters of the console's recent output
 	 * Guarantees:
 	 *   - read-only (not queued with mutations)
 	 * Raises:
 	 *   - raw subprocess errors propagate (callers treat as readback-unavailable)
 	 * EXTERNAL_DEPENDENCY: `herdr agent read <name> --source recent` subprocess.
 	 */
-	async readPane(name: string, opts?: { maxChars?: number }): Promise<string> {
+	async readConsole(name: string, opts?: { maxChars?: number }): Promise<string> {
 		// Read-only: terminal snapshot (recent), NOT queued with mutations.
 		const { stdout } = await runHerdr(["agent", "read", name, "--source", "recent"]);
 		const out = String(stdout ?? "");
@@ -1310,7 +627,7 @@ export class HerdrTransport implements Transport {
 	 *   isLinkedWorktree) extracted from the herdr result
 	 * Guarantees:
 	 *   - worktree placement is ROOT-only (sub-orchestrator → E_PLACE)
-	 *   - tab placement requires a current herdr workspace (env var below)
+	 *   - shared placement requires a current herdr workspace (env var below)
 	 *   - runs serialized on the mutation queue (enqueue)
 	 * Raises:
 	 *   - DelegateErrorImpl E_PLACE for every failure shape (CLI error,
@@ -1318,8 +635,8 @@ export class HerdrTransport implements Transport {
 	 *     missing workspace/pane ids)
 	 * EXTERNAL_DEPENDENCY: `herdr worktree create` / `herdr tab create`
 	 *   subprocesses; process.env.HERDR_WORKSPACE_ID — the session's own herdr
-	 *   workspace id, REQUIRED for tab placement (tabs open on the session's
-	 *   workspace; absent → E_PLACE).
+	 *   workspace id, REQUIRED for shared placement (herdr tabs open on the
+	 *   session's workspace; absent → E_PLACE).
 	 */
 	private async placeInner(req: PlacementReq): Promise<Placement> {
 		const { authority } = this.capabilities();
@@ -1358,7 +675,7 @@ export class HerdrTransport implements Transport {
 		if (!workspaceId) {
 			throw delegateError(
 				"E_PLACE",
-				`Tab placement requires a current herdr workspace: set ${WORKSPACE_ID_ENV} in the session environment (tabs are opened on the session's own workspace).`,
+				`Shared placement requires a current herdr workspace: set ${WORKSPACE_ID_ENV} in the session environment (herdr tabs are opened on the session's own workspace).`,
 			);
 		}
 		try {
@@ -1707,231 +1024,8 @@ export class HerdrTransport implements Transport {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Result mapping helpers
-// ---------------------------------------------------------------------------
-
-/** Placement enriched with the herdr tab id for teardown (transport-local extension). */
-export type HerdrPlacement = Placement & { tabId?: string };
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-	return typeof v === "object" && v !== null;
-}
-
 function isNotFound(err: unknown): boolean {
 	return /not found|no such|unknown agent/i.test((err as Error).message ?? "");
-}
-
-function pick(root: Record<string, unknown>, ...keys: string[]): unknown {
-	for (const key of keys) {
-		const parts = key.split(".");
-		let cur: unknown = root;
-		let ok = true;
-		for (const part of parts) {
-			if (isRecord(cur) && part in cur) cur = cur[part];
-			else { ok = false; break; }
-		}
-		if (ok && cur !== undefined && cur !== null) return cur;
-	}
-	return undefined;
-}
-
-function asString(v: unknown): string | undefined {
-	return typeof v === "string" && v.length > 0 ? v : undefined;
-}
-
-function extractAgentName(result: unknown, fallback: string): string {
-	if (isRecord(result)) {
-		const name = asString(pick(result, "name", "agent.name", "agent_name"));
-		if (name) return name;
-	}
-	return fallback;
-}
-
-function statusFromResult(result: unknown): AgentStatusName | undefined {
-	return normalizeStatus(result);
-}
-
-/**
- * Single status normalizer for every herdr shape: `agent get`/`agent wait`
- * nest it at `agent.agent_status`, `agent list` entries carry top-level
- * `agent_status`, older shapes may use `status`.
- */
-function normalizeStatus(node: unknown): AgentStatusName | undefined {
-	if (!isRecord(node)) return undefined;
-	const raw = asString(pick(node, "agent_status", "agent.agent_status", "status"));
-	if (raw && ["idle", "working", "blocked", "done", "unknown"].includes(raw)) {
-		return raw as AgentStatusName;
-	}
-	return undefined;
-}
-
-function agentStatusFromResult(result: unknown, fallbackName: string): AgentStatus {
-	if (!isRecord(result)) return { name: fallbackName, status: "unknown" };
-	return {
-		status: statusFromResult(result) ?? "unknown",
-		// `agent list` entries: agent_name when present; `agent get`: name under result.agent.
-		name: asString(pick(result, "name", "agent.name", "agent_name")) ?? fallbackName,
-		// Seam read model carries ONLY the opaque ref (workerhost inversion,
-		// design §3): herdr ids stay in the adapter (see herdrStatusFromResult).
-		placementRef: herdrRefOrNull(
-			asString(pick(result, "pane_id", "paneId", "agent.pane_id", "pane.pane_id")),
-		),
-	};
-}
-
-/**
- * Migration stage 3 (audit step 10): the drift-guard reconcile decision is a
- * pure exported function (behaviorally tested in static-check T3.3b — the
- * old T3.3 was a source-text regex over this file). The teardown call site
- * feeds it the recorded id and the live resolution; the decision stays here,
- * next to the adapter-internal id model.
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - recordedTabId: the id the manifest placement carries (possibly the
- *     paneId fallback — the broken signature)
- *   - liveTabId: the real tab id from the herdr agent registry, or null when
- *     the agent is gone / statuses unavailable
- * Output: the tab id to close
- * Guarantees:
- *   - the broken signature (recorded === paneId) + a DIFFERENT live id → the
- *     live id (close the REAL tab, not the pane)
- *   - every other input → the recorded id unchanged (a missing live id must
- *     not turn a working close into a wrong-target close)
- * Raises: never
- */
-export function reconcileTabClose(recordedTabId: string, liveTabId: string | null): string {
-	return liveTabId !== null && liveTabId !== recordedTabId ? liveTabId : recordedTabId;
-}
-
-/** Adapter-internal read model: the seam AgentStatus PLUS the herdr ids the
- *  adapter itself needs (resolveLiveTabId drift guard, teardown reconcile).
- *  NEVER crosses the seam — herdr ids stop at src/herdr/host.ts. */
-interface HerdrAgentStatus extends AgentStatus {
-	paneId?: string;
-	tabId?: string;
-	workspaceId?: string;
-}
-
-function herdrStatusFromResult(result: unknown, fallbackName: string): HerdrAgentStatus {
-	const base = agentStatusFromResult(result, fallbackName);
-	if (!isRecord(result)) return base;
-	return {
-		...base,
-		paneId: asString(pick(result, "pane_id", "paneId", "agent.pane_id", "pane.pane_id")),
-		tabId: asString(pick(result, "tab_id", "tabId", "agent.tab_id", "tab.tab_id")),
-		workspaceId: asString(pick(result, "workspace_id", "workspaceId", "agent.workspace_id", "workspace.workspace_id")),
-	};
-}
-
-/** Strip the adapter-internal HerdrAgentStatus down to the seam read model
- *  (workerhost inversion, design §3: herdr ids never leave the adapter). */
-function stripToSeamStatuses(list: HerdrAgentStatus[]): AgentStatus[] {
-	return list.map(({ paneId: _p, tabId: _t, workspaceId: _w, ...seam }) => seam);
-}
-
-/**
- * Extracts a worktree Placement (workspace/pane/branch/checkout) from a
- * parsed `herdr worktree create` result.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: result — parsed `herdr worktree create` result; req — the original
- *   placement request (branch fallback); raw — raw stdout for error text
- * Output: a worktree Placement (workspaceId, paneId, branch, checkoutPath,
- *   isLinkedWorktree)
- * Guarantees:
- *   - checkoutPath/branch fall back to the request values when herdr omits them
- * Raises:
- *   - DelegateErrorImpl E_PLACE for unparseable output or missing
- *     workspace_id/pane_id
- * EXTERNAL_DEPENDENCY: `herdr worktree create` result shape (frozen fields:
- *   workspace.worktree.*, root_pane.pane_id).
- */
-function placementFromWorktreeResult(
-	result: unknown,
-	req: PlacementReq,
-	raw: string,
-): Placement {
-	if (!isRecord(result)) {
-		throw delegateError("E_PLACE", `herdr worktree create returned unparseable output: ${truncate(raw)}`);
-	}
-	const workspaceId = asString(pick(result, "workspace.workspace_id", "workspace_id", "workspace.id"));
-	const paneId = asString(pick(result, "root_pane.pane_id", "pane_id", "root_pane.id"));
-	if (!workspaceId || !paneId) {
-		throw delegateError(
-			"E_PLACE",
-			`herdr worktree create output missing workspace_id/pane_id: ${truncate(JSON.stringify(result))}`,
-		);
-	}
-	const checkoutPath = asString(pick(result, "workspace.worktree.checkout_path", "checkout_path"))
-		?? req.repoPath;
-	return {
-		kind: "worktree",
-		workspaceId,
-		paneId,
-		branch: asString(pick(result, "workspace.worktree.branch", "branch")) ?? req.branch,
-		checkoutPath,
-		isLinkedWorktree: pick(result, "workspace.worktree.is_linked_worktree") === true,
-		// Workerhost inversion (design §4): the opaque ref + backend tag ride
-		// ALONGSIDE the legacy id fields (version-skew both ways — legacy fields
-		// stay until a full 1.15.x cohort rotation).
-		backend: "herdr",
-		placementRef: herdrRefFromPane(paneId),
-	};
-}
-
-/**
- * FUNCTION_CONTRACT:
- * Input: result — parsed `herdr tab create` result; workspaceId — the env-
- *   supplied current workspace; raw — raw stdout for error text
- * Output: a tab HerdrPlacement (paneId, tabId, checkoutPath = process.cwd())
- * Guarantees:
- *   - tabId falls back to paneId when herdr omits it
- *   - checkoutPath is the CURRENT session cwd (a tab shares the checkout)
- * Raises:
- *   - DelegateErrorImpl E_PLACE for unparseable output or missing root pane id
- * EXTERNAL_DEPENDENCY: `herdr tab create` result shape (frozen fields:
- *   tab.tab_id, root_pane.pane_id; legacy spellings tab.id/tab_id accepted);
- *   process.cwd() as the shared checkout.
- */
-export function placementFromTabResult(
-	result: unknown,
-	workspaceId: string,
-	raw: string,
-): HerdrPlacement {
-	if (!isRecord(result)) {
-		throw delegateError("E_PLACE", `herdr tab create returned unparseable output: ${truncate(raw)}`);
-	}
-	const paneId = asString(pick(result, "root_pane.pane_id", "pane_id", "root_pane.id"));
-	// BUG_FIX_CONTEXT (herdr drift, 2026-09-10): herdr renamed the tab-create
-	// result key tab.id → tab.tab_id; the old probe list missed the new spelling
-	// so the fallback recorded the PANE id as tabId — every later `tab close`
-	// failed with tab_not_found (the pane id is not a tab id), which the retire
-	// pass masked as an idempotent close while the agent stayed alive. The
-	// current spelling is probed first; the legacy spellings stay for older herdr.
-	const tabId = asString(pick(result, "tab.tab_id", "tab.id", "tab_id", "tabId")) ?? paneId;
-	if (!paneId) {
-		throw delegateError(
-			"E_PLACE",
-			`herdr tab create output missing root pane id: ${truncate(JSON.stringify(result))}`,
-		);
-	}
-	return {
-		kind: "tab",
-		workspaceId,
-		paneId,
-		checkoutPath: process.cwd(),
-		tabId,
-		// Workerhost inversion (design §4): ref + backend tag ALONGSIDE legacy
-		// fields (see placementFromWorktreeResult).
-		backend: "herdr",
-		placementRef: herdrRefFromPane(paneId),
-	};
-}
-
-function truncate(s: string, max = 400): string {
-	return s.length > max ? `${s.slice(0, max)}…` : s;
 }
 
 function sleep(ms: number): Promise<void> {

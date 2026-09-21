@@ -35,10 +35,13 @@ agent start, prompting, settle observation, strict report collection.
 3. **Spawn** — call `delegate` per worker (parallel tool calls for fan-out).
    - Smoke gate when fanning out ≥3 workers: `mode: "probe"` — optional (enterprise
      cost); the first real worker's structured spawn failures (`E_PLACE`/`E_START`/
-     `E_NAME`) are just as cheap a smoke signal. A probe's pane reply (`OUTPUT: OK`)
+     `E_NAME`) are just as cheap a smoke signal. A probe's console reply (`OUTPUT: OK`)
      IS its final verdict — probes never write a report file; never wait for or read one.
-   - `mode: "tab"` for sub-orchestrators and file-slice fan-outs; `worktree` (default)
+   - `mode: "shared"` — placement in the shared checkout without isolation — for
+     sub-orchestrators and file-slice fan-outs; `worktree` (default)
      for independent tickets. One worktree = one worker = one branch.
+     `"tab"` is accepted as a deprecated alias of `"shared"` (both work; manifests
+     keep the canonical value `"tab"`).
    - Blocking call. Esc detaches — the worker keeps running; recover via `delegate_status`.
 4. **Verify** — the report file is the completion criterion, never `status: done`.
    Check the report verdict against the brief's acceptance criteria with file:line evidence.
@@ -58,10 +61,10 @@ be retried.
 
 | Tool result | Meaning | Your move |
 |---|---|---|
-| `E_REPORT_MISSING` / `E_REPORT_INVALID` | worker settled without a valid report | read the pane (`herdr agent read`), diagnose root cause, **diagnosed retry** — new brief naming the wrong path, root cause, fix shape. Never retry verbatim. ≤2 repeats per issue, then escalate to the user |
+| `E_REPORT_MISSING` / `E_REPORT_INVALID` | worker settled without a valid report | read the worker console (`herdr agent read` on the herdr backend), diagnose root cause, **diagnosed retry** — new brief naming the wrong path, root cause, fix shape. Never retry verbatim. ≤2 repeats per issue, then escalate to the user |
 | `E_TIMEOUT` | settle wait expired or detached after started; worker alive | end your turn — the watcher wakes you when the report lands, a question arrives, grill_deck is invoked, context goes critical, or the worker dies. `delegate_status` is the tool for "look now"; bash sleep only when the watcher is absent (old extension build). Never re-call `delegate` to wait |
 | `E_NAME` | name taken by a live agent | choose a different name |
-| `E_PROMPT_STALLED` | pane not at a prompt | inspect via `delegate_status`, answer or re-brief |
+| `E_PROMPT_STALLED` | worker console not at a prompt | inspect via `delegate_status`, answer or re-brief |
 | `E_PLACE` / `E_START` | placement/start failed | read the embedded herdr stderr; reconcile via `herdr workspace list` |
 
 Report/manifest conventions, worktree authority rules, topologies (ticket, file-slice,

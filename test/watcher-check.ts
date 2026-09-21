@@ -71,7 +71,7 @@
  *       the IN PLACE fix mandate) and the event message gains the
  *       auto-nudge suffix; dedup holds (one nudge per report mtime); a
  *       rewritten report → report-ready, no second nudge; a NOT-live worker
- *       gets guidance only (no a-file, no suffix); a failed pane nudge lands
+ *       gets guidance only (no a-file, no suffix); a failed console nudge lands
  *       in the EXISTING nudge-failed marker machinery (real marker file →
  *       nudge-failed event on a later tick); the report-invalid guidance is
  *       cheapest-first (steer before re-spawn) in both live and non-live
@@ -484,7 +484,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 	w.sessionPath = writeSession(dir, "w-grill-deck", [assistantUsage(1000), assistantToolCall(GRILL_DECK_TOOL)]);
 	const g = eventsFor(w).find((e) => e.kind === "grill-deck");
 	check("W5.2 grill_deck toolCall → grill-deck event", g !== undefined, kindsOf(eventsFor(w)));
-	check("W5.2b grill-deck says a human must answer at the worker's pane", !!g && /pane/.test(g.message) && /human/i.test(g.message), g?.message ?? "");
+	check("W5.2b grill-deck says a human must answer at the worker's console", !!g && /console/.test(g.message) && /human/i.test(g.message), g?.message ?? "");
 	check("W5.3 countSessionToolCall counts decks", countSessionToolCall(w.sessionPath, GRILL_DECK_TOOL) === 1);
 	check("W5.3b missing session → no tool calls, never a throw", sessionToolCallNames(join(dir, "nope.jsonl")).length === 0);
 
@@ -532,8 +532,8 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 	const dead = deadEvents.find((e) => e.kind === "worker-dead");
 	check("W7.1 no live status + no report → worker-dead", dead !== undefined, kindsOf(deadEvents));
 	check(
-		"W7.1b worker-dead names the failed-spawn move (pane read + diagnosed retry)",
-		!!dead && /pane/.test(dead.message) && /retry/i.test(dead.message),
+		"W7.1b worker-dead names the failed-spawn move (console read + diagnosed retry)",
+		!!dead && /console/.test(dead.message) && /retry/i.test(dead.message),
 		dead?.message ?? "",
 	);
 	check("W7.2 live worker → no worker-dead", !kindsOf(eventsFor(w, { statuses: [LIVE("w-dead")] })).includes("worker-dead"));
@@ -2745,7 +2745,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 		sent.length === 1 && sent[0].includes("an automatic fix nudge was posted to the live worker"),
 		sent[0] ?? "NOTHING SENT",
 	);
-	check("W23.1d the pane nudge fired (idle worker is nudgeable)", prompts.length === 1, JSON.stringify(prompts));
+	check("W23.1d the console nudge fired (idle worker is nudgeable)", prompts.length === 1, JSON.stringify(prompts));
 
 	// (2) Second tick, same report mtime → NO second a-file write (dedup via
 	//     the mtime fingerprint holds), no second nudge.
@@ -2824,7 +2824,7 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 	);
 	h4.stop();
 
-	// (5) The steer-post PANE failure lands in the EXISTING nudge-failed
+	// (5) The steer-post console failure lands in the EXISTING nudge-failed
 	//     marker machinery — real marker file, real detection (no mocks).
 	const dir5 = taskDir("heal-fail");
 	const failing = mkWorker(dir5, "w-heal-fail");

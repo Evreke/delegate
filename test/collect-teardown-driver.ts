@@ -55,7 +55,7 @@ if (CASE === "q-pending") {
 }
 if (CASE === "start-throws") {
 	// W0 pin (rng-sum bug 3): pre-seed a SAME-NAME worker from an "earlier run"
-	// (own pane, real sessionPath). The refused start must roll back ONLY the
+	// (own console, real sessionPath). The refused start must roll back ONLY the
 	// entry THIS call appends (name + this paneId + no sessionPath) and must
 	// NOT wipe the pre-existing same-name entry (name-only rollback would).
 	await updateManifest(ROOT, (m) => ({

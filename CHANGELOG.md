@@ -10,7 +10,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Removed
 
-- The ambient fleet widget, the `/delegate-fleet` full-screen overlay, and every module and check that existed only for those TUI surfaces (`fleet-widget.ts`, `fleet-overlay.ts`, the `fleet.ts` ownership-display layer, and their render/tree/split checks). The functional parts survive: `renderDelegateLines` (delegate-family tool-result transcript rendering) moved to `ui-text.ts`; `delegate_status` and `/delegate-teardown` are unchanged. The `delegate-fleet` journal event name is kept (frozen surface).
+- The `/delegate-fleet` full-screen overlay (`fleet-overlay.ts`) and its checks. The ambient fleet widget — the live indicator of running workers — is KEPT (operator decision after the initial removal round); `fleet-widget.ts` was slimmed: the tool-result transcript rendering (`renderDelegateLines`) moved to `ui-text.ts` (consumed by `delegate`, `delegate_status`, `delegate_mailbox`), and the fleet-idle TUI nudge was retired with the overlay. `delegate_status` and `/delegate-teardown` are unchanged. The `delegate-fleet` journal event name is kept (frozen surface).
 
 ### Added — Task passport (per-run provenance)
 

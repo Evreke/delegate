@@ -514,7 +514,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			return { ...input, waitMs: Math.min(legacy, WAIT_CAP_MS) } as Static<typeof delegateParams>;
 		},
 		promptGuidelines: [
-			"Use delegate only after the brief file exists under ${exchangeRoot()}/<task>/ — pass its path as briefPath; the brief is the worker's instructions and the worker reports back through the `swarm write-report` verb (report-<name>.json is the file collect validates; the spawn flow exports the worker's SWARM_TASK/SWARM_WORKER identity).",
+			"Use delegate only after the brief file exists under ${exchangeRoot()}/<task>/ — pass its path as briefPath; the brief is the worker's instructions and the worker reports back through the `swarm write-report` verb (report-<name>.json is the file collect validates). The spawn flow exports the worker's SWARM_TASK/SWARM_WORKER/SWARM_SCHEMA_DIR identity when the backend supports it, and the prompt's examples carry explicit --brief/--task/--worker flags so the verb invocation is backend-independent.",
 			"delegate blocks until the worker settles; the worker's report file is the completion criterion, not the agent status — status fail in the report is still an honest completion.",
 			"If delegate returns E_REPORT_MISSING or E_REPORT_INVALID, do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate); never repeat verbatim. " +
 			RETRY_MANDATE,

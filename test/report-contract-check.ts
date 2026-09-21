@@ -199,12 +199,25 @@ const root = mkdtempSync(join(tmpdir(), "report-contract-check-"));
 		base === explicitOn,
 	);
 	check(
+		"#25 the PRIMARY write-report instruction carries explicit --brief/--task/--worker flags (backend-independent)",
+		base.includes(`write-report --brief /tmp/exchange/t/brief-x.md --task t --worker ${NAME}`),
+	);
+	check(
+		"#25 the env identity is qualified (not claimed unconditionally) and the flags are the always-sufficient spine",
+		base.includes("when the backend supports it") &&
+			base.includes("works regardless") &&
+			!base.includes("already exported into your environment"),
+	);
+	check(
 		"#25 fallback names the exact raw exchange files (q-/a-/p-/report-)",
 		base.includes(`q-${NAME}.json`) &&
 			base.includes(`a-${NAME}.json`) &&
 			base.includes(`p-${NAME}.jsonl`) &&
-			base.includes(`report-${NAME}.json`) &&
-			base.includes("byte-for-byte"),
+			base.includes(`report-${NAME}.json`),
+	);
+	check(
+		"#25 the fallback does NOT claim byte-for-byte parity for hand-written raw files (only the verbs are byte-pinned)",
+		base.includes("byte-exact reference") && !base.includes("These are exactly the files the verbs write, byte-for-byte"),
 	);
 	check(
 		"#25 verbsFallback:false drops the raw-file paragraph but keeps the verbs primary",

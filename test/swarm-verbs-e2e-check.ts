@@ -105,14 +105,17 @@ try {
 	});
 	check("verbs.1 startAgent returns the canonical name with the swarm env", start.name === WORKER, JSON.stringify(start));
 
-	// 2. The verb-only brief: the worker must use `swarm read-brief` and
-	//    `swarm write-report` (identity from env, no path flags on the report).
+	// 2. The verb-only brief, mirroring the shipped briefPrompt: the worker
+	//    uses `swarm read-brief` and `swarm write-report` with the explicit
+	//    identity flags (the env is exported too, but the flags make the
+	//    invocation backend-independent).
+	const identity = `--brief ${briefPath} --task ${TASK} --worker ${WORKER}`;
 	const prompt = [
-		`You are the pi-delegate worker "${WORKER}". Your environment already carries SWARM_TASK/SWARM_WORKER/SWARM_SCHEMA_DIR.`,
+		`You are the pi-delegate worker "${WORKER}". Your environment carries SWARM_TASK/SWARM_WORKER/SWARM_SCHEMA_DIR.`,
 		"Do exactly this using bash, and nothing else:",
-		`1. Run: bun ${CLI} read-brief ${briefPath}`,
+		`1. Run: bun ${CLI} read-brief ${identity}`,
 		"2. Run this command exactly (the heredoc pipes the report JSON into the verb):",
-		`bun ${CLI} write-report <<'SWARMREPORT'`,
+		`bun ${CLI} write-report ${identity} <<'SWARMREPORT'`,
 		`{"worker":"${WORKER}","status":"pass","summary":"verb e2e","artifacts":["report via swarm write-report"],"evidence":[{"claim":"the verb wrote the report","file":"report-${WORKER}.json"}]}`,
 		"SWARMREPORT",
 		"Then reply with exactly: OUTPUT: OK",

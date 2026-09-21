@@ -13,7 +13,10 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 - **Worker prompt now speaks the `swarm` CLI verbs (#25).** `briefPrompt` instructs
   the worker to interact through `bun <extension>/src/swarm/cli.ts` —
   `read-brief`, `ask`, `poll-answer`, `write-progress`, `write-report` — instead
-  of hand-writing exchange files by path. The pre-#25 raw-file phrasing survives
+  of hand-writing exchange files by path. Every example carries explicit
+  `--brief` / `--task` / `--worker` flags, so the invocation is
+  backend-independent; the exported env vars remain the canonical identity
+  when present. The pre-#25 raw-file phrasing survives
   one release as a documented fallback behind the config flag
   `swarm.verbsFallback` (default `true`; `false` drops the fallback paragraph).
   The verb invocation is always the primary instruction; the flag controls only

@@ -27,6 +27,7 @@ import { createMemoryManifestStore, type ExchangeManifest, type ManifestWorker, 
 import { watcherKeyFor } from "../src/watch-store.ts";
 import {
 	buildSwarmGraph,
+	emptyGraph,
 	serializeSwarmGraph,
 	SWARM_GRAPH_SCHEMA_VERSION,
 	type SwarmGraph,
@@ -280,36 +281,28 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 			journalOnly.edges.some((e) => e.kind === "retired" && e.from === stamped && e.to === "jtask" && e.at === "2026-01-03T00:00:00.000Z"),
 		JSON.stringify(journalOnly.edges),
 	);
+	check("G5 journal-only: no legacy-orphan flag (manifest-only concept)", !flags(taskNode(journalOnly, "jtask")!).includes("legacy-orphan"), JSON.stringify(taskNode(journalOnly, "jtask")?.degraded));
+	check("G5 journal-only: depth preserved from the spawn payload", sessions(journalOnly).find((s) => s.id === stamped)?.depth === 0 && taskNode(journalOnly, "jtask")?.depth === 0);
 }
 
 // ---------------------------------------------------------------------------
 // G6 — deterministic output (two runs byte-equal)
 // ---------------------------------------------------------------------------
 {
-	const store = createMemoryManifestStore();
-	await seed(
-		store,
-		manifest(
-			"det",
-			[
-				worker({ name: "b", sessionPath: "/sessions/b.jsonl", orchestratorSessionPath: ROOT, collectedAt: "2026-01-02T00:00:00.000Z" }),
-				worker({ name: "a", sessionPath: "/sessions/a.jsonl", orchestratorSessionPath: ROOT }),
-			],
-			{ masterSessionPath: ROOT },
-		),
-	);
-	const deps: SwarmGraphDeps = {
-		manifests: store,
-		backendName: "fake",
-		transport: transport([
-			{ name: "b", status: "idle", placementRef: "fake:b" },
-			{ name: "a", status: "working", placementRef: "fake:a" },
-		]),
-		usage: USAGE,
+	const mkWorkers = (order: "ba" | "ab"): ManifestWorker[] => {
+		const b = worker({ name: "b", sessionPath: "/sessions/b.jsonl", orchestratorSessionPath: ROOT, collectedAt: "2026-01-02T00:00:00.000Z" });
+		const a = worker({ name: "a", sessionPath: "/sessions/a.jsonl", orchestratorSessionPath: ROOT });
+		return order === "ba" ? [b, a] : [a, b];
 	};
-	const one = await buildSwarmGraph(deps);
-	const two = await buildSwarmGraph(deps);
-	check("G6 two runs serialize byte-equal", serializeSwarmGraph(one) === serializeSwarmGraph(two));
+	const storeA = createMemoryManifestStore();
+	await seed(storeA, manifest("det", mkWorkers("ba"), { masterSessionPath: ROOT }));
+	const storeB = createMemoryManifestStore();
+	await seed(storeB, manifest("det", mkWorkers("ab"), { masterSessionPath: ROOT }));
+	const mkDeps = (store: ManifestStore, statuses: AgentStatus[]): SwarmGraphDeps => ({ manifests: store, backendName: "fake", transport: transport(statuses), usage: USAGE });
+	const one = await buildSwarmGraph(mkDeps(storeA, [{ name: "b", status: "idle" }, { name: "a", status: "working" }]));
+	const two = await buildSwarmGraph(mkDeps(storeB, [{ name: "a", status: "working" }, { name: "b", status: "idle" }]));
+	check("G6 two runs byte-equal", serializeSwarmGraph(one) === serializeSwarmGraph(two));
+	check("G6 shuffled input order is canonicalized (order-independence)", serializeSwarmGraph(one) === serializeSwarmGraph(await buildSwarmGraph(mkDeps(storeA, [{ name: "b", status: "idle" }, { name: "a", status: "working" }]))));
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +339,17 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 	check("G8 never throws on failing inputs", !threw && graph !== null);
 	check("G8 failing graph is valid and versioned", graph?.schemaVersion === SWARM_GRAPH_SCHEMA_VERSION && Array.isArray(graph?.nodes) && Array.isArray(graph?.edges) && Array.isArray(graph?.orphans));
 	check("G8 failed sources reflected", graph?.sources.manifests === false && graph?.sources.journal === false && graph?.sources.liveStatus === false);
+	// Degraded-vs-legitimately-empty distinction: dependency failures above are
+	// data (available stays true); only the catastrophic fallback marks false.
+	check("G8 dependency-degraded graph is still available", graph?.available === true);
+	let serializeThrew = false;
+	let emptyWire = "";
+	try {
+		emptyWire = serializeSwarmGraph(emptyGraph());
+	} catch {
+		serializeThrew = true;
+	}
+	check("G8 emptyGraph is distinguishable and serializes without throwing", !serializeThrew && emptyGraph().available === false && emptyWire.includes('"available":false'));
 }
 
 console.log(failures === 0 ? "\nALL SWARM-GRAPH CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

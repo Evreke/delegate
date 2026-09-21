@@ -5,7 +5,7 @@
  * ARCHITECTURE §4.1.5 / Law 13). This module owns the graph's NODE types
  * (sessions + tasks), the SessionId convention, the degradation vocabulary
  * and the deterministic sorters. It performs NO I/O and reads NO store: the
- * projection lives in ./graph.ts; edges/orphans live in ./edges.ts.
+ * projection lives in ./graph-build.ts; edges/orphans live in ./edges.ts.
  *
  * SessionId (binding, §4.1.2): the stable hash of the session JSONL path
  * under the SAME FNV-1a convention as the watcher satellite key

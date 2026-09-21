@@ -21,11 +21,15 @@ export interface JournalSessionContribution {
 	id: string;
 	path?: string;
 	tasks: string[];
+	/** Min `depth` learned from this session's `spawn` events (§4.1.5/#28). */
+	depth?: number;
 }
 
 export interface JournalProjection {
 	tasks: string[];
 	sessions: JournalSessionContribution[];
+	/** Per-task min `depth` from the task's `spawn` payloads. */
+	taskDepths: Array<{ id: string; depth: number }>;
 	edges: SwarmEdge[];
 }
 
@@ -39,6 +43,8 @@ export function projectJournal(events: JournalEvent[]): JournalProjection {
 	const sessions = new Map<string, { path?: string; tasks: Set<string> }>();
 	const edges: SwarmEdge[] = [];
 	const stamped = new Map<string, string>();
+	const sessionDepths = new Map<string, number[]>();
+	const taskDepths = new Map<string, number>();
 	const key = (sessionId: string, task: string, worker: string): string => `${sessionId}\u0000${task}\u0000${worker}`;
 
 	const touch = (id: string, task?: string, path?: string): void => {
@@ -75,8 +81,24 @@ export function projectJournal(events: JournalEvent[]): JournalProjection {
 		const childPath = e.worker ? stamped.get(key(sessionId, task, e.worker)) : undefined;
 		const childId = childPath === undefined ? undefined : sessionIdFor(childPath);
 		if (e.kind === "spawn") {
-			if (childId !== undefined) edges.push({ kind: "spawned_by", from: childId, to: sessionId });
+			const payload = e.payload as { depth?: unknown } | null;
+			const depth =
+				payload !== null && typeof payload === "object" && typeof payload.depth === "number" && Number.isFinite(payload.depth)
+					? payload.depth
+					: undefined;
+			if (childId !== undefined) {
+				edges.push({ kind: "spawned_by", from: childId, to: sessionId });
+				if (depth !== undefined) {
+					const list = sessionDepths.get(childId);
+					if (list === undefined) sessionDepths.set(childId, [depth]);
+					else list.push(depth);
+				}
+			}
 			edges.push({ kind: "spawned_by", from: task, to: sessionId });
+			if (depth !== undefined) {
+				const current = taskDepths.get(task);
+				taskDepths.set(task, current === undefined ? depth : Math.min(current, depth));
+			}
 		} else if (e.kind === "collect" && childId !== undefined) {
 			edges.push({ kind: "collected", from: childId, to: task, at: e.ts });
 		} else if (e.kind === "retire" && childId !== undefined) {
@@ -89,8 +111,11 @@ export function projectJournal(events: JournalEvent[]): JournalProjection {
 		sessions: [...sessions.entries()].map(([id, acc]) => {
 			const out: JournalSessionContribution = { id, tasks: [...acc.tasks] };
 			if (acc.path !== undefined) out.path = acc.path;
+			const depths = sessionDepths.get(id);
+			if (depths !== undefined && depths.length > 0) out.depth = Math.min(...depths);
 			return out;
 		}),
+		taskDepths: [...taskDepths.entries()].map(([id, depth]) => ({ id, depth })),
 		edges,
 	};
 }

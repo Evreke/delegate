@@ -50,6 +50,10 @@ export interface SwarmGraphSources {
 
 export interface SwarmGraph {
 	schemaVersion: number;
+	/** True for a normally-built graph. False ONLY for the catastrophic
+	 *  never-throws fallback (`emptyGraph()`): lets a client tell "everything
+	 *  failed" from a legitimately empty but available projection. */
+	available: boolean;
 	sources: SwarmGraphSources;
 	nodes: SwarmGraphNode[];
 	edges: SwarmEdge[];
@@ -122,15 +126,23 @@ export async function buildSwarmGraph(deps: SwarmGraphDeps): Promise<SwarmGraph>
 
 /** Serialize a graph to its canonical byte representation (the Law 7 wire
  *  form). Arrays are already canonically ordered by the projector; the
- *  key order is the construction order, fixed by ./graph-build.ts. */
+ *  key order is the construction order, fixed by ./graph-build.ts. Total —
+ *  a serialization failure degrades to the empty-graph wire form. */
 export function serializeSwarmGraph(graph: SwarmGraph): string {
-	return JSON.stringify(graph);
+	try {
+		return JSON.stringify(graph);
+	} catch {
+		return JSON.stringify(emptyGraph());
+	}
 }
 
-/** A valid, fully-degraded graph (the never-throws fallback). */
+/** A valid, fully-degraded graph (the never-throws fallback). `available:
+ *  false` is the marker that distinguishes it from a legitimately empty
+ *  projection. */
 export function emptyGraph(): SwarmGraph {
 	return {
 		schemaVersion: SWARM_GRAPH_SCHEMA_VERSION,
+		available: false,
 		sources: { journal: false, manifests: false, liveStatus: false, usage: false },
 		nodes: [],
 		edges: [],

@@ -4,15 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-Version numbers align with the iteration numbering in DESIGN.md (v1.x sections).
+Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/version.ts`, byte-matched by a static pin); git tags mirror them as `vX.Y.Z`.
 
-## [Unreleased]
+## [1.18.0] — 2026-09-21
 
 ### Removed
 
 - The ambient fleet widget, the `/delegate-fleet` full-screen overlay, and every module and check that existed only for those TUI surfaces (`fleet-widget.ts`, `fleet-overlay.ts`, the `fleet.ts` ownership-display layer, and their render/tree/split checks). The functional parts survive: `renderDelegateLines` (delegate-family tool-result transcript rendering) moved to `ui-text.ts`; `delegate_status` and `/delegate-teardown` are unchanged. The `delegate-fleet` journal event name is kept (frozen surface).
-
-## [Unreleased]
 
 ### Added — Task passport (per-run provenance)
 
@@ -41,6 +39,7 @@ Regression: `test/passport-check.ts` (P1–P5).
 
 ### Changed
 
+
 - **Default `releaseOn` flipped to `"started"`.** A blocking `delegate` call no longer
   stands in the settle gate for the full 15 s window: as soon as the worker is proven
   started and working, the call releases and the background watcher owns the wait
@@ -51,6 +50,12 @@ Regression: `test/passport-check.ts` (P1–P5).
   whitelist normalizer now honors exactly `"settle"`; everything else falls back to
   the default `"started"`). Probes are exempt in both modes — their full window IS
   the smoke verdict. Regression: `test/release-on-started-check.ts` (T-rel.4/T-rel.5).
+
+- **Constitution v2 and machine-verified gates.** ARCHITECTURE.md: a direction statement and the eleventh law (independent reviewer agent with a structured verdict file, one canonical serialized main verdict, red-main freeze); the Law 5 module-size threshold is an exact 400 lines with a machine-verified decomposition ledger (the static check computes the over-threshold list and fails CI in both directions); Law 6 waivers are enumerated data, not prose; unfalsifiable wording rewritten to measurable form; audit history moved out per the closed-set law. AGENTS.md: three blocking QA layers (smoke / critical path / regression — no scheduled nightly), the acceptance list as a mandatory PR artifact, the binding-rule conflict rule.
+- **Law 5 slice 1 executed.** The pure execute() phases moved from `src/spawn.ts` (2147 → 1833 lines) to the new `src/spawn-phases.ts` (MODULE_CONTRACT); the Law 6 pins updated in the same commit. The stale herdr ledger plan was corrected to the landed split state.
+- **Pre-commit smoke gate.** `hooks/pre-commit` (typecheck + static pins, each bounded at 40s); installed via `git config core.hooksPath hooks/`.
+- **Runner verdict telemetry.** Every `test/run-checks.sh` verdict line carries host load, available memory and the concurrent-runner count — ENV-FAILs become attributed evidence instead of folklore.
+- **Language unification.** The threat catalog and all agent-facing binding documents are now uniformly English; `rpc-jsonl.ts` carries its MODULE_CONTRACT marker.
 
 ## [1.17.1] — 2026-09-16
 ### Added
@@ -141,48 +146,7 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
 - **typebox moved to peerDependencies** per pi's packaging contract.
 - **Single-sourced skill (Law 9).** The stale repo-root `pi/skills/delegate` copy is deleted; both install layouts load the extension's copy.
 
-### Fixed
-
-- **Google-model-breaking enum parameter shape:** tool enums use `StringEnum` instead of `Type.Union` of literals.
-- **Hardcoded `~/.pi/agent` paths** (7 sites) replaced by pi's `getAgentDir()`/`CONFIG_DIR_NAME` exports, with a static pin banning literal joins.
-- **Double-delivery bug class closed:** accept-then-log delivery classification ("accepted by pi" counts as delivered; rollback only for genuine pre-delivery failures — `test/watcher-check.ts` W19) and the watcher-vs-collect `collectedAt` race (report wake dropped when the stamp lands between snapshot and send — W20).
-- **Lying contracts corrected** (seam module header, fleet stale fail-open paragraph); six production TypeScript errors resolved; `tsc --noEmit` is now a gate; both commands guard dialog/notify calls with `ctx.hasUI`.
-- **Silent-catch residue surfaced:** archive failures carry a reason, start-failure manifest-rollback failures are logged, audit-append failures are counted. Regression: `test/silent-catch-check.ts`.
-- **False worker-dead for worker-orchestrators:** a worker that ended its turn while its own fleet was still running was classified "settled with no report", causing retries and E_NAME collisions; now the parent watcher sees the in-flight fleet and gets an honest `fleet-in-flight` state instead. Regression: `test/watcher-check.ts` (new block).
-- **Schema-violating reports self-heal:** a report rejected at collect (e.g. `status: "done"`) no longer forces a full re-spawn — the watcher automatically posts a fix steer (the exact validator error) to a live worker, which rewrites the report in place; the report-invalid guidance is cheapest-first (steer first, re-spawn only if the worker is gone) and the spawn prompt carries a status anti-example. Regression: `test/watcher-check.ts` (+ auto-nudge block), `test/report-contract-check.ts` (prompt pin).
-
-### Windows path support
-
-- **Windows default exchange root.** On Windows the default exchange root is now
-  `%LOCALAPPDATA%\pi\exchange` (fallback `homedir()\AppData\Local\pi\exchange`); the
-  `PI_DELEGATE_EXCHANGE_ROOT` environment variable overrides it (absolute path). The
-  POSIX default `/tmp/exchange` is unchanged in this release.
-- **Single portable path builder.** Every exchange-layer path (manifest, brief, report,
-  mailbox, probe dir, teardown log) is assembled through the platform-aware builder
-  `src/expaths.ts` (`node:path`, injectable in tests) — no more mixed-separator paths
-  from raw `/` template literals. POSIX output stays byte-identical to previous
-  releases.
-- **No spurious `E_BRIEF` on Windows.** Brief validation (`ensureExchangeDir`) compares
-  directories case- and separator-stable on Windows (`c:\…` vs `C:\…`, `/` vs `\`);
-  POSIX comparison remains exact.
-- **Windows-correct classification and ownership.** Fleet grouping slugs and probe-dir
-  classification are separator-agnostic; the session-owner compare
-  (`sameSessionPath`, `src/watch-role.ts`) folds case and separators on Windows only —
-  a case-differing POSIX path still reads as foreign.
-- **herdr adapter on Windows.** Worktree containment uses a segment-aware compare;
-  the Windows CLI launch policy is `cmd.exe /d /s /c` with per-argument quoting and
-  `windowsHide`; kill escalation on Windows is `taskkill /pid … /T /F`. The POSIX
-  SIGTERM→SIGKILL escalation is unchanged.
-- **Scope note.** Windows-shaped tests (path.win32 fixtures) run on the POSIX CI; a
-  real-Windows E2E run is not part of CI — it stays an explicit manual QA gate. The
-  exchange/path layer is Windows-portable in 1.17.0; running the host backend on Windows
-  requires herdr for Windows.
-
-### Removed
-
-- **DESIGN.md** — the frozen historical design log (v1 → v1.17.0) — removed from the repo and the npm package; decision history lives in git.
-
-## [Unreleased]
+### Changed (restored 2026-09-21 — shipped with 1.17.0; misplaced out of this section during the release edit)
 
 ### Changed
 
@@ -262,6 +226,48 @@ The healing release: the four-way 2026-09-11 audit of the 1.16.1 line turned int
   configuration escape. Skipped deliveries are recorded in the watcher audit
   file (`~/.pi/agent/delegate-watch.log`) with the reason; a spawn that
   could not record an owner path warns the orchestrator explicitly.
+
+### Fixed
+
+- **Google-model-breaking enum parameter shape:** tool enums use `StringEnum` instead of `Type.Union` of literals.
+- **Hardcoded `~/.pi/agent` paths** (7 sites) replaced by pi's `getAgentDir()`/`CONFIG_DIR_NAME` exports, with a static pin banning literal joins.
+- **Double-delivery bug class closed:** accept-then-log delivery classification ("accepted by pi" counts as delivered; rollback only for genuine pre-delivery failures — `test/watcher-check.ts` W19) and the watcher-vs-collect `collectedAt` race (report wake dropped when the stamp lands between snapshot and send — W20).
+- **Lying contracts corrected** (seam module header, fleet stale fail-open paragraph); six production TypeScript errors resolved; `tsc --noEmit` is now a gate; both commands guard dialog/notify calls with `ctx.hasUI`.
+- **Silent-catch residue surfaced:** archive failures carry a reason, start-failure manifest-rollback failures are logged, audit-append failures are counted. Regression: `test/silent-catch-check.ts`.
+- **False worker-dead for worker-orchestrators:** a worker that ended its turn while its own fleet was still running was classified "settled with no report", causing retries and E_NAME collisions; now the parent watcher sees the in-flight fleet and gets an honest `fleet-in-flight` state instead. Regression: `test/watcher-check.ts` (new block).
+- **Schema-violating reports self-heal:** a report rejected at collect (e.g. `status: "done"`) no longer forces a full re-spawn — the watcher automatically posts a fix steer (the exact validator error) to a live worker, which rewrites the report in place; the report-invalid guidance is cheapest-first (steer first, re-spawn only if the worker is gone) and the spawn prompt carries a status anti-example. Regression: `test/watcher-check.ts` (+ auto-nudge block), `test/report-contract-check.ts` (prompt pin).
+
+### Windows path support
+
+- **Windows default exchange root.** On Windows the default exchange root is now
+  `%LOCALAPPDATA%\pi\exchange` (fallback `homedir()\AppData\Local\pi\exchange`); the
+  `PI_DELEGATE_EXCHANGE_ROOT` environment variable overrides it (absolute path). The
+  POSIX default `/tmp/exchange` is unchanged in this release.
+- **Single portable path builder.** Every exchange-layer path (manifest, brief, report,
+  mailbox, probe dir, teardown log) is assembled through the platform-aware builder
+  `src/expaths.ts` (`node:path`, injectable in tests) — no more mixed-separator paths
+  from raw `/` template literals. POSIX output stays byte-identical to previous
+  releases.
+- **No spurious `E_BRIEF` on Windows.** Brief validation (`ensureExchangeDir`) compares
+  directories case- and separator-stable on Windows (`c:\…` vs `C:\…`, `/` vs `\`);
+  POSIX comparison remains exact.
+- **Windows-correct classification and ownership.** Fleet grouping slugs and probe-dir
+  classification are separator-agnostic; the session-owner compare
+  (`sameSessionPath`, `src/watch-role.ts`) folds case and separators on Windows only —
+  a case-differing POSIX path still reads as foreign.
+- **herdr adapter on Windows.** Worktree containment uses a segment-aware compare;
+  the Windows CLI launch policy is `cmd.exe /d /s /c` with per-argument quoting and
+  `windowsHide`; kill escalation on Windows is `taskkill /pid … /T /F`. The POSIX
+  SIGTERM→SIGKILL escalation is unchanged.
+- **Scope note.** Windows-shaped tests (path.win32 fixtures) run on the POSIX CI; a
+  real-Windows E2E run is not part of CI — it stays an explicit manual QA gate. The
+  exchange/path layer is Windows-portable in 1.17.0; running the host backend on Windows
+  requires herdr for Windows.
+
+### Removed
+
+- **DESIGN.md** — the frozen historical design log (v1 → v1.17.0) — removed from the repo and the npm package; decision history lives in git.
+
 
 ## [1.16.1] — 2026-09-11
 

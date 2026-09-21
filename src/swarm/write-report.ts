@@ -15,6 +15,16 @@
  * verb-written report that fails collect-time validation stays a bug class with
  * its own regression check (Law 10).
  *
+ * Schema-tier resolution ORDER (fix/cli-schema-tier, 2026-09-21): the brief's
+ * `reportSchema` fragment is resolved against a PROJECT-tier library dir chosen
+ * as `--schema-dir` flag > `SWARM_SCHEMA_DIR` env var > the cwd-derived
+ * `<cwd>/.pi/delegate-schemas` fallback. The env tier exists because a WORKTREE
+ * worker's cwd is not the orchestrator's session cwd — collect-time validation
+ * (src/spawn-phases.ts) resolves from the ORCHESTRATOR's cwd, so the spawn flow
+ * exports the orchestrator-resolved dir as SWARM_SCHEMA_DIR (#25 owns the
+ * prompt/export side; the CLI owns this precedence). The user-level library
+ * (`getAgentDir()/pi-delegate-schemas`) stays the second tier in every case.
+ *
  * Dependencies: node:fs, node:path, @earendil-works/pi-coding-agent
  * (CONFIG_DIR_NAME — the project schema-library dir, never a hardcoded ".pi"),
  * ../expaths.ts (reportPathFor — the ONE path builder), ../report-schema.ts,
@@ -23,7 +33,9 @@
  * Critical invariants:
  *   - the report is validated BEFORE the final path exists/updates;
  *   - the published bytes are exactly serializeJsonFile(parsed);
- *   - schema resolution failure is fail-closed (E_SWARM_SCHEMA).
+ *   - schema resolution failure is fail-closed (E_SWARM_SCHEMA);
+ *   - the sibling validate-temp is removed on EVERY failure path (try/finally
+ *     around the publish; the success path renames it away).
  */
 
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -47,8 +59,9 @@ function readReportInput(parsed: ParsedArgs): string {
 }
 
 /** Run `swarm write-report`: validate against the resolved schema, then publish
- *  the exact bytes atomically. */
-export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs): void {
+ *  the exact bytes atomically. `env` supplies the SWARM_SCHEMA_DIR project-tier
+ *  override (see the MODULE_CONTRACT resolution order). */
+export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
 	const d = openExchangeDir(ctx.briefPath);
 	const reportPath = reportPathFor(d.dir, ctx.worker);
 
@@ -64,9 +77,9 @@ export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs): void {
 	}
 
 	// Resolve the brief-declared schema exactly as collect time does: project
-	// library first (<cwd>/.pi/delegate-schemas via pi's CONFIG_DIR_NAME), then
-	// the user-level library. --schema-dir is the explicit test/ops override.
-	const schemaDir = flagStr(parsed, "schema-dir");
+	// library first, then the user-level library. Project-tier dir precedence:
+	// --schema-dir > SWARM_SCHEMA_DIR > <cwd>/.pi/delegate-schemas (CONFIG_DIR_NAME).
+	const schemaDir = flagStr(parsed, "schema-dir") ?? env.SWARM_SCHEMA_DIR;
 	const projectSchemaDir = schemaDir ?? resolve(process.cwd(), CONFIG_DIR_NAME, "delegate-schemas");
 	const resolved = resolveReportSchema(d.briefPath, projectSchemaDir);
 	if (!resolved.ok) {
@@ -85,9 +98,10 @@ export function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs): void {
 			throw new SwarmError("E_REPORT_INVALID", verdict.error.replaceAll(tmpPath, reportPath));
 		}
 		renameSync(tmpPath, reportPath);
-	} catch (err) {
+	} finally {
+		// Success renamed the temp away; every failure path unlinks it here so a
+		// rejected report can never leave an orphan beside the real report.
 		rmSync(tmpPath, { force: true });
-		throw err;
 	}
 
 	emitSuccess("write-report", {

@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 /**
- * pi-delegate — src/swarm/cli.ts — the `swarm` worker-verb CLI (Phase A).
+ * pi-delegate — src/swarm/cli.ts — the `swarm` worker-verb CLI.
  *
  * MODULE_CONTRACT — the entry point and dispatcher of the `swarm` bun script
  * shipped with the extension (ARCHITECTURE.md §4.1.1). It exposes exactly the
- * FIVE worker verbs over files — `read-brief`, `write-report`, `ask`,
+ * FIVE worker verbs — `read-brief`, `write-report`, `ask`,
  * `poll-answer`, `write-progress` — and nothing else. Phase A writes today's
- * exchange files byte-identically (Law 7); no journal/SQLite write happens
- * here (that is issue #23, Phase B).
+ * exchange files byte-identically (Law 7). Phase B (issue #23, §4.1.3):
+ * under `swarm.storage: "journal"` every verb write appends its journal
+ * event FIRST (journal = truth) and then writes the byte-frozen file
+ * projection — the journal append is advisory (Law 8: a journal failure is
+ * recorded in the success envelope's `journal` field, never a verb failure);
+ * the default remains "files" (no journal write at all) this release.
  *
  * Worker identity travels by ONE canonical mechanism: the spawn flow exports
  * SWARM_TASK / SWARM_WORKER; `--task` / `--worker` are explicit overrides
@@ -19,8 +23,9 @@
  * = non-zero exit + a structured stdout error object carrying an E_* code and
  * a hint (./result.ts).
  *
- * Dependencies: ./args.ts, ./context.ts, the five verb modules, ./result.ts.
- * No herdr adapter import (Law 4).
+ * Dependencies: ./args.ts, ./context.ts, the five verb modules, ./result.ts,
+ * ./storage.ts (the Phase B journal plumbing the verbs call). No herdr
+ * adapter import (Law 4).
  *
  * Critical invariants:
  *   - the verb set is closed: an unknown verb fails E_SWARM_USAGE;
@@ -53,8 +58,9 @@ Verbs:
 Identity: SWARM_TASK / SWARM_WORKER (--task / --worker override).
 `;
 
-/** Dispatch one parsed invocation; returns the process exit code. */
-function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
+/** Dispatch one parsed invocation; the write verbs are async in Phase B
+ *  (the journal append precedes the projection write). */
+async function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promise<void> {
 	switch (parsed.verb) {
 		case "read-brief":
 			// Fail-fast: read-brief accepts at most ONE positional (the brief path).
@@ -67,16 +73,16 @@ function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
 			runReadBrief(resolveContext(parsed, env, parsed.positionals[0]));
 			return;
 		case "write-report":
-			runWriteReport(resolveContext(parsed, env), parsed, env);
+			await runWriteReport(resolveContext(parsed, env), parsed, env);
 			return;
 		case "ask":
-			runAsk(resolveContext(parsed, env), parsed);
+			await runAsk(resolveContext(parsed, env), parsed, env);
 			return;
 		case "poll-answer":
 			runPollAnswer(resolveContext(parsed, env), parsed);
 			return;
 		case "write-progress":
-			runWriteProgress(resolveContext(parsed, env), parsed);
+			await runWriteProgress(resolveContext(parsed, env), parsed, env);
 			return;
 		default:
 			throw new SwarmError("E_SWARM_USAGE", `unknown verb ${JSON.stringify(parsed.verb)} — known verbs: ${WORKER_VERBS.join(", ")}`);
@@ -84,9 +90,9 @@ function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): void {
 }
 
 /** CLI entry: parse, dispatch, render success/failure. Pure-ish (fs through
- *  the verbs); returns the exit code instead of calling process.exit so stdout
- *  drains before the process ends. */
-export function main(argv: string[], env: NodeJS.ProcessEnv): number {
+ *  the verbs); resolves with the exit code instead of calling process.exit so
+ *  stdout drains before the process ends. */
+export async function main(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
 	let parsed: ParsedArgs;
 	try {
 		parsed = parseArgs(argv);
@@ -104,7 +110,7 @@ export function main(argv: string[], env: NodeJS.ProcessEnv): number {
 	}
 
 	try {
-		dispatch(parsed, env);
+		await dispatch(parsed, env);
 		return 0;
 	} catch (err) {
 		if (err instanceof SwarmError) {
@@ -117,5 +123,7 @@ export function main(argv: string[], env: NodeJS.ProcessEnv): number {
 }
 
 if (import.meta.main) {
-	process.exitCode = main(process.argv.slice(2), process.env);
+	void main(process.argv.slice(2), process.env).then((code) => {
+		process.exitCode = code;
+	});
 }

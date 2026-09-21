@@ -41,7 +41,9 @@
  *     `PRAGMA user_version = 1` is the Law 7 version gate for the database.
  *   - `createJournalWriter()` and `append()` are total: they return structured
  *     results and never throw (advisory-by-contract, Law 8).
- *   - The kind set is closed at 13; an unknown kind is refused, not stored.
+ *   - The kind set is closed (14 kinds; the §4.1.2 thirteen plus `report`,
+ *     the operator-approved #23 addition); an unknown kind is refused, not
+ *     stored.
  */
 
 import { Database } from "bun:sqlite";
@@ -112,10 +114,14 @@ const INSERT_EVENT_SQL =
 // The closed v1 kind set (§4.1.2) — new kinds only by addition, never rename
 // ---------------------------------------------------------------------------
 
-/** The 13 v1 kinds: the issue's 11 PLUS `reconcile-summary` and
- *  `compaction-marker` (operator-approved additions in §4.1.2). The last two
- *  kinds (`termination-notice`, `partial-report`) are forward-compat with
- *  #15: reserved in the schema before their producers land. */
+/** The v1 kinds: the issue's 11 PLUS `reconcile-summary` and
+ *  `compaction-marker` (operator-approved additions in §4.1.2), PLUS `report`
+ *  (operator-approved addition for issue #23, Phase B — the §4.1.2 addition
+ *  rule: new kinds only by addition, never rename; payload = the validated
+ *  write-report JSON verbatim, so journal-as-truth covers the terminal
+ *  artifact and #26's watcher-on-cursor can see report-readiness). The kinds
+ *  `termination-notice` / `partial-report` are forward-compat with #15:
+ *  reserved in the schema before their producers land. */
 export const JOURNAL_KINDS = [
 	"spawn",
 	"stamp",
@@ -124,6 +130,7 @@ export const JOURNAL_KINDS = [
 	"answer",
 	"steer",
 	"progress",
+	"report",
 	"retire",
 	"dead-reboot",
 	"reconcile-summary",

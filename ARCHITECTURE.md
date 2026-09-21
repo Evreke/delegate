@@ -12,8 +12,12 @@
 pi-delegate is a delegation orchestrator extension for the pi coding harness:
 one orchestrating session spawns, observes, and collects fleets of worker
 coding agents through a single `delegate` tool, a file mailbox, and a
-background watcher. Its user is a single operator working on one machine,
-possibly with several agent sessions in parallel; the operator's time — not
+background watcher. Authority stays with a single operator working on one
+machine, possibly with several agent sessions in parallel; multi-host
+operation is out of scope, and only that operator releases or merges. "Single
+operator" is a statement about authority, not about audience: the fleet's
+lifecycle and its current state are durable, machine-readable products with
+consumers beyond the operator's own screen (§0.1). The operator's time — not
 agent capacity — is the resource every rule here must economize.
 
 Good looks like: the delegation cycle (spawn → settle → report → collect →
@@ -21,13 +25,45 @@ mailbox → teardown) stays deterministic and machine-verifiable; every gate
 stays green and honest (no pressure skips, no tolerated flakes); the frozen
 surface (section 3) never moves; the internal layout stays free to reshape so
 the codebase remains changeable rather than petrifying around its past
-incidents; and a new backend adapter is an addition, never an excision.
+incidents; a new backend adapter is an addition, never an excision; and the
+fleet's history and current state are auditable and observable through one
+durable read path (§0.1, Law 13).
 
 The laws below are fences derived from real incidents; the threat catalog
 (section 2) is the direction mechanism that turns new incidents into tests;
 the frozen surface is the list of names that may never move. When two rules
 cannot both be satisfied, stop and ask the operator — never satisfy one rule
 by silently violating another.
+
+### 0.1 The swarm-core directions (binding)
+
+Three directions carry the force of the laws in section 1 for the
+`swarm-core-v1` horizon; Law 13 is their enforceable home.
+
+1. **Durable audit of the fleet lifecycle.** Every fleet lifecycle
+   transition — spawn, progress, question, answer, report, collect, retire,
+   teardown — appends to a durable, versioned, append-only event journal that
+   is the system of record for fleet history. A lifecycle fact that exists
+   only as an ad-hoc file scan is not audited. The host session journal
+   events (`delegate-fleet`, `spawn`/`collect` — frozen names, section 3) are
+   the seed of this journal, never a parallel copy of it (Law 9).
+2. **A machine-readable swarm read-model is a first-class product surface.**
+   The read-model is the single projection of current fleet state over the
+   durable stores (manifest, event journal) plus live transport status. Its
+   serialized JSON output is a versioned contract (Law 7) pinned by a golden
+   test (Law 10); it grows by addition, never by silent reshape.
+3. **Observation UIs are clients of the read-model, not of ad-hoc file
+   scans.** Every observation surface — the ambient fleet widget, the
+   `delegate_status` tool, `/delegate-teardown`, and any future dashboard —
+   consumes the read-model and must not read manifests, watcher satellites,
+   progress files, or raw transport statuses to derive fleet state. This is a
+   read-path rule, not a presentation rule: a surface may render however it
+   likes, but it derives fleet state in exactly one place.
+
+Explicitly out of scope for this horizon: the web UI itself. The milestone
+delivers the journal, the read-model and its read API; it builds no browser
+client. Multi-host federation stays out of scope, and mailbox traffic is not a
+read-model edge.
 
 ## 1. The laws
 
@@ -76,7 +112,8 @@ deviation.
 ### Law 3 — Session lifetime owns everything mounted in it.
 
 Everything a `session_start` handler mounts — the watcher, the ambient fleet
-widget (the live indicator of running workers), timers, file handles — is
+widget (the live indicator of running workers, read through the swarm
+read-model — Law 13), timers, file handles — is
 owned by a **per-session context object**
 created in that handler and torn down in the paired `session_shutdown` of the
 same session. Module-global registries are deprecated as a mechanism: one
@@ -147,11 +184,21 @@ enumerated allowed-edges list (edge plus a one-line reason comment) in
 `test/static-check.ts`. A prose waiver in a module header satisfies nothing —
 this law's first sentence is its own enforcement.
 
+Law 13's observation boundary is the same mechanism: an observation module
+that imports `manifest-store.ts` or `watch-store.ts`, reads a progress file,
+or calls `transport.listStatuses()` to derive fleet state is a new
+cross-module read edge and fails CI once the read-model read API lands. That
+pin is owed by the `swarm-core-v1` read-model issue and is added in the same
+commit that exposes the API; until then the rule is a planned direction
+(§0.1), not a live pin, and no new observation module may introduce a direct
+durable read.
+
 ### Law 7 — On-disk formats are versioned contracts.
 
 Every durable file this extension writes — manifest, mailbox question/answer
-envelopes, release markers, watcher satellites, the delivered-facts store — is
-a protocol with a version. The delivered-facts store is the standard pattern:
+envelopes, release markers, watcher satellites, the delivered-facts store, the
+fleet event journal, and the swarm read-model snapshot (Law 13) — is a protocol
+with a version. The delivered-facts store is the standard pattern:
 an explicit `schemaVersion` the reader checks; absent means version 1; a wrong
 version yields an empty-but-valid result, never a misparse. Format schemas
 live in code next to their readers; prose may explain, but never carries the
@@ -168,7 +215,11 @@ only copy.
   code classes are control flow and which are genuine failures.
 - Anything that can wake or notify a session defaults to fail-closed
   (ownership gates); anything marked advisory (watcher, fleet UI, archive)
-  must be structurally incapable of failing a spawn or collect.
+  must be structurally incapable of failing a spawn or collect. A product
+  surface (the event journal, the swarm read-model — Law 13) is advisory in
+  exactly this sense: its *output contract* is binding and tested, but the
+  pipeline never depends on it, so a journal, read-model, or client failure
+  cannot fail a spawn or collect.
 
 ### Law 9 — One artifact, one source of truth.
 
@@ -177,6 +228,9 @@ The delegate skill exists in exactly one place. One spelling per fact: the
 shared mechanism: worker-row assembly, the audit-log sink, the tolerant
 filesystem probes, the error-text helpers. When two copies are discovered,
 deletion is the fix; "keep both in sync by hand" is not a state, it is a bug.
+Fleet state has one read path: the read-model (Law 13). Two observation
+modules deriving fleet state from different stores, or one module re-scanning
+a store the read-model already projects, is that same bug.
 
 ### Law 10 — Every fixed bug buys a regression check.
 
@@ -235,6 +289,40 @@ rotate it immediately, then purge the history.
   that turned main red owns the fix; ownerless reds (environment drift,
   dependency changes) are owned by the operator.
 
+### Law 13 — Fleet state has one durable read path: journal → read-model → clients.
+
+Binding for the `swarm-core-v1` horizon; definitions in §0.1.
+
+- **Durable audit.** Every fleet lifecycle transition (spawn, progress,
+  question, answer, report, collect, retire, teardown) appends to the durable,
+  append-only event journal. The journal is the system of record for fleet
+  history and is versioned under Law 7. Fleet history is never reconstructed
+  by scanning the exchange directory.
+- **Read-model.** The swarm read-model is the single projection of current
+  fleet state over the durable stores plus live transport status. Its
+  serialized JSON is a versioned contract (Law 7) pinned by a golden test
+  (Law 10); it grows by addition, never by silent reshape. The read API is a
+  first-class product surface.
+- **Clients.** Every observation surface (ambient fleet widget,
+  `delegate_status`, `/delegate-teardown`, future dashboards) reads fleet
+  state only through the read-model. An observation module importing
+  `manifest-store.ts` or `watch-store.ts`, reading a progress file, or calling
+  `transport.listStatuses()` to derive fleet state is a violation.
+- **Advisory to the pipeline (Law 8).** "First-class product surface" makes
+  the read-model's *output contract* binding and tested; it never makes the
+  pipeline depend on it. A journal, read-model, or client failure is
+  structurally incapable of failing a spawn or collect.
+
+**Enforcement (Law 6).** The client boundary is a dependency rule and gets a
+static pin: an observation module that imports a durable store or reads a
+progress file fails CI. The pin lands in the same commit as the read-model
+read API. Until then the read-model is `worker-view.ts`; the observation
+modules that predate the API (`status-tool.ts`, `fleet-widget.ts`) are the
+named migration debt of `swarm-core-v1`, and no new observation module may
+introduce a direct durable read. This clause states its enforcement date
+rather than claiming a live pin — it is a planned rule under §0.1 until that
+commit lands.
+
 ## 2. Threat catalog (mailbox/watcher surface)
 
 The single catalog of bug classes that the regression checks in
@@ -269,4 +357,5 @@ herdr CLI verb strings · herdr JSON field names (`workspace.worktree.*`,
 `spawn`/`collect`) · `/delegate-*` command names · tool names and parameter
 shapes · the E_* code names. Extension happens by addition; correction happens
 by deprecation with `prepareArguments`-style compatibility, never by silent
-reshape.
+reshape. The Law 13 lifecycle event names are additions to this list, never
+renames of the entries already here.

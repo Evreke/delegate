@@ -196,7 +196,22 @@ whose subject bug class has had zero relevant hits for two consecutive
 releases may be retired with operator sign-off, recorded in CHANGELOG — the
 gates may shrink, not only grow.
 
-### Law 11 — Behavior-bearing PRs are reviewed by an independent agent; main's verdict has one canonical producer.
+### Law 11 — No secrets in the repository.
+
+No credentials — provider API keys, tokens, `auth.json` contents, private
+keys — may exist in tracked files or in git history. The operator's keys live
+ONLY in the environment and in the agent dir outside the repository
+(`~/.pi/agent/`); the repository reads credentials from the environment at
+runtime and never stores them. Real-environment (opt-in) checks take
+credentials from the environment of the machine they run on, never from the
+repository. Enforcement: a static pin scans all tracked files for
+secret-shaped literals (JWT-like `eyJ…`, `sk-…` provider keys,
+`*_API_KEY`/`*_SECRET`/`*_TOKEN` assignments with literal values) and fails
+CI on a hit; `.gitignore` excludes `.env*` and key files so they cannot be
+committed by accident. A key that reaches history is treated as compromised:
+rotate it immediately, then purge the history.
+
+### Law 12 — Behavior-bearing PRs are reviewed by an independent agent; main's verdict has one canonical producer.
 
 - Every PR whose diff touches code paths receives a review from a fresh
   worker agent (new session, no shared context with the author): the

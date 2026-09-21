@@ -196,9 +196,10 @@ durable read.
 ### Law 7 — On-disk formats are versioned contracts.
 
 Every durable file this extension writes — manifest, mailbox question/answer
-envelopes, release markers, watcher satellites, the delivered-facts store, the
-fleet event journal, and the swarm read-model snapshot (Law 13) — is a protocol
-with a version. The delivered-facts store is the standard pattern:
+envelopes, release markers, watcher satellites, the watcher's per-audience
+cursor file (`cursor-<key>.json`), the fleet event journal, and the swarm
+read-model snapshot (Law 13) — is a protocol
+with a version. The watcher cursor is the standard pattern:
 an explicit `schemaVersion` the reader checks; absent means version 1; a wrong
 version yields an empty-but-valid result, never a misparse. Format schemas
 live in code next to their readers; prose may explain, but never carries the
@@ -455,12 +456,17 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_fleet ON events(session_id, task, seq);
 ```
 
-Kinds — the closed v1 set (new kinds only by addition, never rename):
-`spawn`, `stamp`, `collect`, `ask`, `answer`, `steer`, `progress`, `retire`,
-`dead-reboot`, `reconcile-summary`, `compaction-marker`,
-`termination-notice`, `partial-report`.
-The last two are forward-compat with #15: they may exist in the schema
-before their producers land. `reconcile-summary` is this record's addition
+Kinds — the closed v1 set, fourteen kinds (new kinds only by addition,
+never rename): `spawn`, `stamp`, `collect`, `ask`, `answer`, `steer`,
+`progress`, `report`, `retire`, `dead-reboot`, `reconcile-summary`,
+`compaction-marker`, `termination-notice`, `partial-report`.
+`report` is the #23 operator-approved addition: journal-as-truth covers the
+terminal artifact itself — the validated report JSON is the payload — and
+the watcher's report-readiness wake rides the journal cursor (#26, below),
+so the kind opens no watcher surface of its own. The last two
+(`termination-notice`, `partial-report`) are forward-compat with #15: they
+may exist in the schema before their producers land. `reconcile-summary`
+is this record's addition
 over the issue's enumeration — it makes "exactly one summary wake per fleet"
 (§4.1.4) dedup-able through the journal itself; `compaction-marker` is the
 audit-continuity anchor of the operator-invoked compaction path (retention,
@@ -470,21 +476,33 @@ section 3's frozen list in the commit that lands its first producer.
 Payload shapes (JSON; the listed fields are the v1 contract, additive-only
 after that):
 
-- `spawn` `{backend, placementRef, briefPath, briefText, depth?}` —
+- `spawn` `{backend, placementRef, briefPath, briefText, depth?, entry}` —
   `briefText` is the full brief inline: the journal is where briefs survive
-  a reboot (§4.1.4 step 5). `depth` rides along once #28 lands (additive,
-  the passport precedent).
-- `stamp` `{field, value}` — the mirror of every manifest stamp the pipeline
-  writes (`collectedAt`, `sessionPath` once #16 lands, …).
+  a reboot (§4.1.4 step 5). `depth` rides along (additive, no schema-version
+  bump — the passport precedent). `entry` is the full `ManifestWorker`
+  (additive): journal replay rebuilds the manifest from it, so reads never
+  depend on the projection file.
+- `stamp` `{field, value, entryIndex?}` — the mirror of every manifest stamp
+  the pipeline writes (`collectedAt`, `sessionPath` once #16 lands, …). On
+  worker-scoped rows `entryIndex` names the `workers[]` position the stamp
+  mutates, making replay sequence-scoped: a same-name respawn is never
+  retro-stamped by an earlier row. Legacy rows without `entryIndex` keep
+  the name-match fallback.
 - `collect` `{status, reportPath, archivePath}`.
 - `ask` / `answer` / `steer` `{text}` — the mailbox envelope fields, verbatim.
 - `progress` — the `ProgressEvent` shape (`src/host.ts`), verbatim.
+- `report` — the validated report JSON, verbatim; appended by `write-report`
+  after the atomic publish, so the journal never announces an unpublished
+  report.
 - `retire` `{reason}`.
 - `dead-reboot` `{detectedAt, lastSeq}` — `lastSeq` is the worker's last
   journal seq before the loss was detected.
-- `reconcile-summary` `{lost: string[], collectedBeforeLoss: number}` —
-  fleet-scoped (worker NULL); the wake text the watcher renders from it is
-  the frozen per-fleet summary of §4.1.4 step 4.
+- `reconcile-summary` `{lost: string[], collectedBeforeLoss: number,
+  skipped?}` — fleet-scoped (worker NULL); the wake text the watcher renders
+  from it is the frozen per-fleet summary of §4.1.4 step 4. `skipped`
+  (additive) names the fleet's foreign/owner-less workers that a
+  mixed-ownership reconciliation left untouched — auditable in the journal,
+  never counted as `lost`.
 - `termination-notice` `{graceMs}` — producer: #15.
 - `partial-report` `{captured: boolean, text?}` — producer: #15.
 - `compaction-marker` `{exportedTo, deletedCount, lastDeletedSeq}` —
@@ -516,10 +534,22 @@ never a parallel copy (§0.1.1, Law 9): one site, one fact, one spelling —
 fleet history is never re-derived by scanning the exchange directory.
 
 Cursor: the reader API is `eventsAfter(cursor)` — all rows with
-`seq > cursor`, ordered by `seq`. The cursor is the last consumed `seq`,
-persisted per audience session; it replaces the watcher's seen-map plus
-delivered-facts store as the dedup mechanism — durable and exactly-once by
-construction (#26). `swarm events --after <seq>` (#30) exposes this reader
+`seq > cursor`, ordered by `seq`. The watcher's durable dedup is the
+per-audience cursor file `cursor-<key>.json` (one per audience session per
+task dir), fed by `eventsAfter`: it carries the last consumed `seq` — read
+each tick, advanced only over rows of this audience's live fleets — plus
+the delivery records committed after each successful wake send. The dedup
+state is the cursor file, never journal rows (no delivered-event kind
+exists); the in-session seen-map stays memory-only. The delivered-facts
+store (`delivered-<key>.json`) is retired — nothing writes it again.
+First-run migration is conservative re-derivation: an absent cursor is
+never seeded (`seq 0`, no records), so the first post-upgrade session sees
+one bounded repeat volley (bounded by the ownership gate and the lookback)
+— durable and exactly-once from the first commit on (#26). Interim
+detection design: detection remains the filesystem snapshot ladder this
+release (`src/watch-detect.ts`); the journal is the durable exactly-once
+dedup; full journal-driven detection lands with #10–#12 per §4.1.5's
+landing-order rule. `swarm events --after <seq>` (#30) exposes this reader
 verbatim.
 
 Retention (operator decision DP7): events are never auto-deleted in v1.
@@ -624,8 +654,8 @@ accepted loss, recorded here rather than discovered in the field.
 - #15 (termination handoff): the `termination-notice` and `partial-report`
   kinds and their payload shapes are reserved in §4.1.2; the handoff
   mechanics themselves stay #15's to design.
-- #28 (manifest `depth`): the `spawn` payload carries `depth` once #28
-  lands — additive, no schema-version bump (the passport precedent).
+- #28 (manifest `depth`): the `spawn` payload carries `depth` — additive,
+  no schema-version bump (the passport precedent).
 - #29/#30 (SwarmGraph, read API): the read-model is a pure projection over
   this journal plus the manifest store plus optional live transport status;
   `swarm snapshot` and `swarm events --after` are its client surface. Their

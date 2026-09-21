@@ -29,6 +29,16 @@
  *      src/expaths.ts — no raw `/`-separator template-literal path assembly,
  *      no split("/") path parsing, no endsWith("/_probe") classification,
  *      no startsWith(x + "/") containment outside the builder itself.
+ *   9. swarm-core pins (#31, Law 6; binding spec §4.1.2/§4.1.3):
+ *      T1.12 sqlite confinement — no src/ module outside src/swarm/journal*.ts
+ *      references a sqlite driver; T1.13 the watcher family performs no direct
+ *      node:fs reads of exchange-layer paths (satellites excepted; the journal
+ *      is consumed only through src/swarm/journal-read.ts); T1.14 the exchange
+ *      file projection (report/q/a/p paths) is written only by the swarm CLI
+ *      verb modules plus the named Phase A legacy writers. Each pin carries
+ *      canary fixtures (T1.9b efficacy precedent) AND a seeded-file probe: a
+ *      fixture tree walked by the real scanner must produce the offender —
+ *      the pin is provably not vacuous.
  *
  * Exit 0 only if all checks pass.
  */
@@ -894,6 +904,594 @@ check(
 	secretHits.length === 0,
 	secretHits.join(", ") || "clean",
 );
+
+// ---------------------------------------------------------------------------
+// 9. swarm-core static pins (#31, Law 6). Binding spec: ARCHITECTURE §4.1.2
+//    (sqlite confinement — “no src/ module outside the journal module family
+//    (src/swarm/journal*.ts) imports a sqlite driver”), §4.1.2/#26 (watcher
+//    consumes the journal through the reader), §4.1.3 Phase B (the swarm CLI
+//    verbs are the projection's only writers — #31 pin). Each pin is a shape
+//    pin in the T1.9 class: deterministic offender regexes over comment-
+//    stripped code, canary fixtures proving it bites (T1.9b), precision
+//    fixtures proving it does not cry wolf (T1.9c), a LIVE allowlist
+//    (T1.9d — a row whose shape vanished fails the audit that must retire
+//    it), and a SEEDED-FILE probe: a fixture tree walked by the very scanner
+//    the real check uses must name the offender — the pin-efficacy precedent.
+//
+//    Scope note (Law 13's client-boundary pin is deliberately ABSENT —
+//    operator ruling on #31): Law 13's enforcement clause says the pin
+//    “lands in the same commit as the read-model read API”. The read API
+//    (#30, PR #44) has landed — `swarm snapshot` / `swarm events --after`
+//    are pure reads over the journal + stores and add no write path (T1.14
+//    stays green with them present) — but PR #44 shipped no client-boundary
+//    pin and NO observation consumer (status-tool.ts, fleet-widget.ts,
+//    worker-view.ts — Law 13's named migration debt) has migrated to the
+//    read-model yet: a client-boundary pin today would pin a boundary no
+//    client crosses. §4.1 therefore defers the pin until the read-model's
+//    consumers exist; #31 ships only the three pins below. Follow-up: land
+//    the Law 13 pin with the first observation-consumer migration (and note
+//    Law 13's enforcement clause is now overdue against its own wording —
+//    flag for the next constitution truth pass).
+// ---------------------------------------------------------------------------
+
+/** §4.1.2: the journal module family — the glob src/swarm/journal*.ts
+ *  (journal.ts, journal-read.ts, journal-driver.ts, journal-manifest-store.ts,
+ *  future journal-compact.ts). Prefix match on the basename inside src/swarm/
+ *  only: graph-journal.ts is NOT family. */
+function isJournalFamilyFile(relPath: string): boolean {
+	return /^src\/swarm\/journal[^/]*\.ts$/.test(relPath.replaceAll("\\", "/"));
+}
+
+/** The closed driver-specifier set: the two runtime-native drivers the
+ *  journal-driver adapts between (bun:sqlite, node:sqlite) plus the npm
+ *  drivers a stray dependency could drag in. A sqlite driver may be
+ *  referenced ONLY inside the journal module family (§4.1.2). */
+const SQLITE_DRIVER_SPECIFIERS = ["bun:sqlite", "node:sqlite", "better-sqlite3", "sqlite3", "sql.js"] as const;
+
+const SQLITE_DRIVER_PATTERNS: ReadonlyArray<{ kind: string; re: RegExp }> = [
+	// static import / re-export / bare side-effect import:
+	// `from "bun:sqlite"`, `import "node:sqlite"`. The bare-import alternative
+	// is `import` + a quote DIRECTLY — `import(` (dynamic) and `import {`
+	// (named) cannot match it, so the three kinds stay disjoint.
+	{
+		kind: "static import",
+		re: new RegExp(`(?:\\bfrom\\s*|\\bimport\\s+[\\w{\\s,}$]*?\\bfrom\\s*|\\bimport\\s*)["'](${SQLITE_DRIVER_SPECIFIERS.map((d) => d.replace(/\./g, "\\.")).join("|")})["']`),
+	},
+	// dynamic import: `await import("node:sqlite")`
+	{
+		kind: "dynamic import",
+		re: new RegExp(`\\bimport\\(\\s*["'](${SQLITE_DRIVER_SPECIFIERS.map((d) => d.replace(/\./g, "\\.")).join("|")})["']\\s*\\)`),
+	},
+	// any call whose argument is the bare driver literal — require(), a
+	// createRequire alias (`req("bun:sqlite")` — the journal-driver's real
+	// shape), a custom loader. A bare driver literal in call position is a
+	// load attempt; type-union members and prose mentions do not match.
+	{
+		kind: "driver-literal call",
+		re: new RegExp(`\\b\\w+\\s*\\(\\s*["'](${SQLITE_DRIVER_SPECIFIERS.map((d) => d.replace(/\./g, "\\.")).join("|")})["']\\s*[,)]`),
+	},
+];
+
+/** Pure per-source scan (T1.9 convention: unit-callable so canary fixtures
+ *  prove the pin bites). Input is raw file text; comments are stripped here,
+ *  line numbers refer to the original file. */
+export function scanCodeForSqliteDriverRefs(
+	code: string,
+): Array<{ line: number; kind: string; text: string }> {
+	const out: Array<{ line: number; kind: string; text: string }> = [];
+	stripComments(code).split("\n").forEach((lineText, i) => {
+		for (const { kind, re } of SQLITE_DRIVER_PATTERNS) {
+			const m = re.exec(lineText);
+			if (m) out.push({ line: i + 1, kind, text: m[0].trim() });
+		}
+	});
+	return out;
+}
+
+/** File-tree walk shared by the real pin and the seeded-file probe: scan
+ *  every TypeScript file under <root>/src (recursively) outside the journal
+ *  family for driver refs. */
+function scanTreeForSqliteDrivers(root: string): string[] {
+	const offenders: string[] = [];
+	for (const f of listTsFiles(resolve(root, "src"))) {
+		const rel = relative(root, f).replaceAll("\\", "/");
+		if (isJournalFamilyFile(rel)) continue;
+		for (const o of scanCodeForSqliteDriverRefs(readFileSync(f, "utf8"))) {
+			offenders.push(`${rel}:${o.line} [${o.kind}] ${o.text}`);
+		}
+	}
+	return offenders;
+}
+
+{
+	const sqliteOffenders = scanTreeForSqliteDrivers(ROOT);
+	check(
+		"T1.12 sqlite confinement (§4.1.2, Law 6): no src/ module outside src/swarm/journal*.ts references a sqlite driver",
+		sqliteOffenders.length === 0,
+		sqliteOffenders.join(" | "),
+	);
+}
+
+// The exemption must stay MEANINGFUL (T1.9d LIVE convention): the journal
+// module family really exists and really carries the driver seam — a removed
+// journal-driver (or a renamed family glob) fails here so the exemption gets
+// re-audited, never silently widened.
+check(
+	"T1.12b the journal family exemption is LIVE: src/swarm/journal-driver.ts exists and still carries the driver literals (adaptive bun/node seam)",
+	existsSync(resolve(ROOT, "src/swarm/journal-driver.ts")) &&
+		scanCodeForSqliteDriverRefs(readFileSync(resolve(ROOT, "src/swarm/journal-driver.ts"), "utf8")).length > 0,
+);
+
+// Canaries (T1.9b): every driver-reference shape must be flagged.
+const SQLITE_CANARIES: ReadonlyArray<[string, string]> = [
+	["static import", 'import { Database } from "bun:sqlite";'],
+	["static import", 'export { DatabaseSync } from "node:sqlite";'],
+	["static import", 'import "node:sqlite";'], // bare side-effect import — a load attempt with no binding
+	["dynamic import", 'const s = await import("node:sqlite");'],
+	["driver-literal call", 'const db = require("better-sqlite3");'],
+	["driver-literal call", 'const d = req("sqlite3");'],
+];
+const sqliteMissed = SQLITE_CANARIES
+	.filter(([kind, code]) => !scanCodeForSqliteDriverRefs(code).some((o) => o.kind === kind))
+	.map(([kind, code]) => `${kind}: ${code}`);
+check(
+	"T1.12c the pin BITES: every driver-reference canary is flagged (unit-called scanner)",
+	sqliteMissed.length === 0,
+	sqliteMissed.join(" | "),
+);
+
+// Precision guards (T1.9c): type-union members, SQL internals (sqlite_master
+// is a table name, not a driver specifier) and comment prose never fire.
+const SQLITE_CLEAN: ReadonlyArray<string> = [
+	'export type JournalDriverName = "bun:sqlite" | "node:sqlite";',
+	'const table = db.queryOne("SELECT name FROM sqlite_master WHERE type = \'table\'");',
+	'// the driver is chosen adaptively — see bun:sqlite / node:sqlite docs',
+];
+const sqliteFalse = SQLITE_CLEAN
+	.filter((code) => scanCodeForSqliteDriverRefs(code).length > 0)
+	.map((code) => `${code} → ${JSON.stringify(scanCodeForSqliteDriverRefs(code))}`);
+check(
+	"T1.12d the pin is PRECISE: type unions, sqlite_master SQL and comment prose are not flagged",
+	sqliteFalse.length === 0,
+	sqliteFalse.join(" | "),
+);
+
+// Seeded-file probe (the known-violation probe the brief demands): a fixture
+// tree walked by the REAL scanner must name the offending module, while the
+// same literal inside a journal-family file stays exempt — the glob is
+// path-based, not name-gutted, and the walk flags exactly the violator.
+{
+	const seed = mkdtempSync(resolve(tmpdir(), "sqlite-pin-probe-"));
+	mkdirSync(resolve(seed, "src", "swarm"), { recursive: true });
+	writeFileSync(
+		resolve(seed, "src", "fleet.ts"),
+		'import { Database } from "bun:sqlite";\nexport const db = new Database("x.db");\n',
+	);
+	writeFileSync(
+		resolve(seed, "src", "swarm", "journal-future.ts"),
+		'import { Database } from "bun:sqlite";\nexport const db = new Database("x.db");\n',
+	);
+	const seeded = scanTreeForSqliteDrivers(seed);
+	check(
+		"T1.12e seeded-file probe: an offending module turns the pin red, the journal-family glob stays exempt",
+		seeded.length === 1 && seeded[0]?.startsWith("src/fleet.ts:1") && !seeded.some((s) => s.includes("journal-future")),
+		JSON.stringify(seeded),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 9b. T1.13 — watcher family: no direct node:fs reads of exchange-layer
+//     paths (#26 + §4.1.2). What #26 landed on HEAD: the watcher's durable
+//     dedup reads the journal through src/swarm/journal-read.ts (the journal
+//     cursor replaced the delivered-facts store). What remains Phase-A-true:
+//     event DETECTION still derives facts from exchange files — but only
+//     through the store/helper modules (manifest-store, mailbox-store,
+//     exchange.readLastProgress, fs-probe fileMtimeMs, usage.ts), never by a
+//     family file calling node:fs itself. This pin freezes exactly that
+//     boundary: inside the watcher family a node:fs read API may touch ONLY
+//     the watcher's own satellites (watch-*.json stamps, cursor-*.json via
+//     their builders); any read call whose line carries an expaths-built
+//     exchange path (alias-resolved) or exchangeRoot( is a violation.
+//     Phase B follow-up: when journal-is-truth lands for detection
+//     (§4.1.3), the store reads shrink and this pin stays the floor.
+// ---------------------------------------------------------------------------
+
+const WATCHER_FAMILY_FILES: ReadonlyArray<string> = [
+	"watcher.ts",
+	"watch-detect.ts",
+	"watch-role.ts",
+	"watch-cursor.ts",
+	"watch-store.ts",
+];
+
+/** Every path builder src/expaths.ts exports — the exchange-layer path
+ *  vocabulary. Alias-resolved per file before matching. */
+const EXPATHS_BUILDERS = [
+	"manifestPathFor",
+	"reportPathFor",
+	"questionPathFor",
+	"answerPathFor",
+	"nudgeFailedPathFor",
+	"releasePathFor",
+	"progressPathFor",
+	"questionArchivePathFor",
+	"probeDirPathFor",
+] as const;
+
+/** node:fs read APIs (sync + promises twins). Bare names are counted only
+ *  when the file imports that name from node:fs(/promises) — the watch-detect
+ *  lesson: a local `truncate(s, max)` string helper is not fs. */
+const FS_READ_APIS = [
+	"readFileSync", "readdirSync", "statSync", "lstatSync", "existsSync", "readlinkSync", "accessSync", "openSync",
+	"readFile", "readdir", "stat", "lstat", "access",
+] as const;
+
+/** Prepared per-file scan state shared by the T1.13/T1.14 scanners. */
+interface PreparedScan {
+	/** code with comments AND `export … from` pass-through clauses blanked
+	 *  (a re-exported name is a pass-through, never a use) — newlines kept. */
+	noReexport: string;
+	/** names imported via `import { … } from …` (alias targets resolved). */
+	imported: Set<string>;
+	/** namespace-import aliases of node:fs / node:fs/promises — covers ALL
+	 *  three namespace spellings: `import * as fs`, the default import
+	 *  `import fs from "node:fs"` (and the mixed `import fs, { … }` form),
+	 *  and the CJS binding `const fs = require("node:fs")`. */
+	nsFs: string[];
+	/** alias identifiers bound to any of `names` (import … as …). */
+	aliasesOf(names: readonly string[]): string[];
+}
+
+const RE_EXPORT_FROM = /export\s+(?:type\s+)?\{[^}]*\}\s*from\s*["'][^"']*["']/g;
+
+function prepareScan(code: string): PreparedScan {
+	const stripped = stripComments(code);
+	const noReexport = stripped.replace(RE_EXPORT_FROM, (m) => m.replace(/[^\n]/g, ""));
+	const imported = new Set<string>();
+	// Named imports, including the mixed `import fs, { readFileSync } from
+	// "node:fs"` form (a leading default binding before the braces).
+	for (const m of noReexport.matchAll(/import\s*(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*["']([^"']*)["']/g)) {
+		for (const piece of m[1].split(",")) {
+			const binding = piece.trim().split(/\s+as\s+/)[0]?.trim();
+			if (binding) imported.add(binding);
+		}
+	}
+	const nsFs = [...noReexport.matchAll(/import\s+\*\s+as\s+(\w+)\s+from\s*["']node:fs(?:\/promises)?["']/g)].map((m) => m[1]);
+	// Default (and mixed default+named) namespace imports of node:fs.
+	for (const m of noReexport.matchAll(/import\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{[^}]*\})?\s*from\s*["']node:fs(?:\/promises)?["']/g)) nsFs.push(m[1]);
+	// CJS namespace bindings: const fs = require("node:fs").
+	for (const m of noReexport.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*["']node:fs(?:\/promises)?["']\s*\)/g)) nsFs.push(m[1]);
+	return {
+		noReexport,
+		imported,
+		nsFs,
+		aliasesOf: (names: readonly string[]) => {
+			const out: string[] = [];
+			for (const n of names) {
+				for (const m of noReexport.matchAll(new RegExp(`\\b${n}\\s+as\\s+([A-Za-z_$][\\w$]*)`, "g"))) out.push(m[1]);
+			}
+			return out;
+		},
+	};
+}
+
+/** Pure line scan (unit-callable): import-verified node:fs read calls whose
+ *  line carries an exchange path (expaths builder, alias-resolved) or
+ *  exchangeRoot(. */
+export function scanCodeForWatcherExchangeReads(
+	code: string,
+): Array<{ line: number; api: string; text: string }> {
+	const p = prepareScan(code);
+	const builderNames = [...EXPATHS_BUILDERS, ...p.aliasesOf(EXPATHS_BUILDERS)];
+	const nameAlt = builderNames.join("|");
+	const out: Array<{ line: number; api: string; text: string }> = [];
+	p.noReexport.split("\n").forEach((lineText, i) => {
+		for (const api of FS_READ_APIS) {
+			const bare = p.imported.has(api) && new RegExp(`(?<![\\w$.])${api}\\s*\\(`).test(lineText);
+			const viaNs = p.nsFs.some((ns) => new RegExp(`\\b${ns}\\.${api}\\s*\\(`).test(lineText));
+			if (!bare && !viaNs) continue;
+			const hit = new RegExp(`\\b(?:${nameAlt})\\b`).test(lineText) || /\bexchangeRoot\s*\(/.test(lineText);
+			if (hit) out.push({ line: i + 1, api, text: lineText.trim().slice(0, 120) });
+		}
+	});
+	return out;
+}
+
+/** Walk <root>/src watcher-family files. Returns per-file offender strings. */
+function scanTreeForWatcherExchangeReads(root: string): string[] {
+	const offenders: string[] = [];
+	for (const base of WATCHER_FAMILY_FILES) {
+		const f = resolve(root, "src", base);
+		if (!existsSync(f)) continue;
+		for (const o of scanCodeForWatcherExchangeReads(readFileSync(f, "utf8"))) {
+			offenders.push(`src/${base}:${o.line} [${o.api}] ${o.text}`);
+		}
+	}
+	return offenders;
+}
+
+{
+	const watcherReadOffenders = scanTreeForWatcherExchangeReads(ROOT);
+	check(
+		"T1.13 watcher family: no direct node:fs read of an exchange-layer path — satellites excepted, exchange facts via stores + the journal reader (#26, §4.1.2)",
+		watcherReadOffenders.length === 0,
+		watcherReadOffenders.join(" | "),
+	);
+}
+
+// #26's mechanism must stay wired (a pin on absence alone could survive the
+// journal reader being deleted): watcher.ts consumes the journal ONLY through
+// src/swarm/journal-read.ts — createJournalReader imported from that module.
+{
+	const watcherSrc = readFileSync(resolve(ROOT, "src", "watcher.ts"), "utf8");
+	check(
+		"T1.13b the watcher consumes the journal through the reader: watcher.ts wires createJournalReader from ./swarm/journal-read.ts (#26's durable cursor seam)",
+		/from\s*["']\.\/swarm\/journal-read\.ts["']/.test(watcherSrc) && /\bcreateJournalReader\b/.test(stripComments(watcherSrc)),
+	);
+}
+
+// Canaries: every forbidden read shape fires (fixture code carries the import
+// so the import-verification gate itself is exercised).
+const WATCHER_READ_CANARIES: ReadonlyArray<[string, string]> = [
+	["readFileSync", 'import { readFileSync } from "node:fs";\nconst r = readFileSync(reportPathFor(dir, name), "utf8");'],
+	["existsSync", 'import { existsSync } from "node:fs";\nif (existsSync(join(exchangeRoot(), slug))) return;'],
+	["statSync", 'import { statSync } from "node:fs";\nconst m = statSync(answerPathFor(dir, name)).mtimeMs;'],
+	["readFile", 'import { readFile } from "node:fs/promises";\nconst t = await readFile(questionPathFor(dir, name), "utf8");'],
+	["readFileSync", 'import fs from "node:fs";\nconst r = fs.readFileSync(reportPathFor(dir, name), "utf8");'], // default-import namespace
+	["readdirSync", 'import fs, { existsSync } from "node:fs";\nconst es = fs.readdirSync(join(exchangeRoot(), slug));'], // mixed default+named
+	["statSync", 'const fs = require("node:fs");\nconst m = fs.statSync(progressPathFor(dir, name)).mtimeMs;'], // CJS binding
+];
+const watcherMissed = WATCHER_READ_CANARIES
+	.filter(([api, code]) => !scanCodeForWatcherExchangeReads(code).some((o) => o.api === api))
+	.map(([api, code]) => `${api}: ${code.replaceAll("\n", " ")}`);
+check(
+	"T1.13c the pin BITES: every exchange-read canary is flagged (unit-called scanner)",
+	watcherMissed.length === 0,
+	watcherMissed.join(" | "),
+);
+
+// Precision guards: satellite reads (the watcher's own durable state) and
+// store-routed exchange reads are the SANCTIONED shapes — never flagged.
+const WATCHER_READ_CLEAN: ReadonlyArray<string> = [
+	'import { readFileSync } from "node:fs";\nraw = readFileSync(watchCursorPathFor(dir, watcherKey), "utf8");',
+	'import { statSync } from "node:fs";\nmtimeMs = statSync(watchCursorPathFor(dir, key)).mtimeMs;',
+	'const q = readQuestionState(questionPathFor(w.dir, w.name));', // store-routed (mailbox-store)
+	'const m = fileMtimeMs(answerPathFor(dir, name));', // helper-routed (fs-probe)
+	'lastPing = readLastProgress(progressPathFor(v.dir, v.name)) ?? undefined;', // store-routed (exchange.ts)
+];
+const watcherFalse = WATCHER_READ_CLEAN
+	.filter((code) => scanCodeForWatcherExchangeReads(code).length > 0)
+	.map((code) => `${code.replaceAll("\n", " ")} → ${JSON.stringify(scanCodeForWatcherExchangeReads(code))}`);
+check(
+	"T1.13d the pin is PRECISE: satellite reads and store/helper-routed exchange reads are not flagged",
+	watcherFalse.length === 0,
+	watcherFalse.join(" | "),
+);
+
+// Seeded-file probe: a family file seeded with the forbidden shape is named
+// by the real walk, while the same tree's satellite-reading cursor file stays
+// clean — red on the violation, green on the sanctioned shape.
+{
+	const seed = mkdtempSync(resolve(tmpdir(), "watcher-pin-probe-"));
+	mkdirSync(resolve(seed, "src"), { recursive: true });
+	writeFileSync(
+		resolve(seed, "src", "watcher.ts"),
+		'import { readFileSync } from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nconst r = readFileSync(reportPathFor(dir, name), "utf8");\n',
+	);
+	writeFileSync(
+		resolve(seed, "src", "watch-cursor.ts"),
+		'import { readFileSync } from "node:fs";\nraw = readFileSync(watchCursorPathFor(dir, watcherKey), "utf8");\n',
+	);
+	const seeded = scanTreeForWatcherExchangeReads(seed);
+	check(
+		"T1.13e seeded-file probe: an offending family file turns the pin red; the satellite-reading sibling stays clean",
+		seeded.length === 1 && seeded[0]?.startsWith("src/watcher.ts:3") && !seeded.some((s) => s.includes("watch-cursor")),
+		JSON.stringify(seeded),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 9c. T1.14 — single projection writer (§4.1.3 Phase B: “the swarm CLI verbs
+//     are the projection's only writers (#31 pin)”), judged HONESTLY on HEAD
+//     (Phase A→B transition): the tool paths still write the mailbox
+//     projection (§4.1.1 keeps the orchestrator verbs wrapped by the pi tools
+//     in this milestone). The pin therefore freezes the writer SET:
+//
+//     A src/ file that references a projection-path builder (the expaths
+//     report/q/a/p builders below, alias-resolved; `export … from`
+//     pass-throughs excluded) AND performs a write-shaped file call
+//     (import-verified node:fs write API, or the shared atomic/store writers
+//     atomicWriteFileSync / writeAnswer / writeRelease) must appear in the
+//     typed allowlist below. Deletion APIs (rm/unlink) are NOT write-shaped:
+//     they serve the release/nudge-marker consume discipline, not content
+//     writes (the retired-row audit, not this pin, owns them).
+//
+//     Both directions are exact — an unlisted match is a NEW projection
+//     writer (red), and an allowlisted row whose file no longer matches is a
+//     stale row that the audit must retire (red) — the Law 5 ledger
+//     convention. The allowlist is the follow-up ledger: when Phase A
+//     retires (mailbox writes migrate to swarm verbs), the legacy rows
+//     shrink to verbs-only.
+// ---------------------------------------------------------------------------
+
+/** The projection path set this pin owns: report/q/a/p (§4.1.3's “expaths-
+ *  built report/q/a/p paths”). manifest.json, release- and nudge-markers and
+ *  watcher satellites are separate contracts with their own stores. */
+const PROJECTION_BUILDERS = ["reportPathFor", "questionPathFor", "answerPathFor", "progressPathFor"] as const;
+
+/** Write-shaped APIs. Plain fs/promises names (rename, writeFile, …) are
+ *  import-verified (a local string helper named `truncate` is not fs); sync
+ *  names likewise for uniformity. atomicWriteFileSync / writeAnswer /
+ *  writeRelease are src store writers — any call site counts, wherever the
+ *  function was defined. */
+const FS_WRITE_APIS = [
+	"writeFileSync", "appendFileSync", "renameSync", "writeFile", "appendFile", "rename",
+	"writeSync", "openSync", "truncate", "truncateSync", "copyFileSync", "cpSync",
+] as const;
+const STORE_WRITE_APIS = ["atomicWriteFileSync", "writeAnswer", "writeRelease"] as const;
+
+function projectionWriterShape(code: string): { builders: boolean; writeCalls: string[] } {
+	const p = prepareScan(code);
+	const names = [...PROJECTION_BUILDERS, ...p.aliasesOf(PROJECTION_BUILDERS)];
+	const builders = names.length > 0 && new RegExp(`\\b(?:${names.join("|")})\\b`).test(p.noReexport);
+	const writeCalls: string[] = [];
+	for (const api of FS_WRITE_APIS) {
+		if (p.imported.has(api) && new RegExp(`(?<![\\w$.])${api}\\s*\\(`).test(p.noReexport)) writeCalls.push(api);
+	}
+	for (const ns of p.nsFs) {
+		for (const api of FS_WRITE_APIS) {
+			if (new RegExp(`\\b${ns}\\.${api}\\s*\\(`).test(p.noReexport)) writeCalls.push(`${ns}.${api}`);
+		}
+	}
+	for (const api of STORE_WRITE_APIS) {
+		if (new RegExp(`(?<![\\w$.])${api}\\s*\\(`).test(p.noReexport)) writeCalls.push(api);
+	}
+	return { builders, writeCalls };
+}
+
+/** The allowlist IS the statement of who may write the projection on HEAD.
+ *  Keep rows typed and reasoned (T1.8 convention: a named entry + a written
+ *  reason, never a silent pass). */
+const PROJECTION_WRITER_ALLOWLIST: ReadonlyArray<{ file: string; klass: string; reason: string }> = [
+	{ file: "src/swarm/write-report.ts", klass: "verb", reason: "swarm write-report — publishes report-<name>.json (writeFileSync validate-temp + renameSync publish, §4.1.3 Phase B ordering)" },
+	{ file: "src/swarm/ask.ts", klass: "verb", reason: "swarm ask — posts q-<name>.json atomically after the journal append" },
+	{ file: "src/swarm/write-progress.ts", klass: "verb", reason: "swarm write-progress — appends p-<name>.jsonl after the journal append" },
+	{ file: "src/mailbox-store.ts", klass: "legacy-phase-a", reason: "Phase A tool path — the a-file writer (writeAnswer via postSteerAndNudge) + release-marker writer, driven by the delegate_mailbox tool; §4.1.1 keeps orchestrator verbs tool-wrapped this milestone; shrinks when the tool path migrates to swarm verbs" },
+	{ file: "src/mailbox-tool.ts", klass: "legacy-phase-a", reason: "Phase A tool path — the delegate_mailbox tool: q→answered archive rename + drives the a-file write; same retirement as mailbox-store" },
+	{ file: "src/spawn.ts", klass: "legacy-phase-a-adjacent", reason: "co-occurrence row, NOT a projection writer: builder refs are read-only (report-witness/question/progress reads); its exchange-dir writes are the teardown.log append and nudge-marker cleanup only — the pin's file-level predicate is co-occurrence, not dataflow, so the row exists with this reason; retiring Phase A must shrink this set" },
+];
+
+function scanTreeForProjectionWriters(root: string): string[] {
+	const matches: string[] = [];
+	for (const f of listTsFiles(resolve(root, "src"))) {
+		const rel = relative(root, f).replaceAll("\\", "/");
+		const shape = projectionWriterShape(readFileSync(f, "utf8"));
+		if (shape.builders && shape.writeCalls.length > 0) matches.push(rel);
+	}
+	return matches.sort();
+}
+
+{
+	const computed = scanTreeForProjectionWriters(ROOT);
+	const allowed = PROJECTION_WRITER_ALLOWLIST.map((r) => r.file).sort();
+	const unlisted = computed.filter((f) => !allowed.includes(f));
+	const stale = allowed.filter((f) => !computed.includes(f));
+	check(
+		"T1.14 projection writer set (§4.1.3): the only src/ files combining a report/q/a/p builder with a write-shaped call are the CLI verbs + the named Phase A legacy rows — exact in both directions",
+		unlisted.length === 0 && stale.length === 0,
+		`new writers outside the allowlist: ${unlisted.join(", ") || "none"}; stale rows (audit must retire): ${stale.join(", ") || "none"}`,
+	);
+}
+
+/** Pure line scan: a write-shaped call carrying a projection-builder call
+ *  DIRECTLY in its argument list. Neither the verb pattern (assign to a
+ *  local, then write) nor the store pattern (writeAnswer(path) with the path
+ *  built by a helper) ever produces this shape — so a direct combo is always
+ *  a violation, allowlisted files included. */
+export function scanCodeForProjectionWriteCombos(
+	code: string,
+): Array<{ line: number; kind: string; text: string }> {
+	const p = prepareScan(code);
+	const names = [...PROJECTION_BUILDERS, ...p.aliasesOf(PROJECTION_BUILDERS)];
+	const writeApis: string[] = [];
+	for (const api of FS_WRITE_APIS) if (p.imported.has(api)) writeApis.push(api);
+	for (const ns of p.nsFs) for (const api of FS_WRITE_APIS) writeApis.push(`${ns}.${api}`); // raw — the join below escapes the dots once
+	writeApis.push(...STORE_WRITE_APIS);
+	const writeAlt = writeApis.join("|").replace(/\./g, "\\.");
+	// Text-global (a call's arguments may span lines — the waived q-archive
+	// rename in mailbox-tool.ts is exactly that shape); [^)]*? cannot cross
+	// the closing paren of the write call's own argument list, so matches stay
+	// bounded to one call. Line numbers are computed from the match offset.
+	const combo = new RegExp(`(?<![\\w$.])(?:${writeAlt})\\s*\\([^)]*?\\b(?:${names.join("|")})\\s*\\(`, "g");
+	const out: Array<{ line: number; kind: string; text: string }> = [];
+	let m: RegExpExecArray | null;
+	while ((m = combo.exec(p.noReexport)) !== null) {
+		const line = p.noReexport.slice(0, m.index).split("\n").length;
+		out.push({ line, kind: "direct write combo", text: m[0].replace(/\s+/g, " ").trim().slice(0, 120) });
+	}
+	return out;
+}
+
+/** Named waiver for the ONE sanctioned direct combo on HEAD: the delegate_mailbox
+ *  answer flow archives the pending question immediately after the answer
+ *  lands (q-<name>.json → q-<name>.answered-<ts>.json) — the frozen Phase A
+ *  consume discipline (a surviving q-file would re-fire AWAITING_ANSWER). */
+const PROJECTION_COMBO_WAIVERS: ReadonlyArray<{ file: string; api: string; reason: string }> = [
+	{ file: "src/mailbox-tool.ts", api: "rename", reason: "q→answered archive rename right after the answer lands — the frozen Phase A consume discipline; retires with the mailbox-tool legacy row" },
+];
+
+{
+	const offenders: string[] = [];
+	for (const f of listTsFiles(resolve(ROOT, "src"))) {
+		const rel = relative(ROOT, f).replaceAll("\\", "/");
+		for (const o of scanCodeForProjectionWriteCombos(readFileSync(f, "utf8"))) {
+			const waived = PROJECTION_COMBO_WAIVERS.some((w) => w.file === rel && o.text.includes("questionPathFor"));
+			if (!waived) offenders.push(`${rel}:${o.line} ${o.text}`);
+		}
+	}
+	check(
+		"T1.14b no direct write combo on a projection path anywhere in src/ (neither verbs nor legacy rows write builders inline — the one waived Phase A q-archive rename excepted)",
+		offenders.length === 0,
+		offenders.join(" | "),
+	);
+	// The waiver must stay LIVE (T1.9d): the waived shape really occurs.
+	const mtCombos = scanCodeForProjectionWriteCombos(readFileSync(resolve(ROOT, "src", "mailbox-tool.ts"), "utf8"))
+		.filter((o) => o.text.includes("questionPathFor"));
+	check(
+		"T1.14c the combo waiver is LIVE: mailbox-tool.ts still carries the waived q→answered rename (stale waiver fails the audit)",
+		mtCombos.length > 0,
+	);
+}
+
+// Canaries + precision for the combo scanner.
+{
+	const comboCanaries: ReadonlyArray<[boolean, string]> = [
+		[true, 'import { writeFileSync } from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nwriteFileSync(reportPathFor(d, n), x);'],
+		[true, 'import { appendFile } from "node:fs/promises";\nimport { progressPathFor as pp } from "./expaths.ts";\nawait appendFile(pp(d, n), line);'],
+		[true, 'import { atomicWriteFileSync } from "./manifest-store.ts";\nimport { questionPathFor } from "./expaths.ts";\natomicWriteFileSync(questionPathFor(d, n), c);'],
+		[true, 'import fs from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nfs.writeFileSync(reportPathFor(d, n), x);'], // default-import namespace write
+		[true, 'const fs = require("node:fs");\nimport { answerPathFor } from "./expaths.ts";\nfs.appendFileSync(answerPathFor(d, n), x);'], // CJS binding write
+		[false, 'import { writeFileSync } from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nconst p = reportPathFor(d, n);\nwriteFileSync(p, x);'], // verb pattern: local then write
+		[false, 'import { readFileSync } from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nconst r = readFileSync(reportPathFor(d, n), "utf8");'], // read, not write
+	];
+	const comboMissed = comboCanaries
+		.filter(([shouldFire, code]) => (scanCodeForProjectionWriteCombos(code).length > 0) !== shouldFire)
+		.map(([shouldFire, code]) => `expected ${shouldFire ? "FIRE" : "clean"}: ${code.replaceAll("\n", " ")}`);
+	check(
+		"T1.14d the combo pin BITES and is PRECISE: direct builder-in-write-call fires; the verb local-variable pattern and read calls do not",
+		comboMissed.length === 0,
+		comboMissed.join(" | "),
+	);
+}
+
+// Seeded-file probe: a new module writing a projection path joins the
+// computed writer set — which no longer equals the allowlist, i.e. the pin
+// goes red exactly as acceptance 1 demands.
+{
+	const seed = mkdtempSync(resolve(tmpdir(), "writer-pin-probe-"));
+	mkdirSync(resolve(seed, "src"), { recursive: true });
+	// Reuse the REAL allowlist files? No — the probe asserts set arithmetic on a
+	// minimal tree: allowlist minus seeded tree is all-stale, so compare only
+	// the membership side: the seeded violator must appear in the computed set.
+	writeFileSync(
+		resolve(seed, "src", "fleet.ts"),
+		'import { writeFileSync } from "node:fs";\nimport { reportPathFor } from "./expaths.ts";\nexport function dump(d: string, n: string, x: string) { writeFileSync(reportPathFor(d, n), x); }\n',
+	);
+	writeFileSync(
+		resolve(seed, "src", "reader.ts"),
+		'import { readFileSync } from "node:fs";\nimport { questionPathFor } from "./expaths.ts";\nexport function q(d: string, n: string) { return readFileSync(questionPathFor(d, n), "utf8"); }\n',
+	);
+	const seeded = scanTreeForProjectionWriters(seed);
+	const seededCombos = scanCodeForProjectionWriteCombos(readFileSync(resolve(seed, "src", "fleet.ts"), "utf8"));
+	check(
+		"T1.14e seeded-file probe: a new projection-writing module enters the computed writer set and trips the combo ban; the read-only sibling does not",
+		seeded.length === 1 && seeded[0] === "src/fleet.ts" && seededCombos.length === 1,
+		JSON.stringify({ seeded, seededCombos }),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
 
 console.log(failures === 0 ? "\nALL STATIC CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -162,7 +162,7 @@ try {
 			const rig = await startWithFakeChild();
 			emitSplit(rig.child, record, splitByte);
 			rig.child.simulateExit(0, null);
-			const consoleText = await rig.host.readConsole(rig.name);
+			const consoleText = await rig.host.readConsole!(rig.name);
 			check(
 				"pump: mid-Cyrillic split reaches readConsole verbatim (no U+FFFD)",
 				consoleText.includes("assistant: Привет мир") && !consoleText.includes("\uFFFD"),
@@ -226,7 +226,7 @@ try {
 		// DEFAULT_MALFORMED_THRESHOLD is 10 → 11 malformed records exceed it.
 		rig.child.stdout.emit("data", Buffer.from(Array.from({ length: 11 }, (_, i) => `garbage ${i}\n`).join(""), "utf8"));
 		rig.child.simulateExit(0, null);
-		const consoleText = await rig.host.readConsole(rig.name);
+		const consoleText = await rig.host.readConsole!(rig.name);
 		check(
 			"pump: malformed threshold escalation reaches readConsole exactly once",
 			consoleText.includes("[protocol] malformed record threshold exceeded") &&

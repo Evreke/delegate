@@ -1,10 +1,9 @@
 /**
- * pi-delegate — src/host/rpc-jsonl.ts: strict byte-buffer JSONL parser for
- * the rpc adapter's stdout pump (issue #13).
- *
- * LEAF MODULE: node builtins only, zero imports from src/ — the adapter
- * imports THIS, never the other way (mirrors the adapter isolation rule in
- * rpc.ts's contract).
+ * MODULE_CONTRACT: strict byte-buffer JSONL parser for the rpc adapter's
+ * stdout pump (issue #13). LEAF MODULE: node builtins only, zero imports
+ * from src/ — the adapter imports THIS, never the other way (mirrors the
+ * adapter isolation rule in rpc.ts's contract). Consumers: src/host/rpc.ts
+ * pump. Failure shape: RpcJsonlRecord.malformed / .oversized.
  *
  * Protocol (rpc.ts's verified framing notes — generic line readers are
  * non-compliant per pi docs/rpc.md):

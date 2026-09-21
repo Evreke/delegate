@@ -176,7 +176,7 @@ try {
 			})}\n`,
 		);
 		rig.child.simulateExit(1, null);
-		const consoleText = await rig.host.readConsole(rig.name);
+		const consoleText = await rig.host.readConsole!(rig.name);
 		check(
 			"surface: provider error reaches readConsole with verbatim text",
 			consoleText.includes("provider error: Codex error: The usage limit has been reached"),
@@ -192,7 +192,7 @@ try {
 			})}\n`,
 		);
 		rig2.child.simulateExit(0, null);
-		const consoleText2 = await rig2.host.readConsole(rig2.name);
+		const consoleText2 = await rig2.host.readConsole!(rig2.name);
 		check(
 			"surface: abort artifact reaches readConsole as aborted-by-teardown",
 			consoleText2.includes("aborted by teardown: This operation was aborted") &&

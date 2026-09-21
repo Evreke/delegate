@@ -82,10 +82,16 @@ export interface WatchConfig {
 	settleGateMs: number;
 	/** worker-stale threshold (default 30 min, floor 60 s). */
 	staleAfterMs: number;
-	/** v1.14: when to release a blocking delegate call. "settle" (default)
-	 *  blocks the full settle gate unless the worker settles inline; "started"
-	 *  releases as soon as the worker is proven started and working — the
-	 *  background watcher owns the rest of the wait (§21). */
+	/** When to release a blocking delegate call. "started" (default) releases
+	 *  as soon as the worker is proven started and working — the background
+	 *  watcher owns the rest of the wait (§21); "settle" (opt-out) blocks the
+	 *  full settle gate unless the worker settles inline.
+	 *  BUG_FIX_CONTEXT (default flip): the original default was "settle" — in
+	 *  practice the inline block never settled a real worker before the gate
+	 *  expired and only produced a guaranteed timeout before the handover.
+	 *  "started" makes the handover immediate; "settle" stays as the explicit
+	 *  opt-out. Probes are exempt in both modes (their full window IS the
+	 *  smoke verdict). */
 	releaseOn: "started" | "settle";
 	/** §23 retire TTL (default 15 min): elapsed-since-retirable threshold for
 	 *  the watcher's autonomous console close. Inactive unless retire is true. */
@@ -152,7 +158,7 @@ export function resolveWatchConfig(): WatchConfig {
 		intervalMs: WATCH_DEFAULT_INTERVAL_MS,
 		settleGateMs: WATCH_DEFAULT_SETTLE_GATE_MS,
 		staleAfterMs: WATCH_DEFAULT_STALE_AFTER_MS,
-		releaseOn: "settle",
+		releaseOn: "started",
 		retireTtlMs: RETIRE_DEFAULT_TTL_MS,
 		retire: RETIRE_DEFAULT_ENABLED,
 		legacyFailOpen: false,
@@ -212,7 +218,9 @@ export function resolveWatchConfig(): WatchConfig {
 			intervalMs: num(w.intervalMs, fallback.intervalMs, WATCH_MIN_INTERVAL_MS),
 			settleGateMs: num(w.settleGateMs, fallback.settleGateMs, 1),
 			staleAfterMs: num(w.staleAfterMs, fallback.staleAfterMs, WATCH_MIN_STALE_AFTER_MS),
-			releaseOn: w.releaseOn === "started" ? "started" : "settle",
+			// Whitelist the explicit opt-out; everything else (missing, garbage)
+			// falls back to the default "started".
+			releaseOn: w.releaseOn === "settle" ? "settle" : "started",
 			retireTtlMs,
 			retire,
 			legacyFailOpen,

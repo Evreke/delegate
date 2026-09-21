@@ -22,4 +22,4 @@
  */
 
 /** The executing extension version. Sync-pin: test/static-check.ts. */
-export const EXTENSION_VERSION = "1.17.1";
+export const EXTENSION_VERSION = "1.18.0";

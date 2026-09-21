@@ -384,11 +384,23 @@ own issues under this record's constraints.
 #### 4.1.1 Verb interface — the `swarm` CLI
 
 Worker-side verbs — the ONLY worker contract: `read-brief`, `write-report`,
-`ask`, `poll-answer`, `report-progress`. Orchestrator-side verbs — `spawn`,
-`status`, `answer`, `steer`, `release`, `teardown` — are specified
-symmetrically but stay wrapped by the pi tools in this milestone (the
-frozen surface does not move: tool names and parameter shapes are
-byte-identical).
+`ask`, `poll-answer`, `write-progress`. (Operator decision DV1: the progress
+verb is `write-`, not `report-` — "report" is the strict terminal-artifact
+noun of `write-report`; one word, one concept; the name also aligns the verb
+with its journal kind `progress`.) Orchestrator-side verbs — `spawn`,
+`collect`, `status`, `answer`, `steer`, `release`, `teardown` — are
+specified symmetrically but stay wrapped by the pi tools in this milestone
+(the frozen surface does not move: tool names and parameter shapes are
+byte-identical). `collect` is in the set (operator decision DV2): it is the
+frozen journal event and the settle→collect act — strict report validation,
+archive, the `collectedAt` stamp — which the read-only `status` cannot
+cover. The mailbox inbox scan (`delegate_mailbox` action `read`) gets NO
+verb in v1 (operator decision DV3): watcher-wake is the discovery path; the
+tool action-set symmetry is intentionally not projected onto the verb set.
+Verb→journal-kind mapping is name-identical (`write-progress` → kind
+`progress`, and so on) with one indirection: `release` (the verb — the §23
+retire ACK posted by the orchestrator) drives the watcher retire engine,
+which appends journal kind `retire`; no verb named `retire` exists.
 
 Rules:
 
@@ -396,10 +408,11 @@ Rules:
   switch (#25) the worker prompt names only verb invocations; the raw-file
   phrasing survives one release behind the config flag `swarm.verbsFallback`
   (default on in #25's release, removed after).
-- Identity travels with the invocation: every worker verb carries task and
-  worker identity (`--task` / `--worker` flags, or the environment the spawn
-  flow sets); the CLI builds every path through `src/expaths.ts` exclusively
-  (static pin per #18's acceptance, Law 6).
+- Identity travels with the invocation by ONE canonical mechanism: the spawn
+  flow exports `SWARM_TASK` and `SWARM_WORKER` into the worker's
+  environment; the `--task` / `--worker` flags exist as explicit override
+  only (never the primary path). The CLI builds every path through
+  `src/expaths.ts` exclusively (static pin per #18's acceptance, Law 6).
 - Result contract (Law 8): success = exit 0 plus a JSON result on stdout;
   failure = non-zero exit plus a structured stdout error carrying an E_* code
   and a recovery hint. New codes join the E_* taxonomy by addition, never by
@@ -413,9 +426,9 @@ Rules:
   a bug class with a regression check (Law 10).
 - Phase A output is byte-identical to the current file writers (golden test,
   #18) — Law 7 wire formats frozen.
-- The five worker verb names and six orchestrator verb names join the frozen
-  surface (section 3) in the commit that ships them; extension by addition
-  only.
+- The five worker verb names and seven orchestrator verb names join the
+  frozen surface (section 3) in the commit that ships them; extension by
+  addition only.
 
 #### 4.1.2 The journal — append-only, single-writer, durable
 
@@ -428,6 +441,7 @@ database itself):
 ```sql
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
+PRAGMA busy_timeout = 5000;  -- cross-process write rule, see below
 PRAGMA user_version = 1;
 CREATE TABLE IF NOT EXISTS events (
   seq        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -443,11 +457,14 @@ CREATE INDEX IF NOT EXISTS events_by_fleet ON events(session_id, task, seq);
 
 Kinds — the closed v1 set (new kinds only by addition, never rename):
 `spawn`, `stamp`, `collect`, `ask`, `answer`, `steer`, `progress`, `retire`,
-`dead-reboot`, `reconcile-summary`, `termination-notice`, `partial-report`.
+`dead-reboot`, `reconcile-summary`, `compaction-marker`,
+`termination-notice`, `partial-report`.
 The last two are forward-compat with #15: they may exist in the schema
 before their producers land. `reconcile-summary` is this record's addition
 over the issue's enumeration — it makes "exactly one summary wake per fleet"
-(§4.1.4) dedup-able through the journal itself. Each kind name joins
+(§4.1.4) dedup-able through the journal itself; `compaction-marker` is the
+audit-continuity anchor of the operator-invoked compaction path (retention,
+below). Each kind name joins
 section 3's frozen list in the commit that lands its first producer.
 
 Payload shapes (JSON; the listed fields are the v1 contract, additive-only
@@ -470,13 +487,23 @@ after that):
   the frozen per-fleet summary of §4.1.4 step 4.
 - `termination-notice` `{graceMs}` — producer: #15.
 - `partial-report` `{captured: boolean, text?}` — producer: #15.
+- `compaction-marker` `{exportedTo, deletedCount, lastDeletedSeq}` —
+  fleet-scoped; appended by the compaction path AFTER the deletion it
+  records, so audit continuity survives it (retention rule, below).
 
-Single-writer: `src/swarm/journal.ts` is the ONLY writer module. No UPDATE
-or DELETE operation exists in the module — append-only is enforced by
-absence, not convention. Every append is one transaction, so a torn write
-leaves the last record intact or absent, never corrupt (#22's acceptance
-check). Static pin (#31, Law 6): no other `src/` module imports a sqlite
-driver.
+Single-writer code, multi-process database: the journal module family
+(`src/swarm/journal*.ts` — writer and reader sides) is the ONLY writer CODE;
+"single-writer" never means one process. `events.db` is ONE database written
+by every concurrent pi session process, so cross-process writes are
+serialized by SQLite itself: every writer sets `busy_timeout = 5000` ms,
+retries `SQLITE_BUSY` with bounded backoff-plus-jitter, and keeps every
+append a short single-statement transaction — a torn write leaves the last
+record intact or absent, never corrupt (#22's acceptance check). No UPDATE
+or DELETE operation exists in the module family — append-only is enforced
+by absence, not convention; the ONE exception is the operator-invoked
+compaction path (retention, below), guarded by the all-terminal rule.
+Static pin (#31, Law 6): no `src/` module outside the journal module family
+(`src/swarm/journal*.ts`) imports a sqlite driver.
 
 Advisory by contract (Law 8, Law 13): a journal append failure is recorded
 and skipped — structurally incapable of failing a spawn or collect; a
@@ -495,16 +522,31 @@ delivered-facts store as the dedup mechanism — durable and exactly-once by
 construction (#26). `swarm events --after <seq>` (#30) exposes this reader
 verbatim.
 
-Retention: none in v1 — the journal grows unboundedly with fleet activity;
-rotation or compaction is `[operator-decision-pending]` and lands, if ever,
-as an additive decision that never rewrites existing rows.
+Retention (operator decision DP7): events are never auto-deleted in v1.
+Growth is bounded by fleet volume: a typical non-`spawn` event row is about
+0.5 KB (ISO timestamp, kind, session/task/worker ids, sub-KB payload);
+`spawn` rows carry `briefText` inline and run to a few KB each — a heavy
+session of several thousand events stays in low single-digit MB.
+Visibility is mandatory, not aspirational: `swarm status` (the read API,
+#30) surfaces the journal's row count and database size. Manual compaction
+is an operator-invoked maintenance path — export a fleet's events to JSONL,
+then delete them — with one binding rule: deletion is allowed ONLY for
+fleets whose workers are ALL terminal (`collect` / `retire` /
+`dead-reboot`), and every compaction appends a `compaction-marker` event
+recording the export target and the deleted range, so audit continuity
+survives the deletion. This compaction path is the sole, documented
+exception to the module family's no-DELETE rule above.
 
 #### 4.1.3 Two storage phases
 
 Phase A — files are truth (#18): the CLI writes today's files
 byte-identically (golden tests; the watcher is untouched; rollback is
 trivial — stop shipping the CLI). The journal module (#22) may land in the
-same release but receives no production writes in Phase A.
+same release but receives no production writes in Phase A. Falsifiable
+interim state: Law 13's durable-audit clause is interim-UNMET during
+Phase A — fleet lifecycle facts exist only as ad-hoc files until the first
+Phase B write, and this interim ends exactly when `swarm.storage` can be
+set to `"journal"`.
 
 Phase B — journal is truth (#23): every verb write and every tool-side
 lifecycle transition appends to the journal transactionally; the exchange
@@ -604,8 +646,8 @@ accepted loss, recorded here rather than discovered in the field.
    worker prompt (prompt fragility); append-only cannot be enforced (SQL
    can UPDATE/DELETE); one mis-scoped statement has whole-fleet blast
    radius against the single shared database. Verbs are the worker
-   contract; SQL stays below `src/swarm/journal.ts`, confined by the #31
-   pin.
+   contract; SQL stays below the journal module family
+   (`src/swarm/journal*.ts`), confined by the #31 pin.
 3. Files-forever (exchange files stay the system of record): rejected — no
    audit queries (history becomes filesystem archaeology); the exchange
    root dies on reboot while pi sessions resume (the manifest-loss incident

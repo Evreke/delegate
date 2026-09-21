@@ -8,6 +8,11 @@
  * the last valid ping. The verb name is `write-` per operator decision DV1
  * ("report" is the strict terminal-artifact noun of write-report).
  *
+ * Phase B (issue #23, §4.1.3): under `swarm.storage: "journal"` the verb
+ * appends the journal event (kind `progress`, payload = the ProgressEvent
+ * verbatim) BEFORE appending the file line; the journal append is advisory
+ * (Law 8) and surfaces in the success envelope's `journal` field.
+ *
  * Dependencies: node:fs, node:path (dirname), ../expaths.ts (progressPathFor —
  * the ONE path builder), ../host.ts (ProgressEvent type ONLY), ./args.ts,
  * ./context.ts, ./serialize.ts, ./result.ts. No herdr adapter import.
@@ -27,15 +32,17 @@ import { flagStr, type ParsedArgs } from "./args.ts";
 import type { SwarmContext } from "./context.ts";
 import { emitSuccess, SwarmError } from "./result.ts";
 import { serializeJsonLine } from "./serialize.ts";
+import { appendSwarmEvent, verbTimestamp } from "./storage.ts";
 
-/** Run `swarm write-progress`: append one ping line. */
-export function runWriteProgress(ctx: SwarmContext, parsed: ParsedArgs): void {
+/** Run `swarm write-progress`: journal event first (journal mode), then
+ *  append one ping line (the byte-frozen projection). */
+export async function runWriteProgress(ctx: SwarmContext, parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promise<void> {
 	const phase = flagStr(parsed, "phase");
 	if (phase === undefined || phase.trim().length === 0) {
 		throw new SwarmError("E_SWARM_USAGE", "write-progress requires --phase <label>");
 	}
 
-	const event: ProgressEvent = { worker: ctx.worker, ts: new Date().toISOString(), phase };
+	const event: ProgressEvent = { worker: ctx.worker, ts: verbTimestamp(env), phase };
 	const pctRaw = flagStr(parsed, "pct");
 	if (pctRaw !== undefined) {
 		const pct = Number(pctRaw);
@@ -49,11 +56,14 @@ export function runWriteProgress(ctx: SwarmContext, parsed: ParsedArgs): void {
 
 	const path = progressPathFor(ctx.dir, ctx.worker);
 	const line = serializeJsonLine(event);
+	// Phase B ordering (§4.1.3): journal = truth, appended FIRST (advisory,
+	// Law 8); the file line is the projection and is appended regardless.
+	const journal = await appendSwarmEvent({ task: ctx.task, worker: ctx.worker, dir: ctx.dir }, "progress", event, env);
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 		appendFileSync(path, line, "utf8");
 	} catch (err) {
 		throw new SwarmError("E_SWARM_IO", `progress not appendable at ${path}: ${(err as Error).message}`);
 	}
-	emitSuccess("write-progress", { path, line: line.trimEnd() });
+	emitSuccess("write-progress", { path, line: line.trimEnd(), ...(journal ? { journal } : {}) });
 }

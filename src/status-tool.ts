@@ -33,14 +33,16 @@ import { aggregateTaskUsage, exchangeRoot, isProbeDir, progressPathFor, readLast
 import { archiveRoot, listArchivedTasks } from "./archive.ts";
 import { type TaskUsageSnapshot, manifestStore } from "./manifest-store.ts";
 import { mailboxAnswerState } from "./mailbox-store.ts";
-import { clampLines, renderDelegateLines, type WorkerView } from "./fleet.ts";
+import { clampLines } from "./ui-text.ts";
+import { renderDelegateLines } from "./ui-text.ts";
+import { type WorkerView } from "./worker-view.ts";
 import {
 	contextPct,
 	formatTokens,
 	parseSessionUsage,
 	resolveContextWindow,
 } from "./usage.ts";
-import { buildWorkerView } from "./fleet.ts";
+import { buildWorkerView } from "./worker-view.ts";
 import { CONTEXT_TURNS_WARN, type Transport } from "./host.ts";
 
 // ===========================================================================
@@ -212,7 +214,7 @@ export function registerStatusTool(pi: import("@earendil-works/pi-coding-agent")
 		promptSnippet: "Read-only status of delegate workers (never mutates)",
 		promptGuidelines: [
 			"Use delegate_status to check a specific worker after a timed-out or detached delegate call instead of repeating delegate — but do NOT poll it in a loop: the background watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead.",
-			"When delegate_status shows a worker as blocked, read the worker's pane and either answer the worker's question or send a re-brief.",
+			"When delegate_status shows a worker as blocked, read the worker's console and either answer the worker's question or send a re-brief.",
 		],
 		parameters: Type.Object({
 			name: Type.Optional(Type.String({ description: "Worker name; omit for all known workers" })),
@@ -293,7 +295,7 @@ export function registerStatusTool(pi: import("@earendil-works/pi-coding-agent")
 			const blocked = selected.filter((v) => v.status === "blocked");
 			if (blocked.length > 0) {
 				lines.push(
-					`Blocked: ${blocked.map((v) => v.name).join(", ")} — read the pane, then answer or re-brief.`,
+					`Blocked: ${blocked.map((v) => v.name).join(", ")} — read the console, then answer or re-brief.`,
 				);
 			}
 			// Law 1 truncation duty: announce the omitted rows (the details payload

@@ -29,7 +29,7 @@
  *     mount registry on globalThis — Wave 2, Law 3).
  *   - status-tool.ts   — the `delegate_status` tool (registerStatusTool +
  *     formatFleetUsageLine and its read-only helpers).
- *   - commands.ts      — /delegate-fleet + /delegate-teardown
+ *   - commands.ts      — /delegate-teardown
  *     (registerCommands).
  *
  * The invariants and contracts of every piece moved verbatim with the code —
@@ -122,5 +122,6 @@ export {
 // The `delegate_status` tool (extracted, Wave 3).
 export { formatFleetUsageLine, registerStatusTool } from "./status-tool.ts";
 
-// The /delegate-fleet + /delegate-teardown commands (extracted, Wave 3).
+// The /delegate-teardown command (extracted, Wave 3; the /delegate-fleet
+// overlay command was removed with the ambient UI — operator decision).
 export { registerCommands } from "./commands.ts";

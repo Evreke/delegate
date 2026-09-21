@@ -4,13 +4,14 @@
  * Run with: bun test/render-ui-check.ts   (from repo root)
  *
  * renderDelegateLines is pure (no ctx, no mutation) so it is unit-testable
- * headless: fake theme records fg calls. mountFleetUI/notifyFleetIdle headless
- * paths are checked via a stub ExtensionContext (hasUI: false).
+ * headless: fake theme records fg calls. It lives in src/ui-text.ts since the
+ * ambient widget/overlay removal (operator decision — TUI surfaces out of
+ * scope); the mountFleetUI/notifyFleetIdle headless checks went with them.
  */
 
-import { mountFleetUI, notifyFleetIdle, renderDelegateLines } from "../src/fleet.ts";
+import { renderDelegateLines } from "../src/ui-text.ts";
 import { archiveRoot } from "../src/exchange.ts";
-import { clampLines, visibleWidth } from "../src/fleet.ts";
+import { clampLines, visibleWidth } from "../src/ui-text.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -108,59 +109,6 @@ function fakeTheme() {
 	const raw = ["Report OK: status=pass — done", ...Array.from({ length: 10 }, (_, i) => `detail word ${i} `.repeat(12))].join("\n");
 	const lines = renderDelegateLines("delegate", raw, th);
 	check("R6 ≤4 lines total (1 headline + 3 details)", lines.length <= 4, String(lines.length));
-}
-
-// ---------------------------------------------------------------------------
-// notifyFleetIdle — headless no-op
-// ---------------------------------------------------------------------------
-
-{
-	let notified = 0;
-	const ctx = {
-		hasUI: false,
-		ui: {
-			notify() {
-				notified++;
-			},
-			setWidget() {},
-			setFooter() {},
-		},
-	} as never;
-	notifyFleetIdle(ctx, 3);
-	check("N1 headless notifyFleetIdle is a no-op", notified === 0);
-}
-
-// ---------------------------------------------------------------------------
-// mountFleetUI — headless no-op dispose
-// ---------------------------------------------------------------------------
-
-{
-	let widgetCalls = 0;
-	let footerCalls = 0;
-	const ctx = {
-		hasUI: false,
-		ui: {
-			setWidget() {
-				widgetCalls++;
-			},
-			setFooter() {
-				footerCalls++;
-			},
-			notify() {},
-		},
-	} as never;
-	let refreshed = 0;
-	const deps = {
-		getRows: async () => {
-			refreshed++;
-			return [];
-		},
-		getPlacedCount: () => 0,
-	};
-	const dispose = mountFleetUI(ctx, deps);
-	check("M1 headless mount does not touch ui", widgetCalls === 0 && footerCalls === 0);
-	dispose();
-	check("M1b headless dispose is safe", refreshed === 0);
 }
 
 // ---------------------------------------------------------------------------

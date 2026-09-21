@@ -204,7 +204,7 @@ export interface WatchSnapshot {
 }
 
 /** The grill-deck tool name — a worker that invoked it is blocked on a HUMAN
- *  at its own pane, not on the mailbox. */
+ *  at its own console, not on the mailbox. */
 export const GRILL_DECK_TOOL = "grill_deck";
 
 export interface SelfIdentity {
@@ -222,7 +222,7 @@ export interface SelfIdentity {
  * by the mount gate and delivery — one table). Stage C fix: worker
  * identity is proven ONLY by the entry's OWN sessionPath
  * (`sessionPath === self.sessionFile`); the former checkoutPath === cwd
- * branch is REMOVED as ambiguous by construction — tab workers ALWAYS share
+ * branch is REMOVED as ambiguous by construction — shared-checkout workers ALWAYS share
  * the orchestrator's checkout, and a historical worker entry poisoned the
  * gate for ANY future session started in that cwd (an orchestrator silently
  * lost its watcher and its child wakes). A degraded self (no sessionFile)
@@ -313,7 +313,7 @@ export function workersFromManifests(
 			// BUG_FIX_CONTEXT: the former worktree checkoutPath === cwd branch
 			// muted (and leaf-suppressed) any new session that merely started
 			// in a checkout where a worker once ran — identity by cwd is
-			// ambiguous (tab workers share the orchestrator's checkout too).
+			// ambiguous (shared-checkout workers share the orchestrator's checkout too).
 			// TZ 1.17.0 §3.4: the compare itself is sameSessionPath (posix:
 			// exact `===`, byte-identical to the former raw compare; win32:
 			// casefold + separator fold) — default platform, no plumbing here.
@@ -613,7 +613,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 			return [];
 		}
 	}
-	// §23 retire: a retired worker is HISTORY — the pane is already gone, so
+	// §23 retire: a retired worker is HISTORY — the console is already gone, so
 	// every event kind would be noise (worker-dead above all: the close itself
 	// is the expected cause of any herdr absence). The manifest entry stays.
 	if (w.retiredAt !== undefined) return [];
@@ -689,7 +689,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 		opts.onSkip?.(w.name, "corrupt-question", `${qState.error} (file kept as-is — the worker may still be mid-write; re-checked every tick)`);
 	}
 
-	// 2b. nudge-failed (F6) — a mailbox answer/steer whose PANE nudge failed
+	// 2b. nudge-failed (F6) — a mailbox answer/steer whose console nudge failed
 	//    after bounded retries. The mailbox tool (spawn.ts) wrote the marker;
 	//    the watcher delivers the wake-up instead of the socket. Fingerprint =
 	//    the marker ts. Consume discipline: the marker is deleted by a
@@ -701,8 +701,8 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 		events.push(
 			mk(
 				"nudge-failed",
-				`pane nudge failed after retries (${truncate(nudgeMarker.error, 160)}) — the answer IS posted at ` +
-					`${answerPathFor(w.dir, w.name)}; re-prompt the pane manually or retry the ` +
+				`console nudge failed after retries (${truncate(nudgeMarker.error, 160)}) — the answer IS posted at ` +
+					`${answerPathFor(w.dir, w.name)}; re-prompt the console manually or retry the ` +
 					"steer — a successful nudge clears this marker.",
 				nudgeMarker.ts,
 			),
@@ -710,14 +710,14 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 	}
 
 	// 3. grill-deck — the worker blocked itself on an INTERACTIVE deck; only a
-	//    human at that pane can answer, so say exactly that.
+	//    human at that console can answer, so say exactly that.
 	const decks = countSessionToolCallCached(w.sessionPath, GRILL_DECK_TOOL, opts.sessionToolCallCache);
 	if (decks > 0) {
 		events.push(
 			mk(
 				"grill-deck",
 				`invoked grill_deck (${decks}×) — it is blocked on an interactive question deck in its OWN ` +
-					`pane and only a human can answer there: open the pane, or steer it to use the ` +
+					`console and only a human can answer there: open the console, or steer it to use the ` +
 					`mailbox (q-${w.name}.json) instead.`,
 				`${decks}`,
 			),
@@ -776,7 +776,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 		// status — the tier-1 exception existed for MOUNTING but not for the
 		// settle classification. What was done: in the SETTLED shape only (the
 		// message below promises the tier-1 watcher will wake the worker,
-		// which is true only while its pane exists), a live fleet SUPPRESSES
+		// which is true only while its console exists), a live fleet SUPPRESSES
 		// worker-dead and emits ONE fleet-in-flight instead. Every existing
 		// guard of the branch (probe skip, statusesKnown, grace window,
 		// collectedAt independence) is untouched; no children → byte-identical.
@@ -808,7 +808,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 			events.push(
 				mk(
 					"worker-dead",
-					`${state}. Treat as a failed spawn: read the pane, then a diagnosed retry (never verbatim).`,
+					`${state}. Treat as a failed spawn: read the console, then a diagnosed retry (never verbatim).`,
 					// Watcher stage B episode rule: the fingerprint is the worker's launch
 					// stamp — a NEW run of the worker (new startedAt) is a new death episode
 					// and wakes again; a herdr status flap within one launch does not.
@@ -821,7 +821,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 	// 6. worker-stale (§22, v1.12.1) — a COLLECTED worker (valid report was
 	//    delivered) that herdr still lists as live after the stale window:
 	//    teardown-after-collect missed it (config off, advisory failure, older
-	//    build) — surface it instead of letting panes pile up. Fires only for
+	//    build) — surface it instead of letting consoles pile up. Fires only for
 	//    the OWNING session (the ownership gate above already silences foreign
 	//    fleets — do not bypass it), only while genuinely live (an unreachable
 	//    herdr reads live:false → silent, the same "statuses unknown ≠ dead"

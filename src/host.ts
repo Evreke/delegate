@@ -1,12 +1,15 @@
 /**
  * pi-delegate — src/host.ts (WorkerHost seam, extracted from src/transport.ts).
  *
- * MODULE_CONTRACT — the backend-neutral worker-host seam: Transport interface +
- * req/result types, the E_* error taxonomy (incl. DelegateErrorImpl/GUIDANCE),
+ * MODULE_CONTRACT — the backend-neutral worker-host seam: Transport interface
+ * + req/result types, the E_* error taxonomy (incl. DelegateErrorImpl/GUIDANCE),
  * the report/mailbox envelope contracts and their guards, the worker-name rule,
- * briefPrompt, the budget/context gauge constants, and sessionHasReply (the
+ * briefPrompt, the budget/context gauge constants, sessionHasReply (the
  * aged-finish session-JSONL proof — backend-neutral: it reads the worker's
- * pi session JSONL, never the host backend).
+ * pi session JSONL, never the host backend), and the worker console event
+ * envelope (ConsoleEvent/ConsoleEventKind) with the OPTIONAL streamConsole
+ * seam method (full-fidelity live console streaming; implementations without
+ * an event store omit it and callers degrade to readConsole polling).
  *
  * Dependencies: node builtins (fs, path) + pi's getAgentDir()/CONFIG_DIR_NAME
  * from @earendil-works/pi-coding-agent (the platform package — Law 1: import,
@@ -65,20 +68,22 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 // Placement
 // ---------------------------------------------------------------------------
 
-/** How a worker is isolated. `worktree` = own checkout+branch; `tab` = shared checkout. */
+/** How a worker is isolated. `worktree` = own checkout+branch; `tab` = shared
+ *  placement without isolation (frozen internal/wire value; the delegate
+ *  tool additionally accepts the spelling "shared" and normalizes it here). */
 export type PlacementMode = "worktree" | "tab";
 
 /** Root orchestrators may create/remove worktrees; sub-orchestrators (cwd under
- *  ~/.herdr/worktrees/) may only open tabs in their own workspace. */
+ *  ~/.herdr/worktrees/) may only open shared placements in their own workspace. */
 export type AuthorityMode = "root" | "sub";
 
 export interface PlacementReq {
 	mode: PlacementMode;
-	/** Repo the worktree/tab is based on. Absolute path. */
+	/** Repo the worktree/shared placement is based on. Absolute path. */
 	repoPath: string;
-	/** Branch name for worktree placement. Ignored for tab. */
+	/** Branch name for worktree placement. Ignored for shared placement. */
 	branch: string;
-	/** Human label for the tab/workspace. */
+	/** Human label for the shared placement/workspace. */
 	label: string;
 	/** Base ref for worktree placement (default HEAD). */
 	base?: string;
@@ -93,7 +98,7 @@ export interface Placement {
 	 *  legacy fields while any 1.15.x cohort reads). Consumers must treat both
 	 *  as possibly-absent and prefer `placementRef ?? paneId`. */
 	workspaceId?: string;
-	/** Legacy herdr pane id — see workspaceId above. */
+	/** Legacy alternate id (herdr-shaped) — see workspaceId above. */
 	paneId?: string;
 	/** Branch created (worktree mode only). */
 	branch?: string;
@@ -130,7 +135,7 @@ export interface StartReq {
 	name: string;
 	/** Opaque placement reference from the Placement that place() returned —
 	 *  the adapter decodes its own ref (workerhost inversion, design §3:
-	 *  herdr pane ids never cross the seam). Callers pass
+	 *  legacy alternate ids never cross the seam). Callers pass
 	 *  `placement.placementRef ?? placement.paneId` so a legacy placement
 	 *  record (no ref) still works. */
 	placementRef: string;
@@ -227,14 +232,14 @@ export interface TeardownReq {
  *  defect 1): "teardown of an already-gone placement" is NOT an error — it is
  *  an idempotent success the CALLER can see.
  *  Before this the seam had no way to say it: the herdr adapter swallowed
- *  not-found on the worktree branch but threw on the tab branch, and the
+ *  not-found on the worktree branch but threw on the shared-placement branch, and the
  *  tool layer re-parsed "not found" out of the error MESSAGE text at every
  *  call site (three unsynchronized copies of the same regex).
  *  alreadyGone is optional-in-type so older test doubles (which return
  *  undefined) keep working; both real adapters always set it. */
 export interface TeardownResult {
 	/** True when the placement was ALREADY gone (herdr dropped it, another
-	 *  session closed it, the user closed the pane) — the close was a no-op.
+	 *  session closed it, the user closed the console) — the close was a no-op.
 	 *  False when this call actually closed something. */
 	alreadyGone?: boolean;
 }
@@ -243,6 +248,60 @@ export interface TransportCapabilities {
 	/** False in sub-orchestrator mode: place() must reject worktree requests. */
 	worktrees: boolean;
 	authority: AuthorityMode;
+}
+
+// ---------------------------------------------------------------------------
+// Worker console event stream (additive, vNext) — the full-fidelity envelope
+// ---------------------------------------------------------------------------
+
+/** Kind of one worker console event. The `*_start/_update/_end`,
+ *  `agent_*` and `queue_update` spellings mirror the rpc stdout stream's own
+ *  event types (pi docs/rpc.md) — the rpc adapter forwards them 1:1. The
+ *  adapter-specific additions: `dialog` = a blocking extension-UI dialog
+ *  offer relayed instead of auto-cancelled (rpc dialog-relay flag), `ui` = a
+ *  fire-and-forget extension-UI record (setWidget/notify/…) mirrored on the
+ *  stream, `error` = an extension_error record, `raw` = any other stdout
+ *  record or console line kept verbatim (command responses, stderr, exit
+ *  notices), `gap` = a subscriber-local marker (see ConsoleEvent) — it is
+ *  NEVER stored in the fidelity store itself. */
+export type ConsoleEventKind =
+	| "agent_start"
+	| "message_start"
+	| "message_update"
+	| "message_end"
+	| "toolcall_start"
+	| "toolcall_update"
+	| "toolcall_end"
+	| "tool_execution_start"
+	| "tool_execution_update"
+	| "tool_execution_end"
+	| "agent_end"
+	| "agent_settled"
+	| "queue_update"
+	| "dialog"
+	| "ui"
+	| "error"
+	| "raw"
+	| "gap";
+
+/** One full-fidelity worker console event — the envelope every
+ *  streamConsole() delivery carries. Payloads stay RAW TEXT (the JSONL
+ *  fragment or text chunk exactly as the backend produced it) so that
+ *  char-based snapshot semantics (last maxChars of console text) match the
+ *  existing readConsole fallback without any re-encoding. */
+export interface ConsoleEvent {
+	/** Worker this event belongs to. */
+	workerName: string;
+	/** Monotonic per-worker sequence number starting at 1. Gap markers carry
+	 *  the seq of the LAST dropped event, so the events after a gap are
+	 *  contiguous from seq + 1. */
+	seq: number;
+	/** Wall-clock milliseconds since epoch (as observed by the adapter). */
+	timestamp: number;
+	kind: ConsoleEventKind;
+	/** Raw event text: text deltas verbatim, structured records as their JSON
+	 *  fragment, console lines verbatim. */
+	payload: string;
 }
 
 /**
@@ -287,11 +346,53 @@ export interface Transport {
 		releaseOnStarted?: boolean;
 	}): Promise<SettleResult>;
 	getStatus(name: string): Promise<AgentStatus | null>;
-	/** Recent pane output for a worker (terminal snapshot, few hundred lines tail).
-	 *  Optional: probe-verdict from streaming; implementations without pane
+	/** Recent console output for a worker (terminal snapshot, few hundred lines tail).
+	 *  Optional: probe-verdict from streaming; implementations without console
 	 *  readback may reject — callers must fall back to status-based verdicts. */
-	readPane?(name: string, opts?: { maxChars?: number }): Promise<string>;
+	readConsole?(name: string, opts?: { maxChars?: number }): Promise<string>;
+	/** Full-fidelity LIVE STREAM of one worker's console events (vNext,
+	 *  additive — same optionality pattern as readConsole): a pull-based
+	 *  async-iterable of ConsoleEvents. Historical events with seq > afterSeq
+	 *  (omit or 0 for the whole retained history) are delivered first, then
+	 *  live events as the worker produces them. Retention is bounded: an
+	 *  implementation may keep only a capped recent window per worker — when
+	 *  afterSeq points before the retained window, the iteration OPENS with a
+	 *  `gap` ConsoleEvent naming the first retained seq, and the events after
+	 *  it are contiguous. ITERATION LIFETIME: while the worker lives the
+	 *  iteration stays open — even after a settle (agent_settled/idle), more
+	 *  prompts may follow; once the worker's process has terminated, the
+	 *  iteration ENDS (done) after the buffered backlog drains, so a for-await
+	 *  consumer always completes and never hangs on events that can never
+	 *  come. Callers without the method MUST degrade to
+	 *  readConsole polling (same probe pattern as readConsole: a
+	 *  `typeof transport.streamConsole === "function"` check). The fallback
+	 *  for anything older than the retained window is readConsole's
+	 *  last-maxChars snapshot semantics. Unknown worker → structured E_STATUS
+	 *  throw (Law 8), same as readConsole. */
+	streamConsole?(name: string, opts?: { afterSeq?: number }): AsyncIterable<ConsoleEvent> & {
+		/** Explicit teardown of the live subscription (present on adapters
+		 *  backed by a real subscriber registry — the rpc fidelity store).
+		 *  Consumers that stop consuming EARLY (a closed detail pane) MUST call
+		 *  it when present: a bare for-await break does NOT unregister the
+		 *  subscriber (the iterator has no return() step) and leaks it into the
+		 *  adapter's subscriber set (Law 3: per-session mounts, torn down
+		 *  cleanly). After unsubscribe() the buffered backlog stays pullable;
+		 *  live delivery stops. */
+		unsubscribe?(): void;
+	};
 	listStatuses(): Promise<AgentStatus[]>;
+	/** Mid-run steering: deliver guidance to the worker's LIVE console (its
+	 *  stdin) while the worker is alive. OPTIONAL — same optionality pattern
+	 *  as readConsole/streamConsole: adapters without a live-stdin write path
+	 *  OMIT it (herdr steers mailbox-only by contract; the in-memory fake
+	 *  omits it so the mailbox fallback stays exercisable) and callers fall
+	 *  back to the file mailbox (a-<name>.json via the mailbox-store posting
+	 *  core). Structured errors (Law 8): an unknown or already-exited worker
+	 *  throws E_PROMPT_STALLED — never a raw Error; a thrown steer is the
+	 *  CALLER'S signal to fall back, never a silent loss. Implemented by the
+	 *  rpc adapter as a prompt onto the child's stdin with the mid-stream
+	 *  streamingBehavior:"steer" fallback (see src/host/rpc.ts). */
+	steer?(req: { name: string; text: string; timeoutMs?: number }): Promise<void>;
 	/** Close the placement (worktree removal + workspace reconcile, or tab
 	 *  close). Idempotent by seam semantics: an ALREADY-GONE placement resolves
 	 *  with { alreadyGone: true } instead of throwing — callers read the field,
@@ -433,12 +534,12 @@ export const REPORT_EXAMPLE: WorkerReport = {
 };
 
 /**
- * Fixed prompt template — the one line sent to the worker pane.
+ * Fixed prompt template — the one line sent to the worker console.
  *  Explicit tool-use instruction: flash-class models may otherwise treat
 	 *  "reply with the file path" as the whole task and never read the brief.
 	 *  Carries the canonical worker name so briefs can stay name-agnostic
 	 *  (demo run 2: brief/manifest name mismatch caused a false collect miss).
-	 *  v1.2: standing mailbox line — questions/answers are files, never panes.
+	 *  v1.2: standing mailbox line — questions/answers are files, never consoles.
 	 *  Report contract: required fields + canonical example (REPORT_EXAMPLE,
 	 *  worker name substituted). Since v1.2 a brief MAY declare a reportSchema
 	 *  fragment; when the caller passes one, it is echoed
@@ -621,8 +722,8 @@ export const GUIDANCE: Record<DelegateErrorCode, string> = {
 		"Add tiers/defaults to ~/.pi/agent/pi-delegate.config.json or pass provider/model/thinking explicitly on the delegate call.",
 	E_PLACE:
 		"Placement failed; backend stderr is attached. Reconcile via /delegate-teardown (or the host workspace listing) before retrying.",
-	E_START: "Check pane readiness (pane must sit at an interactive shell prompt); retry is a new delegate call.",
-	E_PROMPT_STALLED: "Worker pane not at prompt; inspect via delegate_status.",
+	E_START: "Check console readiness (the console must sit at an interactive shell prompt); retry is a new delegate call.",
+	E_PROMPT_STALLED: "Worker console not at prompt; inspect via delegate_status.",
 	E_TIMEOUT: "Worker still running; poll delegate_status.",
 	E_TEARDOWN:
 		"Teardown (worktree remove / tab close / workspace reconcile) failed; backend stderr is attached — reconcile manually via /delegate-teardown or the host workspace listing, then retry the close.",

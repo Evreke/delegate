@@ -25,6 +25,7 @@ import { promisify } from "node:util";
 import { readManifest, updateManifest, type ManifestWorker } from "../src/exchange.ts";
 import { FakeWorkerHost } from "../src/host/fake.ts";
 import { createHerdrTransport } from "../src/herdr/host.ts";
+import { createRpcTransport } from "../src/host/rpc.ts";
 import { installSignalCleanup, sweepStaleHerdrFixtures } from "./herdr-hygiene-fixture.ts";
 import type { Placement, Transport } from "../src/host.ts";
 
@@ -39,7 +40,9 @@ function check(name: string, ok: boolean, detail = "") {
 	}
 }
 
-// Skip guard (transport-contract shape): the herdr leg needs the real binary.
+// Skip guards (transport-contract shape): the herdr leg needs the real herdr
+// binary; the rpc leg needs the real pi binary (the adapter spawns `pi --mode
+// rpc`). On a herdr-less/pi-less host the respective leg is skipped, never failed.
 let herdrAvailable = false;
 try {
 	await execFileP("herdr", ["--version"], { timeout: 10_000 });
@@ -47,6 +50,20 @@ try {
 } catch {
 	herdrAvailable = false;
 }
+let piAvailable = false;
+try {
+	await execFileP("pi", ["--version"], { timeout: 10_000 });
+	piAvailable = true;
+} catch {
+	piAvailable = false;
+}
+
+// The rpc parity leg's worker tier — same defaults as rpc-host-e2e-check.ts
+// (the spawned pi is NEVER prompted, so no LLM call and no token burn; these
+// only need to be values pi accepts at startup).
+const RPC_PROVIDER = process.env.RPC_E2E_PROVIDER ?? "beta";
+const RPC_MODEL = process.env.RPC_E2E_MODEL ?? "flash";
+const RPC_THINKING = process.env.RPC_E2E_THINKING ?? "medium";
 
 // Shared fixture: one throwaway repo + one sandboxed exchange dir per leg
 // (fixture hygiene: NEVER the live /tmp/exchange root — $PI_DELEGATE_EXCHANGE_
@@ -113,6 +130,8 @@ interface FlowResult {
 	firstTeardownAlreadyGone: boolean | undefined;
 	secondTeardownAlreadyGone: boolean | undefined;
 	dedupSurvivor: string | undefined;
+	/** rpc leg only: the StartResult of the (never-prompted) live worker. */
+	startResult: Awaited<ReturnType<Transport["startAgent"]>> | undefined;
 }
 
 /**
@@ -129,7 +148,12 @@ interface FlowResult {
  *   - propagates adapter failures (a leg that throws FAILS its checks —
  *     parity includes "does not throw")
  */
-async function driveParityFlow(host: Transport, label: string, mode: "worktree" | "tab"): Promise<FlowResult> {
+async function driveParityFlow(
+	host: Transport,
+	label: string,
+	mode: "worktree" | "tab",
+	opts: { withStart?: boolean; provider?: string; model?: string; thinking?: string } = {},
+): Promise<FlowResult> {
 	const repoDir = mkdtempSync(join(tmpdir(), `host-parity-repo-${label}-`));
 	try {
 		// herdr worktree actions require the --cwd source to be a git repo
@@ -168,6 +192,21 @@ async function driveParityFlow(host: Transport, label: string, mode: "worktree" 
 		};
 		await updateManifest(dir, (m) => ({ ...m, workers: [...m.workers, entry] }));
 		const manifestEntry = readManifest(dir)?.workers.find((w) => w.name === entry.name);
+
+		// 2b. rpc leg only: start the REAL worker (pi --mode rpc child). The
+		// worker is never prompted — get_state (the readiness round-trip) is the
+		// only traffic, no LLM call. Teardown below kills it.
+		let startResult: Awaited<ReturnType<Transport["startAgent"]>> | undefined;
+		if (opts.withStart) {
+			startResult = await host.startAgent({
+				name: entry.name,
+				placementRef: placement.placementRef ?? placement.paneId ?? "",
+				provider: opts.provider ?? "p",
+				model: opts.model ?? "m",
+				thinking: opts.thinking ?? "low",
+				timeoutMs: 60_000,
+			});
+		}
 
 		// 3. teardown ×2 — second close resolves as an idempotent no-op, and BOTH
 		// closes report the structured alreadyGone field (migration stage 1).
@@ -213,6 +252,7 @@ async function driveParityFlow(host: Transport, label: string, mode: "worktree" 
 			firstTeardownAlreadyGone: firstRes?.alreadyGone,
 			secondTeardownAlreadyGone: secondRes?.alreadyGone,
 			dedupSurvivor,
+			startResult,
 		};
 	} finally {
 		rmSync(repoDir, { recursive: true, force: true });
@@ -308,6 +348,67 @@ check(
 	} finally {
 		await cleanupAll();
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Leg 3 — real rpc adapter (skip-guarded on `pi --version`; NO LLM calls:
+// the spawned worker is never prompted — get_state is the only traffic).
+// Opt-in via RPC_E2E=1 (same gate as rpc-host-e2e-check.ts): `pi --version`
+// succeeding is NOT enough — starting a worker needs the auth/config under
+// the agent dir, which CI runners do not have; without the opt-in the child
+// exits code=1 at startup and the leg fails the PR (field incident: PR #17
+// CI run 35573910361). Locally (operator machine, auth present) set RPC_E2E=1
+// to run this leg.
+// ---------------------------------------------------------------------------
+if (process.env.RPC_E2E !== "1") {
+	console.log("SKIP  rpc leg — opt-in check (set RPC_E2E=1 to run; needs agent auth/config on the host)");
+} else if (!piAvailable) {
+	console.log("SKIP  rpc leg — no pi binary on PATH (skip guard, transport-contract shape)");
+} else {
+	const rpcWorktreeRoot = join(tmpdir(), `host-parity-rpc-wt-${process.pid}`);
+	const rpcHost = createRpcTransport({ worktreeRoot: rpcWorktreeRoot, subOrchestrator: false });
+	const r = await driveParityFlow(rpcHost, "rpc", "tab", {
+		withStart: true,
+		provider: RPC_PROVIDER,
+		model: RPC_MODEL,
+		thinking: RPC_THINKING,
+	});
+
+	check("P1.rpc place → placementRef 'rpc:shared:<n>' + backend:'rpc'", /^rpc:shared:\d+$/.test(r.placement.placementRef ?? "") && r.placement.backend === "rpc", JSON.stringify(r.placement));
+	check(
+		"P1.rpc legacy fields ride ALONGSIDE (kind/checkoutPath/paneId/workspaceId)",
+		typeof r.placement.paneId === "string" &&
+			typeof r.placement.workspaceId === "string" &&
+			typeof r.placement.checkoutPath === "string",
+	);
+	check(
+		"P2.rpc manifest round-trip: ref + backend + legacy fields through the tolerant reader",
+		!!r.manifestEntry &&
+			r.manifestEntry.placement.placementRef === r.placement.placementRef &&
+			r.manifestEntry.placement.backend === "rpc" &&
+			typeof r.manifestEntry.placement.paneId === "string",
+	);
+	// rpc-leg-specific: the live worker's StartResult shape (name read-back,
+	// session path captured via get_state — the budget gauges' input).
+	check(
+		"P6.rpc StartResult shape: canonical name read back, sessionPath reported ending .jsonl",
+		!!r.startResult &&
+			r.startResult.name === "parity-rpc" &&
+			typeof r.startResult.sessionPath === "string" &&
+			r.startResult.sessionPath.endsWith(".jsonl"),
+		JSON.stringify(r.startResult),
+	);
+	check("P3.rpc teardown ×2: both calls resolve (second = idempotent no-op; the first kills the live child)", r.secondTeardownOk && r.teardownCalls === 2, `calls=${r.teardownCalls}`);
+	check(
+		"P3b.rpc alreadyGone field: first close = false (closed something), second = true (already gone)",
+		r.firstTeardownAlreadyGone === false && r.secondTeardownAlreadyGone === true,
+		`first=${r.firstTeardownAlreadyGone} second=${r.secondTeardownAlreadyGone}`,
+	);
+	check("P4.rpc ref-based dedup: only THIS flow's entry removed, same-name other-ref survives", r.dedupSurvivor === "parity-other");
+	// Registry gone after teardown: the worker is unlisted, its placement closed.
+	check("P7.rpc worker registry gone after teardown (status null, unlisted)", (await rpcHost.getStatus("parity-rpc")) === null && !(await rpcHost.listStatuses()).some((s) => s.name === "parity-rpc"));
+
+	try { rmSync(rpcWorktreeRoot, { recursive: true, force: true }); } catch { /* advisory */ }
 }
 
 // --- self cleanup -----------------------------------------------------------

@@ -326,7 +326,7 @@ for (const status of ["idle", "blocked"] as const) {
 			JSON.stringify(marker),
 		);
 		check(
-			"M7.4 the note says the answer IS posted, names the marker, and offers pane re-prompt / retry steer",
+			"M7.4 the note says the answer IS posted, names the marker, and offers console re-prompt / retry steer",
 			/answer IS posted/.test(r.text) && r.text.includes(`a-${NAME}.json`) &&
 				/failed after 3 attempts/.test(r.text) && /retry the steer/.test(r.text),
 			r.text,
@@ -362,7 +362,7 @@ for (const status of ["idle", "blocked"] as const) {
 		const marker = ev.find((e) => e.kind === "nudge-failed");
 		check("M8.1 marker on disk → nudge-failed event", marker !== undefined, JSON.stringify(ev.map((e) => e.kind)));
 		check(
-			"M8.2 the message states the answer IS posted at a-<name>.json and the pane nudge failed",
+			"M8.2 the message states the answer IS posted at a-<name>.json and the console nudge failed",
 			!!marker && marker.message.includes(`a-${NAME}.json`) && /answer IS posted/.test(marker.message) &&
 				/nudge failed/.test(marker.message),
 			marker?.message ?? "",

@@ -28,6 +28,9 @@ import { loadDelegateConfig } from "./src/profile.ts";
 import { registerDelegateTool } from "./src/spawn.ts";
 // Wave 3 decomposition: the mailbox tool lives in src/mailbox-tool.ts.
 import { registerMailboxTool } from "./src/mailbox-tool.ts";
+// Resume reconciliation (#27, ARCHITECTURE §4.1.4): journal scan + dead-reboot
+// marking on session_start. Advisory by contract — never blocks session start.
+import { reconcileSessionStart } from "./src/swarm/reconcile.ts";
 
 // ===========================================================================
 // Host binding (workerhost inversion, design §5/§6 migration steps 5–6):
@@ -239,6 +242,17 @@ export default function (pi: ExtensionAPI) {
 			self,
 			sessionManager: ctx.sessionManager,
 		});
+
+		// Resume reconciliation (§4.1.4): after the watcher mount, make a
+		// post-reboot fleet picture honest — mark dead placements and append ONE
+		// per-fleet reconcile-summary event. NOTE: the watcher delivers the wake
+		// only once #26 (journal-cursor detection) merges; on current main the
+		// watcher is still FS-diff based, so the wake is pending that merge — the
+		// reconciliation's acceptance is journal-state correctness, not wake UI.
+		// Advisory by contract: `reconcileSessionStart` is total (it degrades to
+		// "no reconciliation this session") and the void/catch keeps it off the
+		// session-start path entirely.
+		void reconcileSessionStart(transport, self).catch(() => {});
 
 		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop };
 	});

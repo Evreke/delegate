@@ -159,6 +159,7 @@ const out = {
 		name: w.name,
 		collected: typeof w.collectedAt === "string" && w.collectedAt.length > 0,
 	})),
+	replayUsage: replay?.usage ?? null,
 	journalKinds: kinds,
 	cliExit: cli.status,
 	cliStderr: cli.stderr ?? "",

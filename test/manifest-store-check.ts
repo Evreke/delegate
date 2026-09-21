@@ -4,9 +4,10 @@
  * Run with: bun run test/manifest-store-check.ts   (from the extension dir)
  *
  * Checks:
- *   M1  Adapter parity — ONE scenario script runs against BOTH
- *       implementations (file-backed on a mkdtemp dir, in-memory Map) and
- *       the resulting manifests must be JSON-identical after every step
+ *   M1  Adapter parity — ONE scenario script runs against ALL THREE
+ *       implementations (file-backed on a mkdtemp dir, in-memory Map,
+ *       journal-backed with the projection enabled — issue #23) and the
+ *       resulting manifests must be JSON-identical after every step
  *       (read / update / append / scan, including the fresh-dir base and
  *       the foreign-backend scan filter).
  *   M2  Competing writers on the IN-MEMORY store — the bug class that was
@@ -30,6 +31,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import {
 	createFileManifestStore,
+	createJournalManifestStore,
 	createMemoryManifestStore,
 	type ExchangeManifest,
 	type ManifestWorker,
@@ -77,14 +79,19 @@ const SANDBOX = mkdtempSync(join(tmpdir(), "manifest-store-root-"));
 process.env.PI_DELEGATE_EXCHANGE_ROOT = SANDBOX;
 const FILE_DIR = join(SANDBOX, "task-file");
 const MEMORY_DIR = join(SANDBOX, "task-mem");
+const JOURNAL_DIR = join(SANDBOX, "task-journal");
 const fileStore = createFileManifestStore();
 const memStore = createMemoryManifestStore();
+// The THIRD port impl (issue #23): journal = truth, manifest.json a generated
+// projection. Sandboxed dbPath so the port parity check never writes the real
+// journal.
+const journalStore = createJournalManifestStore({ dbPath: join(SANDBOX, "manifest-store-check.db") });
 
 try {
 	// ---------------------------------------------------------------------------
 	// M1. Adapter parity — the same scenario over both stores, stepwise equal.
 	// ---------------------------------------------------------------------------
-	const dirs = { file: FILE_DIR, mem: MEMORY_DIR };
+	const dirs = { file: FILE_DIR, mem: MEMORY_DIR, journal: JOURNAL_DIR };
 	const runScenario = async (store: typeof fileStore, dir: string): Promise<Array<unknown>> => {
 		const trace: unknown[] = [];
 		// 1. read on a fresh dir → null; scan is empty for this dir.
@@ -112,7 +119,8 @@ try {
 
 	const fileTrace = await runScenario(fileStore, dirs.file);
 	const memTrace = await runScenario(memStore, dirs.mem);
-	// The two stores live under different sandbox dirs — normalize the dir
+	const journalTrace = await runScenario(journalStore, dirs.journal);
+	// The three stores live under different sandbox dirs — normalize the dir
 	// path (and the task slug derived from it) before comparing traces.
 	const norm = (v: unknown): unknown =>
 		JSON.parse(
@@ -121,36 +129,49 @@ try {
 				.join("<DIR>")
 				.split(dirs.mem)
 				.join("<DIR>")
+				.split(dirs.journal)
+				.join("<DIR>")
 				.split(basename(dirs.file))
 				.join("<TASK>")
 				.split(basename(dirs.mem))
+				.join("<TASK>")
+				.split(basename(dirs.journal))
 				.join("<TASK>"),
 		) as unknown;
-	const firstDivergence = fileTrace.findIndex(
-		(x, i) => JSON.stringify(norm(x)) !== JSON.stringify(norm(memTrace[i])),
-	);
+	const traces = [fileTrace, memTrace, journalTrace];
+	let firstDivergence = -1;
+	for (let i = 0; i < fileTrace.length && firstDivergence === -1; i++) {
+		const a = JSON.stringify(norm(fileTrace[i]));
+		if (traces.some((t) => JSON.stringify(norm(t[i])) !== a)) firstDivergence = i;
+	}
 	check(
-		"M1.1 file and memory stores produce identical scenario traces",
+		"M1.1 file, memory and journal stores produce identical scenario traces",
 		firstDivergence === -1,
 		`first divergence at trace index ${firstDivergence}`,
 	);
 	check(
-		"M1.2 fresh-dir read is null on both stores",
-		fileTrace[0] === null && memTrace[0] === null,
+		"M1.2 fresh-dir read is null on all three stores",
+		fileTrace[0] === null && memTrace[0] === null && journalTrace[0] === null,
 	);
 	const scanned = fileTrace[3] as ExchangeManifest | null;
 	check(
-		"M1.3 scan filter: fake-backend dropped, legacy (no backend) + herdr kept — both stores",
+		"M1.3 scan filter: fake-backend dropped, legacy (no backend) + herdr kept — all three stores",
 		!!scanned &&
 			JSON.stringify(workerNames(scanned)) === JSON.stringify(["alpha", "beta", "delta", "omega"]) &&
-			JSON.stringify(workerNames(memTrace[3] as ExchangeManifest | null)) === JSON.stringify(workerNames(scanned)),
+			JSON.stringify(workerNames(memTrace[3] as ExchangeManifest | null)) === JSON.stringify(workerNames(scanned)) &&
+			JSON.stringify(workerNames(journalTrace[3] as ExchangeManifest | null)) === JSON.stringify(workerNames(scanned)),
 		JSON.stringify(scanned && workerNames(scanned)),
 	);
 	check(
-		"M1.4 stored manifest on disk is JSON-identical to the memory store's",
+		"M1.4 stored manifest on disk is JSON-identical across all three stores",
 		(() => {
 			const onDisk = JSON.parse(readFileSync(join(FILE_DIR, "manifest.json"), "utf8")) as ExchangeManifest;
-			return JSON.stringify(norm(onDisk)) === JSON.stringify(norm(memStore.read(MEMORY_DIR)));
+			const journalDisk = JSON.parse(readFileSync(join(JOURNAL_DIR, "manifest.json"), "utf8")) as ExchangeManifest;
+			return (
+				JSON.stringify(norm(onDisk)) === JSON.stringify(norm(memStore.read(MEMORY_DIR))) &&
+				JSON.stringify(norm(onDisk)) === JSON.stringify(norm(journalStore.read(JOURNAL_DIR))) &&
+				JSON.stringify(norm(onDisk)) === JSON.stringify(norm(journalDisk))
+			);
 		})(),
 	);
 	check(
@@ -213,6 +234,9 @@ try {
 		// root — the M5 dirs sit next to the M1 dirs, never nested inside them.
 		const m5FileDir = join(SANDBOX, "task-m5-file");
 		const m5MemDir = join(SANDBOX, "task-m5-mem");
+		const m5JournalDir = join(SANDBOX, "task-m5-journal");
+		const label = (store: typeof fileStore): string =>
+			store === fileStore ? "file" : store === memStore ? "memory" : "journal";
 		const m5 = async (store: typeof fileStore, dir: string): Promise<void> => {
 			await store.append(dir, makeWorker("her1", "pane-h1", "herdr"));
 			await store.append(dir, makeWorker("forg", "pane-f1", "fake"));
@@ -224,23 +248,24 @@ try {
 			const asFake = findOwn(store.scan("fake"));
 			const asOther = findOwn(store.scan("weird-backend"));
 			check(
-				`M5.1 ${store === fileStore ? "file" : "memory"} store, scan("herdr"): own + legacy kept, foreign "fake" dropped`,
+				`M5.1 ${label(store)} store, scan("herdr"): own + legacy kept, foreign "fake" dropped`,
 				JSON.stringify(workerNames(asHerdr)) === JSON.stringify(["her1", "legacy"]),
 				JSON.stringify(workerNames(asHerdr)),
 			);
 			check(
-				`M5.2 ${store === fileStore ? "file" : "memory"} store, scan("fake") — the FOREIGN name as active: mirror image, "herdr" hidden`,
+				`M5.2 ${label(store)} store, scan("fake") — the FOREIGN name as active: mirror image, "herdr" hidden`,
 				JSON.stringify(workerNames(asFake)) === JSON.stringify(["forg", "legacy"]),
 				JSON.stringify(workerNames(asFake)),
 			);
 			check(
-				`M5.3 ${store === fileStore ? "file" : "memory"} store, scan("weird-backend"): only legacy fail-open entries survive`,
+				`M5.3 ${label(store)} store, scan("weird-backend"): only legacy fail-open entries survive`,
 				JSON.stringify(workerNames(asOther)) === JSON.stringify(["legacy"]),
 				JSON.stringify(workerNames(asOther)),
 			);
 		};
 		await m5(fileStore, m5FileDir);
 		await m5(memStore, m5MemDir);
+		await m5(journalStore, m5JournalDir);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -319,8 +344,10 @@ try {
 } finally {
 	rmSync(FILE_DIR, { recursive: true, force: true });
 	rmSync(MEMORY_DIR, { recursive: true, force: true });
+	rmSync(JOURNAL_DIR, { recursive: true, force: true });
 	rmSync(join(SANDBOX, "task-m5-file"), { recursive: true, force: true });
 	rmSync(join(SANDBOX, "task-m5-mem"), { recursive: true, force: true });
+	rmSync(join(SANDBOX, "task-m5-journal"), { recursive: true, force: true });
 }
 
 if (failures > 0) {

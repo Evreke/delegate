@@ -17,12 +17,16 @@
  *   P3  Byte-identity: every verb artifact (report/q/p) is byte-equal — the
  *       journal `report`/`ask`/`progress` events never perturb the file
  *       projection.
- *   P4  Read parity: both stores return the same manifest after the scenario.
+ *   P4  Read parity: both stores return the same manifest after the scenario;
+ *       P4.2 pins the journaled `report` payload as the published report JSON
+ *       verbatim (canonical serialization identity, key order included).
  *   P5  Projection-disabled leg (cutover criterion 2, deterministic half): with
  *       `swarm.projection=false` the journal store writes NO manifest.json,
  *       yet replays the SAME manifest as the file mode wrote — the journal
  *       alone carries the fleet.
  *   P6  Scan parity: both stores' scan() over the sandbox root agree.
+ *   P7  Sequence-scoped replay: a same-name retry's stamp mutates only the
+ *       live entry (the `entryIndex` additive payload field).
  *
  * Fail-fast (AGENTS.md command discipline): every child spawn is bounded and a
  * top-level watchdog exits non-zero no matter what.
@@ -220,11 +224,23 @@ try {
 	);
 	{
 		const reader = createJournalReader({ dbPath: journalEnv.SWARM_JOURNAL_DB! });
-		const kinds = reader.eventsAfter(0).map((e) => e.kind);
+		const events = reader.eventsAfter(0);
+		const kinds = events.map((e) => e.kind);
 		check(
 			"P4.1 the journal carries the spawn/stamp events plus the CLI `report` kind",
 			kinds.includes("spawn") && kinds.includes("stamp") && kinds.includes("report"),
 			kinds.join(","),
+		);
+		// P4.2 (verbatim contract): the journaled `report` payload must be the
+		// VALIDATED report JSON verbatim — canonical serialization identity with
+		// the published file's JSON content (key order included), not merely a
+		// re-serializable value.
+		const reportEvent = events.find((e) => e.kind === "report");
+		const fileJson = journalCapture.report.replace(/\n$/, "");
+		check(
+			"P4.2 the journaled `report` payload equals the published report JSON verbatim",
+			!!reportEvent && fileJson.length > 0 && JSON.stringify(reportEvent.payload) === JSON.stringify(JSON.parse(fileJson)),
+			JSON.stringify({ payload: reportEvent?.payload, file: fileJson }),
 		);
 		reader.close();
 	}
@@ -274,6 +290,34 @@ try {
 			JSON.stringify(fileScanned) === JSON.stringify(journalScanned) &&
 				JSON.stringify(fileScanned) === JSON.stringify(["task-parity"]),
 			`file=${fileScanned.join(",")} journal=${journalScanned.join(",")}`,
+		);
+	}
+
+	// --- sequence-scoped stamps: same-name retry (P7) -----------------------
+	{
+		const retryDir = join(EXCHANGE_ROOT, "task-parity-retry");
+		const retryStore = createJournalManifestStore({
+			dbPath: join(SANDBOX, "journal-retry.db"),
+			sessionId: SESSION_ID,
+			projection: true,
+		});
+		const stale: ManifestWorker = { ...makeWorker(WORKER), briefPath: join(retryDir, `brief-${WORKER}.md`), reportPath: join(retryDir, `report-${WORKER}.json`) };
+		// 1. the dead original, 2. its same-name respawn (a second index).
+		await retryStore.append(retryDir, stale);
+		await retryStore.append(retryDir, { ...stale, placement: { ...stale.placement, paneId: "pane-live" } as ManifestWorker["placement"] });
+		// 3. a stamp aimed at the LIVE entry only (the last index), mimicking a
+		//    respawn/collect fold scoped to the live embodiment.
+		const after = await retryStore.update(retryDir, (m) => ({
+			...m,
+			workers: m.workers.map((w, i) => (i === m.workers.length - 1 ? { ...w, collectedAt: FIXED_TS } : w)),
+		}));
+		const replayed = retryStore.read(retryDir) ?? after;
+		check(
+			"P7.1 a same-name retry's stamp mutates only the live entry (sequence-scoped replay)",
+			replayed.workers.length === 2 &&
+				replayed.workers[0]!.collectedAt === undefined &&
+				replayed.workers[1]!.collectedAt === FIXED_TS,
+			JSON.stringify(replayed.workers.map((w) => ({ pane: w.placement.paneId, collectedAt: w.collectedAt }))),
 		);
 	}
 } finally {

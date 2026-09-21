@@ -38,8 +38,9 @@
  * facade is the entry point existing docs still name): the watcher is
  * advisory by contract (a watcher failure must NEVER affect a spawn or a
  * collect); delivery is ownership fail-closed (the ONE canonical verdict in
- * watch-role.ts); dedup memory is a cache of the durable delivered-facts
- * store; mounts are keyed by session file in a globalThis registry (a second
+ * watch-role.ts); dedup memory is a cache of the durable journal cursor
+ * (src/watch-cursor.ts — the retired delivered-facts store's replacement);
+ * mounts are keyed by session file in a globalThis registry (a second
  * mount for an already-mounted session is refused — audit D2); retire stamps
  * persist in the per-watcher satellite file, the manifest is never written
  * by the watcher; delegate_status is read-only by contract; /delegate-*

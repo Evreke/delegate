@@ -10,6 +10,22 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Changed
 
+- **Watcher consumes the journal cursor; the delivered-facts store is
+  retired (#26, swarm-core-v1).** Wake-up dedup moved from the per-task
+  `delivered-<key>.json` files to a durable per-audience journal cursor
+  (`cursor-<key>.json`, `src/watch-cursor.ts`): each tick reads
+  `eventsAfter(cursor)` through `src/swarm/journal-read.ts` (a throwing read
+  skips the tick — advisory by contract, spawn/collect never affected) and a
+  successful send commits the delivered facts and advances the cursor `seq`.
+  The wake-up text formats and event names are unchanged; the same fixtures
+  through old and new detection produce the same event stream
+  (`test/watcher-journal-parity-check.ts`). Ownership verdicts gained a
+  journal-row predicate (`journalAudienceMatch`) with the unchanged
+  fail-closed semantics; the retire engine (§23) is untouched. First-run
+  migration: an absent cursor reads as `seq 0` with no records (never
+  seeded) — a single bounded repeat volley on the first post-upgrade session,
+  documented as with the stage-B migration.
+
 - **Worker prompt now speaks the `swarm` CLI verbs (#25).** `briefPrompt` instructs
   the worker to interact through `bun <extension>/src/swarm/cli.ts` —
   `read-brief`, `ask`, `poll-answer`, `write-progress`, `write-report` — instead

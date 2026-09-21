@@ -189,25 +189,27 @@ export {
 } from "./mailbox-store.ts";
 
 // Wave 3a transition facade (temporary, one release per the plan): the
-// watcher satellite persistence (retire-stamp layers + the durable
-// delivered-facts store) moved verbatim to src/watch-store.ts — re-exported
-// here so every existing import site keeps resolving unchanged; sites flip
-// to the new module in the follow-up commit. Same watcherKey convention,
-// same single-writer discipline.
-export type { DeliveredStoreFile, DeliveryRecord, RetireStamps, WatchStampLayer } from "./watch-store.ts";
+// watcher satellite persistence (retire-stamp layers) moved verbatim to
+// src/watch-store.ts, and the durable delivery dedup moved to the journal
+// cursor (src/watch-cursor.ts, issue #26 — `delivered-*.json` retired).
+// Re-exported here so every existing import site keeps resolving unchanged.
+export type { RetireStamps, WatchStampLayer } from "./watch-store.ts";
 export {
-	DELIVERED_STORE_SCHEMA_VERSION,
-	appendDeliveredRecords,
-	deleteWorkerDeliveryRecords,
-	deliveredStorePathFor,
-	deliveryRecordKey,
 	mergeRetireStamps,
-	readDeliveredStore,
 	readWatchStampLayers,
 	updateWatchStamps,
 	watchStampsPathFor,
 	watcherKeyFor,
 } from "./watch-store.ts";
+export type { CursorRecord, WatchCursorFile } from "./watch-cursor.ts";
+export {
+	WATCH_CURSOR_SCHEMA_VERSION,
+	commitWatchCursor,
+	cursorRecordKey,
+	deleteWorkerCursorRecords,
+	readWatchCursor,
+	watchCursorPathFor,
+} from "./watch-cursor.ts";
 
 // ============================================================================
 // SECTION 1 — src/exchange.ts (verbatim, incl. its review-verified headers)

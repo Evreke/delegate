@@ -29,7 +29,7 @@
 
 import { statSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
 	becameCollectedOnDisk,
@@ -53,6 +53,7 @@ import {
 } from "./watch-cursor.ts";
 import { watcherKeyFor, type StampLayerCacheEntry } from "./watch-store.ts";
 import { createJournalReader, type JournalEvent, type JournalReader } from "./swarm/journal-read.ts";
+import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from "./swarm/storage.ts";
 import { WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
 import { sameSessionPath } from "./watch-role.ts";
 // Wave 4 item 5 (reliability finding 10): per-mount caches for the tick's
@@ -147,9 +148,10 @@ export interface WatcherDeps {
 	) => Promise<void>;
 	/** Journal read seam (issue #26): the cursor source. Defaults to
 	 *  createJournalReader() (lazily opened on the first tick). The watcher
-	 *  reads `eventsAfter(cursor)` each tick and advances the cursor `seq` on a
-	 *  successful commit; a throwing reader SKIPS the tick (advisory, Law 8)
-	 *  and can never affect a spawn or collect. `null` disables the read
+	 *  reads `eventsAfter(cursor)` each tick and advances the cursor `seq` ONLY
+	 *  over rows of THIS audience's live fleets (session_id + task); foreign-
+	 *  fleet rows never move it. A throwing reader SKIPS the tick (advisory,
+	 *  Law 8) and can never affect a spawn or collect. `null` disables the read
 	 *  entirely (tests without a journal). */
 	journal?: { eventsAfter(cursor: number): JournalEvent[] } | null;
 	/** Snapshot source override (tests drive fixtures; production uses
@@ -217,6 +219,21 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
 		}
 		return journalReader;
 	}
+	// #26 scoping: the audience's live fleets are the snapshot task dirs; a
+	// fleet is identified by the journal's own (session_id, task) key. Rows of
+	// foreign fleets are read (one cursor read) but never advance this
+	// audience's cursor and never fold owner fields.
+	let swarmCfg: SwarmStorageConfig | undefined;
+	const fleetKeyFor = (dir: string): string => {
+		if (swarmCfg === undefined) {
+			try {
+				swarmCfg = resolveSwarmStorage();
+			} catch {
+				swarmCfg = { storage: "files", projection: true, warnings: [] };
+			}
+		}
+		return `${swarmSessionIdFor(dir, swarmCfg)}\u0000${basename(dir)}`;
+	};
 	// Content cache of this audience's cursor files, keyed by task dir, kept
 	// fresh by the file's mtime: a tick re-reads a dir's cursor only when its
 	// mtime moved (or the cache was invalidated by this mount's own write).
@@ -449,15 +466,33 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// reader (injected seam) skips the tick and can never affect a spawn or
 		// collect. The real reader is total (a missing/corrupt journal reads as
 		// no new rows), so this guard only fires on a genuinely broken seam.
+		// SCOPING: only rows of THIS audience's live fleets (session_id + task)
+		// advance the cursor — a foreign fleet's rows are never "consumed" here
+		// (they may belong to another session's audience). The global last seq
+		// is only the migration fallback when NO fleet is live (nothing commits
+		// on a quiet tick anyway).
 		let journalSeqNow = 0;
 		if (durableEnabled) {
 			try {
 				const reader = journalFor();
 				if (reader !== null && snapOrNull !== null) {
+					const liveFleets = new Set<string>();
 					let baseSeq = 0;
-					for (const w of snapOrNull.workers) baseSeq = Math.max(baseSeq, storeCursorFor(w.dir).seq);
+					for (const w of snapOrNull.workers) {
+						baseSeq = Math.max(baseSeq, storeCursorFor(w.dir).seq);
+						liveFleets.add(fleetKeyFor(w.dir));
+					}
 					const rows = reader.eventsAfter(baseSeq);
-					journalSeqNow = rows.length > 0 ? rows[rows.length - 1]!.seq : baseSeq;
+					let scopedSeq = baseSeq;
+					for (const row of rows) {
+						if (liveFleets.has(`${row.sessionId}\u0000${row.task}`)) scopedSeq = Math.max(scopedSeq, row.seq);
+					}
+					journalSeqNow =
+						liveFleets.size > 0
+							? scopedSeq
+							: rows.length > 0
+								? rows[rows.length - 1]!.seq
+								: baseSeq;
 				}
 			} catch (err) {
 				log(`tick skipped (journal read failed: ${errText(err)}) — advisory, no outcome affected`);

@@ -359,3 +359,256 @@ shapes · the E_* code names. Extension happens by addition; correction happens
 by deprecation with `prepareArguments`-style compatibility, never by silent
 reshape. The Law 13 lifecycle event names are additions to this list, never
 renames of the entries already here.
+
+## 4. Design records
+
+A design record is the binding design text behind a milestone: it resolves
+its issue's numbered requirements in measurable wording, states every
+decision falsifiably or marks it `[operator-decision-pending]`, and carries
+the force of section 1 once the operator approves it (the milestone's
+acceptance gate). A record plugs into the laws; it never restates them.
+Rejected alternatives appear only as the one-paragraph binding rejections
+the originating issue demands — never as decision archaeology.
+
+### 4.1 swarm-core exchange: verb interface, journal, resume reconciliation (issue #21)
+
+Status: DRAFT — gate: operator approval (the issue's acceptance gate). On
+approval this record binds the swarm-core-v1 implementation issues (#18,
+#22, #23, #25, #26, #27, #28, #29, #30, #31); on rejection it is rewritten,
+never patched piecemeal. This record is the design home Law 13 points at:
+it specifies the journal (§4.1.2), the two-phase storage cutover (§4.1.3),
+the watcher cursor (§4.1.2) and resume reconciliation (§4.1.4); the
+read-model projection (#29) and its read API (#30) are specified by their
+own issues under this record's constraints.
+
+#### 4.1.1 Verb interface — the `swarm` CLI
+
+Worker-side verbs — the ONLY worker contract: `read-brief`, `write-report`,
+`ask`, `poll-answer`, `report-progress`. Orchestrator-side verbs — `spawn`,
+`status`, `answer`, `steer`, `release`, `teardown` — are specified
+symmetrically but stay wrapped by the pi tools in this milestone (the
+frozen surface does not move: tool names and parameter shapes are
+byte-identical).
+
+Rules:
+
+- A worker interacts through verbs, never raw paths. After the `briefPrompt`
+  switch (#25) the worker prompt names only verb invocations; the raw-file
+  phrasing survives one release behind the config flag `swarm.verbsFallback`
+  (default on in #25's release, removed after).
+- Identity travels with the invocation: every worker verb carries task and
+  worker identity (`--task` / `--worker` flags, or the environment the spawn
+  flow sets); the CLI builds every path through `src/expaths.ts` exclusively
+  (static pin per #18's acceptance, Law 6).
+- Result contract (Law 8): success = exit 0 plus a JSON result on stdout;
+  failure = non-zero exit plus a structured stdout error carrying an E_* code
+  and a recovery hint. New codes join the E_* taxonomy by addition, never by
+  redefinition.
+- `write-report` validates the report against the resolved schema (the v1
+  base plus the brief-declared fragment, via `src/report-schema.ts`) BEFORE
+  writing and exits with the structured error on failure — the worker learns
+  immediately instead of through a watcher wake-up one tick later. Validation
+  moves from collect time to write time; collect keeps its own validation
+  (fail-closed), and a verb-written report failing collect-time validation is
+  a bug class with a regression check (Law 10).
+- Phase A output is byte-identical to the current file writers (golden test,
+  #18) — Law 7 wire formats frozen.
+- The five worker verb names and six orchestrator verb names join the frozen
+  surface (section 3) in the commit that ships them; extension by addition
+  only.
+
+#### 4.1.2 The journal — append-only, single-writer, durable
+
+Location: ONE SQLite database at `join(getAgentDir(), "delegate-journal",
+"events.db")` (Law 1 — resolved through pi's `getAgentDir()`, never the
+exchange root, which dies on reboot; never the repository). Schema DDL
+(version 1, `PRAGMA user_version = 1` — the Law 7 version gate for the
+database itself):
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = FULL;
+PRAGMA user_version = 1;
+CREATE TABLE IF NOT EXISTS events (
+  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         TEXT NOT NULL,   -- ISO-8601 UTC, injected clock (ClockPort)
+  kind       TEXT NOT NULL,   -- one of the closed kind set below
+  session_id TEXT NOT NULL,   -- owning orchestrator session (the SwarmGraph SessionId: stable hash of the session file path)
+  task       TEXT NOT NULL,   -- exchange task name
+  worker     TEXT,            -- canonical worker name; NULL on fleet-scoped events
+  payload    TEXT NOT NULL    -- kind-shaped JSON (contract below)
+);
+CREATE INDEX IF NOT EXISTS events_by_fleet ON events(session_id, task, seq);
+```
+
+Kinds — the closed v1 set (new kinds only by addition, never rename):
+`spawn`, `stamp`, `collect`, `ask`, `answer`, `steer`, `progress`, `retire`,
+`dead-reboot`, `reconcile-summary`, `termination-notice`, `partial-report`.
+The last two are forward-compat with #15: they may exist in the schema
+before their producers land. `reconcile-summary` is this record's addition
+over the issue's enumeration — it makes "exactly one summary wake per fleet"
+(§4.1.4) dedup-able through the journal itself. Each kind name joins
+section 3's frozen list in the commit that lands its first producer.
+
+Payload shapes (JSON; the listed fields are the v1 contract, additive-only
+after that):
+
+- `spawn` `{backend, placementRef, briefPath, briefText, depth?}` —
+  `briefText` is the full brief inline: the journal is where briefs survive
+  a reboot (§4.1.4 step 5). `depth` rides along once #28 lands (additive,
+  the passport precedent).
+- `stamp` `{field, value}` — the mirror of every manifest stamp the pipeline
+  writes (`collectedAt`, `sessionPath` once #16 lands, …).
+- `collect` `{status, reportPath, archivePath}`.
+- `ask` / `answer` / `steer` `{text}` — the mailbox envelope fields, verbatim.
+- `progress` — the `ProgressEvent` shape (`src/host.ts`), verbatim.
+- `retire` `{reason}`.
+- `dead-reboot` `{detectedAt, lastSeq}` — `lastSeq` is the worker's last
+  journal seq before the loss was detected.
+- `reconcile-summary` `{lost: string[], collectedBeforeLoss: number}` —
+  fleet-scoped (worker NULL); the wake text the watcher renders from it is
+  the frozen per-fleet summary of §4.1.4 step 4.
+- `termination-notice` `{graceMs}` — producer: #15.
+- `partial-report` `{captured: boolean, text?}` — producer: #15.
+
+Single-writer: `src/swarm/journal.ts` is the ONLY writer module. No UPDATE
+or DELETE operation exists in the module — append-only is enforced by
+absence, not convention. Every append is one transaction, so a torn write
+leaves the last record intact or absent, never corrupt (#22's acceptance
+check). Static pin (#31, Law 6): no other `src/` module imports a sqlite
+driver.
+
+Advisory by contract (Law 8, Law 13): a journal append failure is recorded
+and skipped — structurally incapable of failing a spawn or collect; a
+fault-injection check proves it before the Phase B default flip (§4.1.3).
+
+Append sites: the journal rows are written at the lifecycle points that
+today emit the host session journal events (`delegate-fleet`,
+`spawn`/`collect` — section 3). Those facts are the seed of this journal,
+never a parallel copy (§0.1.1, Law 9): one site, one fact, one spelling —
+fleet history is never re-derived by scanning the exchange directory.
+
+Cursor: the reader API is `eventsAfter(cursor)` — all rows with
+`seq > cursor`, ordered by `seq`. The cursor is the last consumed `seq`,
+persisted per audience session; it replaces the watcher's seen-map plus
+delivered-facts store as the dedup mechanism — durable and exactly-once by
+construction (#26). `swarm events --after <seq>` (#30) exposes this reader
+verbatim.
+
+Retention: none in v1 — the journal grows unboundedly with fleet activity;
+rotation or compaction is `[operator-decision-pending]` and lands, if ever,
+as an additive decision that never rewrites existing rows.
+
+#### 4.1.3 Two storage phases
+
+Phase A — files are truth (#18): the CLI writes today's files
+byte-identically (golden tests; the watcher is untouched; rollback is
+trivial — stop shipping the CLI). The journal module (#22) may land in the
+same release but receives no production writes in Phase A.
+
+Phase B — journal is truth (#23): every verb write and every tool-side
+lifecycle transition appends to the journal transactionally; the exchange
+files become a generated projection with the byte format frozen (Law 7);
+the swarm CLI verbs are the projection's only writers (#31 pin). The
+manifest gains a third `ManifestStore` port implementation backed by the
+journal, parity-pinned against the file-backed implementation (the existing
+two-impl parity precedent). Gate: config flag `swarm.storage: "files" |
+"journal"`, default `"files"` in #23's release.
+
+A→B cutover criteria (flipping the DEFAULT to `"journal"` — always a
+separate operator-approved PR, never bundled with #23):
+
+1. `test/swarm-parity-check.ts` green on main: identical flows over both
+   storage modes produce byte-identical projections.
+2. The full delegate cycle works on the journal alone (projection disabled
+   by flag; rpc backend leg behind `RPC_E2E=1` green).
+3. The journal lifecycle-replay check (#22 acceptance 1) green.
+4. The advisory fault-injection check green: a failing journal cannot fail
+   a spawn or collect.
+5. At least one full release shipped with the flag present and parity green.
+6. Operator sign-off recorded in the cutover PR.
+
+#### 4.1.4 Resume reconciliation (binds #27)
+
+Trigger: `session_start`, after watcher mount. Advisory by contract: a
+reconciliation failure never blocks session start — it is logged and
+skipped.
+
+Procedure:
+
+1. Journal scan: fleets (`session_id`, `task`) owned by this session.
+   Ownership uses the canonical `watch-role.ts` verdict — fail-closed;
+   foreign fleets are untouched.
+2. For every worker with no terminal event (`collect`, `retire`,
+   `dead-reboot`), placement liveness is checked through the Transport seam
+   ONLY — backend-blind (rpc child alive? herdr pane exists? — the adapter
+   answers; the reconciler never branches on a backend).
+3. Each dead placement gets a `dead-reboot` event. The event is terminal:
+   step 2's terminal-event check sees it, so a worker is never double-marked.
+4. Per affected fleet, ONE `reconcile-summary` event; the watcher delivers
+   it through its cursor as exactly one per-fleet summary wake: "fleet
+   <task>: N workers lost to reboot, briefs preserved, M reports collected
+   before loss". Measurable: per reconciliation run, per fleet, at most one
+   summary wake; a later reconciliation over the same fleet finds no
+   un-terminated workers and wakes nothing.
+5. The operator decides: reap via `/delegate-teardown`, or respawn from the
+   journal — the `spawn` payload's `briefText` is the preserved brief, so
+   respawn needs nothing from the dead exchange root. With #16 landed, the
+   respawn additionally re-enters the worker's persisted `sessionPath`
+   (§4.1.5).
+
+Phase note: reconciliation exists only once the journal carries production
+writes (#23). In Phase A the post-reboot picture stays today's — an
+accepted loss, recorded here rather than discovered in the field.
+
+#### 4.1.5 Interaction with #10/#11/#12, #15, #16, #28–#31
+
+- #10/#11/#12 (scheduled wakes): this record fixes the rule, not the landing
+  order. When a scheduled-wake stage lands on top of the journal, its
+  lifecycle events (scheduled, fired, cancelled, restored) are journal kinds
+  from day one — added to the §4.1.2 kind set by addition — and its durable
+  store (#12) migrates to journal + cursor per #26's migration rule (the
+  first run re-derives the cursor conservatively; a bounded repeat volley is
+  documented, as with the stage-B migration precedent). A stage that lands
+  before the journal ships with its file store and migrates when #26 lands.
+  Each affected PR states the chosen order explicitly (#26's constraint).
+- #16 (durable rpc `sessionPath`): #16 makes the WORKER's own session
+  resumable; §4.1.4 makes the ORCHESTRATOR's picture honest. Interaction:
+  with Phase B the `sessionPath` manifest stamp rides a `stamp` event
+  (`field: "sessionPath"`), and §4.1.4 step 5 respawn re-enters the
+  persisted session when one exists. Either landing order works: #27-first
+  respawns from `briefText` with fresh context; #16-first respawns re-enter
+  accumulated context. This record does not resolve #16's design.
+- #15 (termination handoff): the `termination-notice` and `partial-report`
+  kinds and their payload shapes are reserved in §4.1.2; the handoff
+  mechanics themselves stay #15's to design.
+- #28 (manifest `depth`): the `spawn` payload carries `depth` once #28
+  lands — additive, no schema-version bump (the passport precedent).
+- #29/#30 (SwarmGraph, read API): the read-model is a pure projection over
+  this journal plus the manifest store plus optional live transport status;
+  `swarm snapshot` and `swarm events --after` are its client surface. Their
+  JSON contracts are versioned (Law 7) and golden-tested (Law 10).
+- #31 (static pins): the sqlite-confinement, watcher-no-direct-FS and
+  single-projection-writer pins enforce §4.1.2 and §4.1.3 mechanically
+  (Law 6).
+
+#### 4.1.6 Rejected alternatives (binding rejections)
+
+1. Write-through registry (files stay truth, the journal mirrors every
+   write): rejected — two sources of truth that can drift (Law 9); every
+   write path gains a second failure mode; reconciliation would have to
+   arbitrate between stores. This record instead has exactly one truth per
+   phase, a flag-gated cutover, and a parity check proving equivalence
+   during the transition.
+2. Raw SQL as the worker contract: rejected — the schema leaks into every
+   worker prompt (prompt fragility); append-only cannot be enforced (SQL
+   can UPDATE/DELETE); one mis-scoped statement has whole-fleet blast
+   radius against the single shared database. Verbs are the worker
+   contract; SQL stays below `src/swarm/journal.ts`, confined by the #31
+   pin.
+3. Files-forever (exchange files stay the system of record): rejected — no
+   audit queries (history becomes filesystem archaeology); the exchange
+   root dies on reboot while pi sessions resume (the manifest-loss incident
+   class: the orchestrator cannot even state that its fleet died); every
+   observation UI would reimplement format knowledge, which Law 13's client
+   rule forbids.

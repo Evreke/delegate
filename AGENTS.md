@@ -54,7 +54,7 @@ Every agent in this repo (workers and orchestrators alike) follows these rules. 
 2. The next round on the same surface starts only after the field trial passes, or its findings become that round's brief. A passing check suite is the start of acceptance, not its end.
 3. Field findings accumulate and batch into rounds; each round's brief may cover several findings at once.
 4. Priorities live outside the repo — GitHub issues on `origin`, grouped under the fleet-dashboard milestone. Re-deriving priorities per session from the freshest complaint is the failure mode this section exists to prevent.
-5. **Acceptance list is a PR artifact.** The PR itself carries the explicit acceptance list — the behaviors it promises, each exercisable in the real environment. The operator's field trial executes the list; deriving it at trial time is a PR defect the reviewer must catch (Law 11).
+5. **Acceptance list is a PR artifact.** The PR itself carries the explicit acceptance list — the behaviors it promises, each exercisable in the real environment. The operator's field trial executes the list; deriving it at trial time is a PR defect the reviewer must catch (Law 12).
 6. **Binding-rule conflicts stop for the operator.** When two binding rules cannot both be satisfied (for example: the incident pin and the regression scenario do not fit the fail-fast bounds of one commit), stop and ask the operator via the mailbox. Never satisfy one binding rule by silently violating another.
 
 ## Trunk, releases, and QA gates
@@ -62,7 +62,7 @@ Every agent in this repo (workers and orchestrators alike) follows these rules. 
 - **Trunk discipline.** `main` is always releasable. Work happens in
   `feature/<topic>` / `fix/<topic>` branches, lands via squash-merge PRs. No
   direct commits to `main`. The canonical green/red verdict of `main` is
-  produced only by the merge gate's serialized run (Law 11) — agent-local
+  produced only by the merge gate's serialized run (Law 12) — agent-local
   runs are advisory.
 - **Release authority is human.** The operator is the sole release authority:
   the tag and GitHub Release are created only after the operator has

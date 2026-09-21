@@ -853,5 +853,47 @@ check(
 	`over-threshold without a row: ${unplanned.join(", ") || "none"}; rows without an over-threshold file: ${stalePlans.join(", ") || "none"}; duplicate rows: ${duplicateRows}`,
 );
 
+// ---------------------------------------------------------------------------
+// 8. Law 11 — no secrets in the repository. Scan all git-tracked files for
+// secret-shaped literals: JWT-like payloads, provider sk-keys, and literal
+// assignments to credential-shaped env names. Comments/CHANGELOG prose that
+// merely names the env vars are fine — only literal VALUES fail.
+// ---------------------------------------------------------------------------
+
+const tracked = spawnSync("git", ["ls-files"], { encoding: "utf8", cwd: ROOT });
+const trackedFiles = tracked.status === 0
+	? tracked.stdout.split("\n").map((f) => f.trim()).filter(Boolean)
+	: [];
+check("T1.11a git ls-files usable for the secrets scan", tracked.status === 0 && trackedFiles.length > 0);
+
+const SECRET_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
+	// JWT-shaped tokens (three base64url segments, first starts with eyJ)
+	{ name: "jwt-like token", re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/ },
+	// Provider-style secret keys (sk-…, ghp_…, xox…)
+	{ name: "provider-style secret key", re: /\b(sk|ghp|gho|github_pat|xox)[-_][A-Za-z0-9_-]{16,}/ },
+	// Literal assignment to a credential-shaped variable (value present, not a
+	// placeholder/name reference): KEY=/SECRET=/TOKEN= with a quoted value.
+	{ name: "literal credential assignment", re: /(MODEL_API_KEY|PI_LLM_API_KEY|API_KEY|APIKEY|SECRET|PASSWORD|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY)\s*[:=]\s*["'][^"']{8,}["']/ },
+];
+const secretSkip = new Set(["bun.lock"]); // lockfile: huge, no credential literals by construction
+const secretHits: string[] = [];
+for (const f of trackedFiles) {
+	if (secretSkip.has(f)) continue;
+	let content: string;
+	try {
+		content = readFileSync(resolve(ROOT, f), "utf8");
+	} catch {
+		continue; // deleted between ls-files and read — not a secret issue
+	}
+	for (const { name, re } of SECRET_PATTERNS) {
+		if (re.test(content)) secretHits.push(`${f} (${name})`);
+	}
+}
+check(
+	"T1.11 Law 11: no secret-shaped literals in tracked files (no keys in the repository, ever)",
+	secretHits.length === 0,
+	secretHits.join(", ") || "clean",
+);
+
 console.log(failures === 0 ? "\nALL STATIC CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

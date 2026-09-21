@@ -8,6 +8,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Added
+
+- **Read API for external UIs: `swarm snapshot` + `swarm events --after
+  <seq>` (#30, swarm-core-v1).** The `swarm` CLI now exposes the two
+  orchestrator-side read verbs that make it the UI's backend contract (Law
+  13: observation clients read the read-model, never files or the database).
+  `snapshot` serializes the SwarmGraph with the real dependencies injected
+  (journal reader + the configured mode's ManifestStore) — a PURE READ,
+  zero writes: in journal mode the manifest scan goes through the read-only
+  journal replay (`scanManifestsViaJournalReader`, extracted from the
+  journal-backed store so one spelling serves both), never the store
+  constructor whose writer open would create/migrate the database. `events
+  --after <seq>` exposes the journal cursor reader verbatim and carries the
+  DP7 retention counters (`journal.count` / `journal.dbSizeBytes`). Both
+  envelopes are versioned contracts (Law 7: `schemaVersion` 1; the snapshot's
+  graph carries its own existing stamp) and byte-pinned by goldens in
+  `test/swarm-api-check.ts` — every source degraded (no journal, no exchange
+  root, no live transport, no usage) still yields a valid snapshot/events
+  result with degraded fields, exit 0 (Law 8). The read verbs require no
+  worker identity and join the frozen verb surface by addition (§4.1.1).
+
 ### Changed
 
 - **Watcher consumes the journal cursor; the delivered-facts store is

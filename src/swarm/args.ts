@@ -1,8 +1,9 @@
 /**
  * pi-delegate — src/swarm/args.ts — the swarm CLI argument parser.
  *
- * MODULE_CONTRACT — a tiny, dependency-free argv parser for the five worker
- * verbs. Shape: `swarm <verb> [--flag value | --flag=value] [positionals]`.
+ * MODULE_CONTRACT — a tiny, dependency-free argv parser for the `swarm` CLI
+ * (the five worker verbs plus the orchestrator-side read verbs `snapshot` /
+ * `events`, #30). Shape: `swarm <verb> [--flag value | --flag=value] [positionals]`.
  * Value-taking flags are enumerated (VALUE_FLAGS); every other `--name` token
  * is a boolean flag. `--option` is repeatable and accumulates into an array
  * (the `ask` verb's multiple-choice surface); `--options a,b,c` is the
@@ -37,6 +38,7 @@ const VALUE_FLAGS: ReadonlySet<string> = new Set([
 	"interval",
 	"file",
 	"schema-dir",
+	"after",
 ]);
 
 export interface ParsedArgs {

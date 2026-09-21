@@ -1,17 +1,21 @@
 #!/usr/bin/env bun
 /**
- * pi-delegate — src/swarm/cli.ts — the `swarm` worker-verb CLI.
+ * pi-delegate — src/swarm/cli.ts — the `swarm` CLI dispatcher.
  *
  * MODULE_CONTRACT — the entry point and dispatcher of the `swarm` bun script
- * shipped with the extension (ARCHITECTURE.md §4.1.1). It exposes exactly the
- * FIVE worker verbs — `read-brief`, `write-report`, `ask`,
- * `poll-answer`, `write-progress` — and nothing else. Phase A writes today's
- * exchange files byte-identically (Law 7). Phase B (issue #23, §4.1.3):
- * under `swarm.storage: "journal"` every verb write appends its journal
- * event FIRST (journal = truth) and then writes the byte-frozen file
- * projection — the journal append is advisory (Law 8: a journal failure is
- * recorded in the success envelope's `journal` field, never a verb failure);
- * the default remains "files" (no journal write at all) this release.
+ * shipped with the extension (ARCHITECTURE.md §4.1.1). It exposes the FIVE
+ * worker verbs — `read-brief`, `write-report`, `ask`, `poll-answer`,
+ * `write-progress` — plus, since #30, the TWO orchestrator-side read verbs
+ * `snapshot` and `events` (the read API — Law 13's client surface). The read
+ * verbs require NO worker identity (no SWARM_TASK/SWARM_WORKER gate; they are
+ * orchestrator-side reads, not worker verbs) but still fail E_SWARM_USAGE on
+ * malformed invocations (stray positionals, a missing/non-integer --after).
+ * Phase A writes today's exchange files byte-identically (Law 7); Phase B
+ * (issue #23, §4.1.3) is unchanged by #30: under `swarm.storage: "journal"`
+ * every WORKER verb write appends its journal event FIRST (journal = truth)
+ * and then writes the byte-frozen file projection — the journal append is
+ * advisory (Law 8: a journal failure is recorded in the success envelope's
+ * `journal` field, never a verb failure); the read verbs NEVER write at all.
  *
  * Worker identity travels by ONE canonical mechanism: the spawn flow exports
  * SWARM_TASK / SWARM_WORKER; `--task` / `--worker` are explicit overrides
@@ -23,7 +27,8 @@
  * = non-zero exit + a structured stdout error object carrying an E_* code and
  * a hint (./result.ts).
  *
- * Dependencies: ./args.ts, ./context.ts, the five verb modules, ./result.ts,
+ * Dependencies: ./args.ts, ./context.ts, the five worker verb modules, the
+ * two read verb modules (./snapshot.ts, ./events.ts), ./result.ts,
  * ./storage.ts (the Phase B journal plumbing the verbs call). No herdr
  * adapter import (Law 4).
  *
@@ -41,21 +46,31 @@ import { runPollAnswer } from "./poll-answer.ts";
 import { runReadBrief } from "./read-brief.ts";
 import { runWriteProgress } from "./write-progress.ts";
 import { runWriteReport } from "./write-report.ts";
+import { runEvents } from "./events.ts";
+import { runSnapshot } from "./snapshot.ts";
 import { emitFailure, SwarmError } from "./result.ts";
 
 /** The frozen worker verb set (section 3 frozen-surface addition). */
 export const WORKER_VERBS: ReadonlyArray<string> = ["read-brief", "write-report", "ask", "poll-answer", "write-progress"];
 
+/** The orchestrator-side read verbs (#30, the read API — Law 13's client
+ *  surface; joins the frozen surface by addition per §4.1.1's rule). */
+export const READ_VERBS: ReadonlyArray<string> = ["snapshot", "events"];
+
+const ALL_VERBS = [...WORKER_VERBS, ...READ_VERBS];
+
 const USAGE = `swarm <verb> [flags]
 
-Verbs:
+Worker verbs (identity: SWARM_TASK / SWARM_WORKER, --task / --worker override):
   read-brief      <briefPath> | --brief <path>
   write-report    [--brief <path>] [--file <path>] [--schema-dir <dir>]   (report JSON on stdin when --file is absent)
   ask             --question <text> [--context <text>] [--option <o>]... [--options a,b,c]
   poll-answer     [--wait <ms>] [--interval <ms>]
   write-progress  --phase <label> [--pct <0-100>] [--note <text>]
 
-Identity: SWARM_TASK / SWARM_WORKER (--task / --worker override).
+Read verbs (orchestrator-side, no identity needed):
+  snapshot                                            (the SwarmGraph JSON — the read-model's whole-state read)
+  events          --after <seq>                       (journal rows with seq > cursor, + retention counters)
 `;
 
 /** Dispatch one parsed invocation; the write verbs are async in Phase B
@@ -84,8 +99,27 @@ async function dispatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promise<voi
 		case "write-progress":
 			await runWriteProgress(resolveContext(parsed, env), parsed, env);
 			return;
+		case "snapshot":
+			// Fail-fast: the read verbs take no positionals (flags only).
+			if (parsed.positionals.length > 0) {
+				throw new SwarmError(
+					"E_SWARM_USAGE",
+					`snapshot takes no positional arguments, got ${parsed.positionals.length}: ${parsed.positionals.join(" ")}`,
+				);
+			}
+			await runSnapshot(env);
+			return;
+		case "events":
+			if (parsed.positionals.length > 0) {
+				throw new SwarmError(
+					"E_SWARM_USAGE",
+					`events takes no positional arguments, got ${parsed.positionals.length}: ${parsed.positionals.join(" ")}`,
+				);
+			}
+			runEvents(parsed, env);
+			return;
 		default:
-			throw new SwarmError("E_SWARM_USAGE", `unknown verb ${JSON.stringify(parsed.verb)} — known verbs: ${WORKER_VERBS.join(", ")}`);
+			throw new SwarmError("E_SWARM_USAGE", `unknown verb ${JSON.stringify(parsed.verb)} — known verbs: ${ALL_VERBS.join(", ")}`);
 	}
 }
 

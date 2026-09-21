@@ -9,7 +9,10 @@
  *                   getAgentDir()/worktrees/<repo>-wt-<n>; shared placement
  *                   (wire mode "tab"): the caller's checkout, no isolation.
  *   startAgent()  — spawns `pi --mode rpc --provider P --model M --thinking T
- *                   --name <worker>` with cwd = the placement's checkoutPath;
+ *                   --name <worker>` with cwd = the placement's checkoutPath
+ *                   and, when the caller passes StartReq.env (issue #25:
+ *                   SWARM_TASK / SWARM_WORKER / SWARM_SCHEMA_DIR), that env
+ *                   merged over the orchestrator's;
  *                   captures the worker's session JSONL path via get_state
  *                   (StartResult.sessionPath — the budget gauges' input).
  *   submitPrompt()— writes {"type":"prompt"} over stdin; when the agent is
@@ -433,6 +436,10 @@ export class RpcWorkerHost implements Transport {
 				cwd: placement.checkoutPath,
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
+				// Issue #25 / §4.1.1: the spawn flow's swarm identity env
+				// (SWARM_TASK / SWARM_WORKER / SWARM_SCHEMA_DIR) reaches the worker
+				// process here; absent → the orchestrator environment is inherited.
+				...(req.env ? { env: { ...process.env, ...req.env } } : {}),
 			});
 		} catch (err) {
 			throw delegateError("E_START", `rpc host: spawn pi --mode rpc failed: ${(err as Error).message}`, err);

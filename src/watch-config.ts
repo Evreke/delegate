@@ -1,15 +1,18 @@
 /**
  * pi-delegate — src/watch-config.ts (Wave 3a: extracted from src/observe.ts).
  *
- * MODULE_CONTRACT — the watch/collect CONFIG resolution.
+ * MODULE_CONTRACT — the watch/collect/swarm CONFIG resolution.
  *
  * Purpose: everything read from ~/.pi/agent/pi-delegate.config.json's
- * "watch" and "collect" sections — the tuning constants (WATCH_* defaults
+ * "watch", "collect" and "swarm" sections — the tuning constants (WATCH_*
+ * defaults
  * + floors, RETIRE_* defaults, COLLECT_DEFAULT_TEARDOWN_AFTER_COLLECT,
  * DURABLE_DELIVERY_DEFAULT_ENABLED, the detection tuning constants
- * WATCH_LOOKBACK_MS / WATCH_DEAD_GRACE_MS), the WatchConfig/CollectConfig
+ * WATCH_LOOKBACK_MS / WATCH_DEAD_GRACE_MS), the WatchConfig/CollectConfig/
+ * SwarmConfig
  * shapes, the shared tolerant config reader (readDelegateConfig) and the
- * resolvers (resolveWatchConfig, resolveCollectConfig) with their four
+ * resolvers (resolveWatchConfig, resolveCollectConfig, resolveSwarmConfig)
+ * with their four
  * warn-once bad-value flags.
  *
  * This extraction KILLS the spawn→observe dependency edge (the last
@@ -324,3 +327,46 @@ export const WATCH_LOOKBACK_MS = 24 * 60 * 60_000;
 /** A worker placed seconds ago is not dead: herdr may not have registered it
  *  yet (and startAgent itself takes time). */
 export const WATCH_DEAD_GRACE_MS = 60_000;
+
+// ---------------------------------------------------------------------------
+// Swarm config (issue #25): {"swarm": {"verbsFallback": true}} — the worker
+// prompt's raw-file fallback availability. Same tolerant style as the others:
+// missing/corrupt/partial → default, never throws. The swarm CLI verb
+// invocation is ALWAYS the primary worker instruction; this flag only decides
+// whether the one-release raw-file fallback paragraph is appended.
+// ---------------------------------------------------------------------------
+
+/** Default for `swarm.verbsFallback` — ON for issue #25's release (the
+ *  fallback survives one release, then the key is removed). */
+export const SWARM_VERBS_FALLBACK_DEFAULT = true;
+
+export interface SwarmConfig {
+	/** When true (default), the worker prompt carries the documented raw-file
+	 *  fallback paragraph alongside the primary verb instructions. */
+	verbsFallback: boolean;
+}
+
+/**
+ * FUNCTION_CONTRACT:
+ * Input: none
+ * Output: SwarmConfig — verbsFallback (default true)
+ * Guarantees:
+ *   - only an explicit boolean moves off the default; garbage → default
+ *   - never selects the phrasing: verbs stay primary in briefPrompt
+ * Raises: never
+ * EXTERNAL_DEPENDENCY: the config file via readDelegateConfig (above).
+ */
+export function resolveSwarmConfig(): SwarmConfig {
+	const fallback: SwarmConfig = { verbsFallback: SWARM_VERBS_FALLBACK_DEFAULT };
+	try {
+		const e = readDelegateConfig()?.swarm;
+		if (e === null || typeof e !== "object") return fallback;
+		const s = e as Record<string, unknown>;
+		return {
+			verbsFallback:
+				typeof s.verbsFallback === "boolean" ? s.verbsFallback : fallback.verbsFallback,
+		};
+	} catch {
+		return fallback; // defensive — readDelegateConfig already absorbs throws
+	}
+}

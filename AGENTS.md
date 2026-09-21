@@ -1,7 +1,7 @@
 # pi-delegate — agent glossary
 
 > **Binding constitution.** `ARCHITECTURE.md` (in this directory) binds every
-> agent that touches this extension; its ten laws are the binding layer for
+> agent that touches this extension; its laws are the binding layer for
 > all work on the codebase. Where ARCHITECTURE.md and the prose conventions in
 > this file conflict, ARCHITECTURE.md outranks them.
 
@@ -54,9 +54,62 @@ Every agent in this repo (workers and orchestrators alike) follows these rules. 
 2. The next round on the same surface starts only after the field trial passes, or its findings become that round's brief. A passing check suite is the start of acceptance, not its end.
 3. Field findings accumulate and batch into rounds; each round's brief may cover several findings at once.
 4. Priorities live outside the repo — GitHub issues on `origin`, grouped under the fleet-dashboard milestone. Re-deriving priorities per session from the freshest complaint is the failure mode this section exists to prevent.
+5. **Acceptance list is a PR artifact.** The PR itself carries the explicit acceptance list — the behaviors it promises, each exercisable in the real environment. The operator's field trial executes the list; deriving it at trial time is a PR defect the reviewer must catch (Law 11).
+6. **Binding-rule conflicts stop for the operator.** When two binding rules cannot both be satisfied (for example: the incident pin and the regression scenario do not fit the fail-fast bounds of one commit), stop and ask the operator via the mailbox. Never satisfy one binding rule by silently violating another.
+
+## Trunk, releases, and QA gates
+
+- **Trunk discipline.** `main` is always releasable. Work happens in
+  `feature/<topic>` / `fix/<topic>` branches, lands via squash-merge PRs. No
+  direct commits to `main`. The canonical green/red verdict of `main` is
+  produced only by the merge gate's serialized run (Law 11) — agent-local
+  runs are advisory.
+- **Release authority is human.** The operator is the sole release authority:
+  the tag and GitHub Release are created only after the operator has
+  personally tested the release candidate. Agents may prepare everything up to
+  the merge-ready PR, and must stop there.
+- **QA gates — three blocking layers** (scenarios live as check files in
+  `test/`; the files, not this list, are the scenario truth):
+  - **Smoke** — 4 scenarios: typecheck, static pins, seam contract, report
+    contract. Budget: under 1 minute. Runs pre-commit (git hook; setup step:
+    `git config core.hooksPath hooks/`, verified in CI) and as stage one of
+    every PR pipeline.
+  - **Critical path** — 10 scenarios over the fake backend: the full
+    delegation cycle, release-on-started handoff, watcher wake, mailbox round
+    trip, retire, and the refusal paths (budget, invalid report, double
+    mount, shared-placement guard) plus output capping. Budget: under 10
+    minutes. Runs on every PR push in CI.
+  - **Regression** — 6 scenarios: the named regression set, herdr adapter
+    conformance and process lifecycle against the scripted herdr stub, rpc
+    transport framing, check-suite typecheck, release-gate rehearsal. Budget:
+    under 20 minutes. Runs at the merge gate and on demand.
+  All three layers block. There is no scheduled nightly layer; real-
+  environment verification is the operator's field trial. Watcher long-run
+  token cost and Windows-specific path behavior are intentionally not
+  verified by any automated or manual gate — accepted loss.
+- **Metrics are watched, not blocking.** Reviewed at the pre-release audit:
+  p95 wall-clock per layer against its budget; environment-fail rate per 100
+  check executions (target below 1; a sustained rate above 5 triggers a fix
+  round); self-skip rate per layer (same shape — target below 1, sustained
+  above 5 triggers a fix round).
+- **Retirement.** At the pre-release audit, a pin or scenario whose subject
+  bug class has had zero relevant hits for two consecutive releases may be
+  retired with operator sign-off, recorded in CHANGELOG. Gates may shrink,
+  not only grow.
+- **Dogfooding.** This repository builds the tool that builds this
+  repository: all multi-agent work runs through pi-delegate itself (briefs in
+  the exchange tree, strict JSON reports, budget caps, evidence in every
+  finding). Release-checklist item: every major release includes at least
+  one task that was implemented by a fleet of its own workers.
+- **Audit cadence.** Before every minor release, re-run the four-way audit
+  (pi compliance, architecture, reliability, release ops) on the release
+  branch. Findings are triaged into the roadmap; none are carried silently.
+- **Documentation is part of the definition of done.** README, CHANGELOG, and
+  law-consistent ZSDoc claims are contracts (Law 2). A behavior change that makes a doc
+  claim false is an incomplete change.
 
 ## Frozen surface — never rename
 
-True INSIDE the herdr adapter (`src/herdr/host.ts`); the seam above it is backend-neutral. `herdr worktree <verb>` CLI strings · herdr JSON fields (`workspace.worktree.*`, `is_linked_worktree`) · `not_linked_worktree` token · manifest `kind: "worktree"` value · journal events (`delegate-fleet`, `spawn`/`collect`) · `/delegate-*` command names · tool names/params.
+True INSIDE the herdr adapter (`src/herdr/host.ts`); the seam above it is backend-neutral. `herdr worktree <verb>` CLI strings · herdr JSON fields (`workspace.worktree.*`, `is_linked_worktree`) · `not_linked_worktree` token · manifest `kind: "worktree"` value · journal events (`delegate-fleet`, `spawn`/`collect`) · `/delegate-*` command names · tool names/params. Binding home of this list: ARCHITECTURE.md section 3 — this section is a restatement for agents working from AGENTS.md alone; ARCHITECTURE.md outranks on any divergence.
 
 The word "worktree" appears in several syntactic positions (placement kind value, physical dir, herdr CLI verb, herdr JSON fields) — one concept, four vantage points, each unambiguous by position (census 2026-09-07: zero genuine overloads). Keep the word; disambiguate with the terms above when writing prose.

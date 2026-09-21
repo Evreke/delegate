@@ -1,33 +1,35 @@
 # ARCHITECTURE — the pi-delegate constitution
 
-> Drafted 2026-09-11 from the four-way healing audit of the 1.16.1 line
-> (pi-compliance, architecture, reliability, release-ops auditors, ~40
-> evidence-backed findings). This document binds every future developer agent
-> — human or machine — that touches this repository. It is the binding
-> guideline: what we will and will not do to the codebase, and why, so the
-> next generation of agents does not have to rediscover these rules through
-> incidents. Behavioral truth lives in the code's own contracts (ZSDoc at
-> the point of use); operational truth lives in README.md.
+> Binding layer for every agent — human or machine — that touches this
+> repository. Behavioral truth lives in the code's own contracts (ZSDoc at
+> the point of use); operational truth lives in `AGENTS.md`; history lives in
+> git commits and `CHANGELOG.md`. This document carries only current rules
+> and current plans. Where this document and `AGENTS.md` conflict, this
+> document outranks.
 
-## 0. The audit verdict, in one paragraph
+## 0. Direction — what this codebase is for
 
-The architecture is fundamentally sound: the WorkerHost seam holds (only
-`index.ts` imports a backend adapter — verified by reading every import), there
-are no import cycles, `lifecycle.ts` is a genuine total reducer, `usage.ts`
-enforces the one-parser law, `exchange.ts` has a real storage port with two
-parity-pinned implementations, and the check suite (29+ deterministic files,
-run through `test/run-checks.sh`) is green on HEAD. The disease found by the
-audit is concentrated and specific: two critical violations of pi's extension
-contract (an enum parameter shape that breaks Google models; seven hardcoded
-`~/.pi/agent` paths that ignore pi's directory exports), module-global state
-where session-scoped state is required (one session's shutdown can stop another
-session's watcher), five god-modules whose extraction seams were already
-designed but never executed, two contracts that lie about behavior, a packaging
-drift (typebox bundled where pi's docs require a peer), and release machinery
-that does not use the purpose-built deterministic test runner. Everything below
-turns those findings into law so they cannot silently return.
+pi-delegate is a delegation orchestrator extension for the pi coding harness:
+one orchestrating session spawns, observes, and collects fleets of worker
+coding agents through a single `delegate` tool, a file mailbox, and a
+background watcher. Its user is a single operator working on one machine,
+possibly with several agent sessions in parallel; the operator's time — not
+agent capacity — is the resource every rule here must economize.
 
-## 1. The ten laws
+Good looks like: the delegation cycle (spawn → settle → report → collect →
+mailbox → teardown) stays deterministic and machine-verifiable; every gate
+stays green and honest (no pressure skips, no tolerated flakes); the frozen
+surface (section 3) never moves; the internal layout stays free to reshape so
+the codebase remains changeable rather than petrifying around its past
+incidents; and a new backend adapter is an addition, never an excision.
+
+The laws below are fences derived from real incidents; the threat catalog
+(section 2) is the direction mechanism that turns new incidents into tests;
+the frozen surface is the list of names that may never move. When two rules
+cannot both be satisfied, stop and ask the operator — never satisfy one rule
+by silently violating another.
+
+## 1. The laws
 
 ### Law 1 — The platform is the API. Import, never reimplement.
 
@@ -36,11 +38,10 @@ helper, grep pi's exported surface. Concretely binding:
 
 - Directory constants: `getAgentDir()` and `CONFIG_DIR_NAME` from
   `@earendil-works/pi-coding-agent` — never join `os.homedir()` with literal
-  `.pi`/`agent` segments (audit: 7 such sites; they break `PI_CODING_AGENT_DIR`
-  and rebranded distributions).
+  `.pi`/`agent` segments (they break `PI_CODING_AGENT_DIR` and rebranded
+  distributions).
 - Tool parameter enums: `StringEnum` from `@earendil-works/pi-ai` — never
-  `Type.Union` of string literals (breaks Google models; audit: the
-  `releaseOn` parameter).
+  `Type.Union` of string literals (breaks Google models).
 - Output truncation: `truncateHead`/`truncateTail` and the
   `DEFAULT_MAX_BYTES`/`DEFAULT_MAX_LINES` constants — every tool return path
   that can carry worker-written content must be bounded; the LLM must be told
@@ -64,14 +65,12 @@ truncation imports on the tool modules). A violation fails CI, not a review.
 
 `MODULE_CONTRACT` / `FUNCTION_CONTRACT` blocks are how the next agent reads
 this codebase without archaeology. A contract that describes a world that no
-longer exists is worse than no contract (audit found two: the seam module
-claiming "no I/O of its own" while a helper reads session files; the fleet
-ownership section still describing the pre-stage-A fail-open world).
+longer exists is worse than no contract.
 
 Rules: any commit that changes behavior updates the affected contract in the
-same commit. Reviewers verify at least one random contract per PR against the
-code. Where a deviation from a documented invariant is intentional (e.g. the
-one I/O site in `host.ts`), the contract says so explicitly at the point of
+same commit. Reviewers verify at least one contract per PR against the code.
+Where a deviation from a documented invariant is intentional (e.g. the one
+I/O site in `host.ts`), the contract says so explicitly at the point of
 deviation.
 
 ### Law 3 — Session lifetime owns everything mounted in it.
@@ -79,16 +78,14 @@ deviation.
 Everything a `session_start` handler mounts — the watcher, the ambient fleet
 widget, timers, file handles — is owned by a **per-session context object**
 created in that handler and torn down in the paired `session_shutdown` of the
-same session. Module-global registries are deprecated as a mechanism: they made
-it possible for one session's shutdown to dispose another session's watcher,
-and for a double module load to run two watchers with independent dedup that
-deliver every wake twice (audit: the D2 double-delivery mechanism is live in
-code, and the related accept-then-log rollback re-fires delivered wakes).
+same session. Module-global registries are deprecated as a mechanism: one
+session's shutdown must never dispose another session's watcher, and a double
+module load must never run two watchers with independent dedup.
 
-Rules: mounts return handles; handles are stored on the session context; teardown
-of a session touches only its own handles. A second mount for the same session
-file refuses rather than silently replaces. Every double-delivery class gets a
-regression check that simulates it.
+Rules: mounts return handles; handles are stored on the session context;
+teardown of a session touches only its own handles. A second mount for the
+same session file refuses rather than silently replaces. Every
+double-delivery class gets a regression check that simulates it.
 
 ### Law 4 — The seam stays deep and backend-blind.
 
@@ -96,63 +93,58 @@ The `Transport` interface (canonical term: WorkerHost) is the only place a
 backend is visible. Rules:
 
 - `placementRef` is the only required handle; herdr-shaped legacy fields
-  (`workspaceId`, `paneId`) become optional compatibility, never requirements
-  a second backend (tmux is the planned one) must fake.
+  (`workspaceId`, `paneId`) are optional compatibility, never requirements a
+  second backend (tmux is the planned one) must fake.
 - Adapters know nothing about the exchange layer: no adapter writes or reads
-  manifests (the in-memory fake's manifest-mirroring branch must die before it
-  is ever bound for real).
-- One mutating operation per backend invocation, serialized inside the adapter.
+  manifests (the in-memory fake's manifest-mirroring branch must die before
+  it is ever bound for real).
+- One mutating operation per backend invocation, serialized inside the
+  adapter.
 - All backend failure shapes are translated to the E_* taxonomy at the seam;
   no herdr verb, field, or CLI string leaks above `src/herdr/host.ts`.
 
-**Definition of done for this law:** a competent agent could write a tmux
-adapter touching only `src/herdr/`'s neighbors' worth of new files plus one line
-in `index.ts` — no edits in `spawn.ts`, `observe.ts`, or `fleet.ts`.
+**Definition of done (checkable):** the layering pins stay green with a new
+adapter added — only the composition root's binding line in `index.ts`
+changes; the new adapter imports nothing above the seam, writes no manifests,
+and translates every failure to the E_* taxonomy. The pins, not a hypothesis
+about competence, are the test.
 
 ### Law 5 — Modules are responsibilities, not parking lots.
 
-A `src/` file above roughly one thousand lines must either have a single
-responsibility or carry a written decomposition plan with an owner and a target
-release. SECTION banners inside a file are extraction seams designed to be
-executed, not admired (audit: `exchange.ts` contains an entire planned module
-inlined verbatim and never split).
+A `src/` file above **400 lines** (exact count, computed by
+`test/static-check.ts`) must carry a row in the decomposition ledger — a
+typed table in `test/static-check.ts` itself (the Law 6 allowlist pattern:
+file, owner, target release, plan) — never in a prose document, where a
+ledger rots. The check computes the over-threshold list itself and fails CI
+when the ledger does not match it exactly in either direction: a file
+without a plan row is a violation, and a ledger row whose file has shrunk
+below the threshold is retired by the same audit that retires stale pins.
 
-The target shape (from the decomposition plan; the `exchange.ts`, `observe.ts`
-and `spawn.ts` splits LANDED in 1.17.0 — layout v3; the `fleet.ts` and
-`herdr/host.ts` splits and the remaining `execute()` shrink stay planned for
-the next cycle):
+SECTION banners inside a file are extraction seams designed to be executed,
+not admired. A ledger row's plan describes the intended split; the split
+itself is a round like any other. At release time, every plan whose target
+release has arrived is either executed or re-justified to the operator — a
+plan is an obligation with a date, not a parking permit.
 
-- `exchange.ts` splits into: `archive.ts`, `manifest-store.ts`,
-  `report-schema.ts`, `mailbox-store.ts`, `watch-store.ts`, with `exchange.ts`
-  remaining as the exchange-root conventions plus a facade.
-- `observe.ts` splits into: `watch-config.ts` (this one kills the
-  spawn→observe dependency edge), `watch-detect.ts`, `watch-retire.ts`,
-  `watcher.ts`, `status-tool.ts`, `commands.ts`.
-- `spawn.ts` yields: `tool-result.ts`, `clock.ts`, `grace.ts`,
-  `mailbox-tool.ts`; the remaining delegate-tool flow shrinks phase by phase.
-- `fleet.ts` yields: `ui-text.ts`, `worker-view.ts` (the single shared
-  read-model used by widget, overlay, and status tool), `fleet-widget.ts`,
-  `fleet-overlay.ts`.
-- `herdr/host.ts` yields: `herdr/cli.ts`, `herdr/socket.ts`, `herdr/map.ts`.
-
-The user-visible surface never moves: tool names, parameter shapes,
-`/delegate-*` command names, manifest `kind` values, journal event names stay
-byte-identical through every split.
+The user-visible surface never moves through a split: see the frozen surface
+(section 3) — tool names, parameter shapes, `/delegate-*` command names,
+manifest `kind` values, journal event names stay byte-identical.
 
 ### Law 6 — Layering is enforced by machine, not by prose.
 
 Every dependency rule this document states must have a pin in
-`test/static-check.ts` (or an equivalent automated check), because prose rules
-rot. Current pins to keep: only `index.ts` imports a backend adapter; the
-observe→fleet one-way edge; the one-parser law. Pins added with the split
-wave (1.17.0): T1.8 — no `src/` module imports `observe.ts` except
-`compose.ts` (the spawn→observe edge stays dead — config lives in
-`watch-config.ts`); T1.9 — `src/` builds exchange-layer paths only through
-`expaths.ts`; the exchange-layer leaves (`expaths.ts`, `host.ts`) stay
-leaves.
+`test/static-check.ts` (or an equivalent automated check), because prose
+rules rot. Current pins: only `index.ts` imports a backend adapter; the
+observe→fleet one-way edge (`T1.8` — no `src/` module imports `observe.ts`
+except `compose.ts`; the spawn→observe edge stays dead — config lives in
+`watch-config.ts`); exchange-layer paths only through `expaths.ts` (`T1.9`);
+the exchange-layer leaves (`expaths.ts`, `host.ts`) stay leaves; the
+one-parser law.
 
-A new cross-module edge requires either a new pin or an explicit waiver
-sentence in the importing module's header naming the reason.
+A new cross-module edge requires either a new pin or an entry in the check's
+enumerated allowed-edges list (edge plus a one-line reason comment) in
+`test/static-check.ts`. A prose waiver in a module header satisfies nothing —
+this law's first sentence is its own enforcement.
 
 ### Law 7 — On-disk formats are versioned contracts.
 
@@ -179,47 +171,81 @@ only copy.
 
 ### Law 9 — One artifact, one source of truth.
 
-The delegate skill must exist in exactly one place (audit: two diverged copies
-that even load differently per install layout — the repo bundle loaded the
-stale one). One spelling per fact: the 80% budget threshold existed as three
-unrelated constants. One implementation per shared mechanism: worker-row
-assembly, the audit-log sink, the tolerant filesystem probes, the error-text
-helpers. When two copies are discovered, deletion is the fix; "keep both in
-sync by hand" is not a state, it is a bug.
+The delegate skill exists in exactly one place. One spelling per fact: the
+80% budget threshold is one constant, not three. One implementation per
+shared mechanism: worker-row assembly, the audit-log sink, the tolerant
+filesystem probes, the error-text helpers. When two copies are discovered,
+deletion is the fix; "keep both in sync by hand" is not a state, it is a bug.
 
 ### Law 10 — Every fixed bug buys a regression check.
 
 A fix without a check is a rumor. The deterministic runner
 (`test/run-checks.sh`: per-file timeout, at most one environment-flake retry,
 explicit ENV-FAIL verdict) is the only test gate; CI and the release workflow
-must invoke exactly it, not a re-implemented loop. Bugs found by audit (the
-double-delivery pair, the collectedAt race) get their checks in the same wave
-as the fix. Tests stay single-purpose, mkdtemp-isolated, machine-independent,
-and self-skipping only with a printed reason.
+must invoke exactly it, not a re-implemented loop. Bugs found by audit get
+their checks in the same wave as the fix. Tests stay single-purpose,
+mkdtemp-isolated, machine-independent, and self-skipping only with a printed
+reason.
 
-## 2. Working agreements for developer agents
+A new field incident first adds a row to the threat catalog (section 2),
+then the test, then the fix — in that order; otherwise the check suite grows
+as a dump without a threat model. A check that self-skips under budget
+pressure (its subject fits its layer but not the layer's time budget) is a
+bug in the check, not a pass. At the pre-release audit, a pin or scenario
+whose subject bug class has had zero relevant hits for two consecutive
+releases may be retired with operator sign-off, recorded in CHANGELOG — the
+gates may shrink, not only grow.
 
-- **Trunk discipline.** `main` is always releasable. Work happens in
-  `feature/<topic>` / `fix/<topic>` branches, lands via squash-merge PRs, gated
-  by CI (canonical check suite + typecheck + version sync + changelog-section
-  presence). No direct commits to `main`.
-- **Release authority is human.** The operator is the sole release authority:
-  the tag and GitHub Release are created only after the operator has
-  personally tested the release candidate. Agents may prepare everything up to
-  the merge-ready PR, and must stop there.
-- **Dogfooding rule.** This repository builds the tool that builds this
-  repository: all multi-agent work runs through pi-delegate itself (briefs in
-  the exchange tree, strict JSON reports, budget caps, evidence in every
-  finding). Every major release should include at least one task that was
-  implemented by a fleet of its own workers.
-- **Audit cadence.** Before every minor release, re-run the four-way audit
-  (pi compliance, architecture, reliability, release ops) on the release
-  branch. Findings are triaged into the roadmap; none are carried silently.
-- **Documentation is part of the definition of done.** README, CHANGELOG, and
-  law-consistent ZSDoc claims are contracts (Law 2). A behavior change that makes a doc
-  claim false is an incomplete change.
+### Law 11 — Behavior-bearing PRs are reviewed by an independent agent; main's verdict has one canonical producer.
 
-## 3. The frozen surface (restated; never rename)
+- Every PR whose diff touches code paths receives a review from a fresh
+  worker agent (new session, no shared context with the author): the
+  code-review skill along both axes (standards, spec), at least one module
+  contract spot-checked against the code, verification that the PR carries a
+  non-empty acceptance list and the artifacts Law 5 and Law 10 demand. The
+  reviewer files `report-<reviewer-name>.json` per the exchange report
+  schema. A green verdict is a merge precondition. The PR author cannot
+  dismiss a verdict; the operator may merge against a red verdict, recording
+  the reason in the PR. PRs whose diff touches only non-code paths (docs,
+  CHANGELOG, version sync, golden-fixture regeneration) skip the reviewer;
+  the exemption is verified mechanically by path filter.
+- Only the operator merges to `main`. The canonical green/red verdict of
+  `main` is produced only by the merge gate's serialized run of
+  `test/run-checks.sh` plus typecheck (exit code 0 = green). Agent-local runs
+  are advisory and never produce or contradict the canonical verdict — the
+  runner's documented environment flake reproduces under concurrent agent
+  load, so a verdict born under load is not a verdict.
+- While `main` is red, merges freeze until green. The author of the change
+  that turned main red owns the fix; ownerless reds (environment drift,
+  dependency changes) are owned by the operator.
+
+## 2. Threat catalog (mailbox/watcher surface)
+
+The single catalog of bug classes that the regression checks in
+`test/*-check.ts` are written against. Binding rule: **a new field incident
+first adds a row here, then the test, then the fix** — otherwise the check
+suite grows as a dump without a threat model.
+
+Statuses:
+
+- **covered** — the threat is encoded by a named test;
+- **partial** — coverage exists at one level, but a known scenario lacks a test;
+- **uncovered** — the threat is known, no test exists (honest skeleton; coverage is never invented).
+
+| Threat | Test encoding the threat | Status |
+|---|---|---|
+| Concurrent fan-out: two place() calls into one task directory (lost manifest update) | `test/manifest-store-check.ts` (M2.1/M2.3 — concurrent appends, all in place); dedup by name+placementRef — `test/host-fake-check.ts` (A12), `test/host-parity-check.ts` | covered at the storage and dedup level; e2e of two parallel `delegate` calls — uncovered |
+| herdr hangs on a mutating operation (serialization queue) | `test/transport-guards.ts` (TG.3 — queue deadline, TG.4 — queue proceeds after deadline, TG.5 — serialization; TG.1–TG.2 — listStatuses dedup) | covered |
+| Partial teardown: pane dead, worktree alive | no named test | uncovered |
+| Corrupt manifest mid-update / competing writers | `test/manifest-store-check.ts` (concurrent update() folds, M2.x) | covered |
+| Many sessions with watchers at once / foreign wakes (wake from someone else's fleet) | `test/watcher-check.ts` (W14.x — a foreign owner silences events of every kind; W16.15 — a worker session does not mount a watcher), `test/ownership-check.ts` | covered; since 1.17.0 (watcher stage A) legacy manifests without owner fields fail closed by default — wake only to a proven owner; emergency rollback is the explicit config `watch.legacyFailOpen: true` (unsafe on multi-session; every skipped delivery's reason is written to the audit file) |
+| Report rewritten after wake-up delivery (regression `notifiedReportMtime`, found by audit; live incident 1.14.2 — duplicate wakes from a re-read report across a session restart) | `test/watcher-check.ts` (W8.5 — a rewritten report with a fresh mtime re-arms the event; W16.16b–e — fingerprint dedup survives a missed observation, the same mtime is never delivered twice) | covered |
+| Answer file without a subsequent report ("letter consumed" semantics) | `test/retire-check.ts` (R2.9 — an answer NEWER than the report → not consumed → not retirable; R2.9b — an answer OLDER than the report → consumed) | covered |
+| Settle races: settled versus report write; the grace re-check loop | `test/grace-loop-check.ts` (G1–G5 — sequence table on virtual clocks: report after N re-checks, question/report priority, abort), `test/release-on-started-check.ts` (early release versus the full gate) | covered |
+| Duplicate import binding (two `homedir` imports from different modules) | bun's transpiler forgives the duplicate, pi's extension loader (jiti) does not: the extension fails to load with a green check suite | **uncovered** (incident 2026-09-11, fix/exchange-homedir-duplicate; candidate: a load check of index.ts through the real loader) |
+| No run provenance: unknown which extension version executed a run and what the code was before/after — incident investigation becomes archaeology | `test/passport-check.ts` (P1–P5: snapshot clean/dirty/not-a-repo/absent, line cap, delta with ??-untracked, manifest roundtrip, version sync with package.json) | covered |
+
+## 3. The frozen surface (never rename)
 
 herdr CLI verb strings · herdr JSON field names (`workspace.worktree.*`,
 `is_linked_worktree`) · the `not_linked_worktree` token · manifest
@@ -228,55 +254,3 @@ herdr CLI verb strings · herdr JSON field names (`workspace.worktree.*`,
 shapes · the E_* code names. Extension happens by addition; correction happens
 by deprecation with `prepareArguments`-style compatibility, never by silent
 reshape.
-
-## 4. Debt ledger (audit findings → their disposition)
-
-Every finding from the 2026-09-11 audit carries an owner-nameable
-disposition. The stabilization waves landed in 1.17.0 (CHANGELOG 1.17.0 holds
-the wave-by-wave record); the still-open planned work lives in the README
-"Future work" note. The ledger below is the map.
-
-| Audit cluster | Disposition |
-|---|---|
-| Google-breaking enum schema; hardcoded agent-dir paths | Wave 0 (compliance) |
-| tsc red (6 production errors), no typecheck gate | Wave 0 + Wave 1 (gate) |
-| CI bypasses deterministic runner; changelog gate late; tag race; bun pin | Wave 1 (release machinery) |
-| Session-global registries (double delivery ×2); collectedAt race | Wave 2 (session lifecycle) |
-| Diverged skill copies; broken skill links; typebox packaging | Wave 0 / Wave 1 |
-| God-modules: exchange, observe, spawn, fleet, herdr | Wave 3 (exchange + observe + spawn helpers) and README "Future work" (fleet, herdr, execute() shrink) |
-| Seam legacy fields; truncation duty; format versions; fsync; watcher tick I/O; silent catches | Wave 4 (hardening) |
-| Constitution + doc truth sweep | Wave 5 (this document and its siblings) |
-
-## Appendix: threat catalog (mailbox/watcher surface)
-
-> The appendix language (Russian) matches the source document it was folded
-> from — the content below is copied faithfully and is the single catalog of
-> bug classes that the regression checks in `test/*-check.ts` are written
-> against.
-
-Назначение: единый каталог классов багов, против которых пишутся регрессионные
-проверки `test/*-check.ts`. Правило (обязательное): **новый полевой инцидент
-сначала добавляет строку сюда, потом тест, потом фикс.** Иначе набор проверок
-растёт как свалка без модели угроз.
-
-Статусы:
-
-- **покрыто** — угроза кодируется именованным тестом;
-- **частично** — покрытие есть на одном уровне, но известный сценарий остаётся без теста;
-- **не покрыто** — угроза известна, теста нет (честный скелет, покрытие не выдумывается).
-
-## Каталог
-
-| Угроза | Тест, кодирующий угрозу | Статус |
-|---|---|---|
-| Конкурентный фан-аут: два place() в один task dir (потерянное обновление манифеста) | `test/manifest-store-check.ts` (M2.1/M2.3 — конкурентные appends, все на месте); дедуп по name+placementRef — `test/host-fake-check.ts` (A12), `test/host-parity-check.ts` | покрыто на уровне хранилища и дедупа; e2e двух параллельных `delegate` — не покрыто |
-| herdr зависает на мутирующей операции (очередь сериализации) | `test/transport-guards.ts` (TG.3 — deadline очереди, TG.4 — очередь идёт после deadline, TG.5 — сериализация; TG.1–TG.2 — дедуп listStatuses) | покрыто |
-| Частичный teardown: pane мёртв, worktree жив | именованного теста нет | не покрыто |
-| Битый manifest посреди обновления / конкурирующие писатели | `test/manifest-store-check.ts` (конкурентные update() свёртки, M2.x) | покрыто |
-| Много сессий с вотчерами одновременно / чужие wake (wake по чужому флоту) | `test/watcher-check.ts` (W14.x — чужой владелец глушит события всех видов; W16.15 — worker-сессия не монтирует вотчер), `test/ownership-check.ts` | покрыто; с 1.17.0 (watcher stage A) legacy-манифесты без полей владельца fail-closed по умолчанию — wake только доказанному владельцу; аварийный rollback — явный config `watch.legacyFailOpen: true` (небезопасно на multi-session; причина каждого пропущенного delivery пишется в audit-файл) |
-| Перезапись отчёта после доставки wake-up (регрессия `notifiedReportMtime`, найдена аудитом; живой инцидент 1.14.2 — дубли wake по перечитанному отчёту при рестарте сессии) | `test/watcher-check.ts` (W8.5 — перезаписанный отчёт с новым mtime переорудивает событие; W16.16b–e — фингерпринт-дедуп переживает пропущенное наблюдение, тот же mtime не доставляется дважды) | покрыто |
-| Answer-файл без последующего отчёта (семантика «письмо потреблено») | `test/retire-check.ts` (R2.9 — ответ НОВЕЕ отчёта → не потреблён → не retirable; R2.9b — ответ СТАРШЕ отчёта → потреблён) | покрыто |
-| Settle-гонки: settled против записи отчёта; льготный цикл перепроверок | `test/grace-loop-check.ts` (G1–G5 — таблица последовательностей на виртуальных часах: отчёт после N перепроверок, приоритет вопрос/отчёт, abort), `test/release-on-started-check.ts` (раннее отпускание против полного гейта) | покрыто |
-
-| Дублирующийся import-биндинг (два `homedir` из разных модулей) | Транспайлер bun прощает дубль, загрузчик расширений pi (jiti) — нет: расширение падает при загрузке при зелёном наборе проверок | **не покрыто** (инцидент 2026-09-11, fix/exchange-homedir-duplicate; кандидат: проверка-загрузка index.ts настоящим загрузчиком) |
-| Нет provenance на ране: неизвестно, какая версия расширения исполняла ран и что было в коде до/после — расследование инцидента превращается в археологию | `test/passport-check.ts` (P1–P5: снапшот чистый/грязный/не-репо/отсутствует, кап строк, дельта с ??-untracked, roundtrip манифеста, синхронность версии с package.json) | покрыто |

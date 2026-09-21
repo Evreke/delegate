@@ -35,7 +35,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import {
 	WORKER_NAME_RE,
 } from "../src/host.ts";
@@ -807,6 +807,53 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 // enforced (tsc qa config: a wrong import fails the build, not a regex).
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 7. Law 5 size ledger — src/ files above 400 lines must carry a row in the
+// decomposition ledger below (the ledger lives HERE, in code, per the
+// allowlist pattern of Law 6 — never in a rotting prose doc). Verification
+// is both-directional: a src file over the threshold without a ledger row
+// fails, and a ledger row naming a file that has shrunk under the threshold
+// fails — the over-threshold list is computed, never enumerated in prose.
+// The plan column is an obligation with a date (Law 5): at release time a
+// row whose target release has arrived is executed or re-justified to the
+// operator, never silently kept.
+// ---------------------------------------------------------------------------
+
+const LAW5_SIZE_LIMIT = 400;
+const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRelease: string; plan: string }> = [
+	{ file: "src/spawn.ts", owner: "operator", targetRelease: "1.18.0", plan: "finish the delegate-tool flow split: execute the remaining SECTION banners, extract the compose/execute phases into modules" },
+	{ file: "src/herdr/host.ts", owner: "operator", targetRelease: "1.18.0", plan: "adapter split LANDED (commit 426851f: cli.ts = subprocess runner with SIGTERM-to-SIGKILL escalation, socket.ts = NDJSON unix-socket client, map.ts = answer mapping to the E_* taxonomy; facade re-exports preserve the value surface, pins S1-S8 guard it); remaining: shrink the facade's placement/teardown dispatch as later slices" },
+	{ file: "src/host/rpc.ts", owner: "operator", targetRelease: "1.18.0", plan: "extract the line-protocol framing and error classification from the transport lifecycle" },
+	{ file: "src/fleet-overlay.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract row rendering and overlay geometry; the read-model stays shared with worker-view.ts" },
+	{ file: "src/watch-detect.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the delivery fingerprint dedup next to the delivered-facts store" },
+	{ file: "src/watcher.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract per-session mount/teardown ownership from the observation tick" },
+	{ file: "src/host.ts", owner: "operator", targetRelease: "1.19.0", plan: "move error-guidance strings into an import-free module (the seam stays the bottom of the graph — duplicating strings there is allowed)" },
+	{ file: "src/exchange.ts", owner: "operator", targetRelease: "1.19.0", plan: "remaining facade: exchange-root conventions plus archive; the store modules are already extracted" },
+	{ file: "src/lifecycle.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the transition table from side checks; the reducer stays a total function" },
+	{ file: "src/usage.ts", owner: "operator", targetRelease: "1.19.0", plan: "the one-parser law stays; extract budget-threshold validation from line parsing" },
+	{ file: "src/watch-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract schema-version migration from record reading" },
+	{ file: "src/manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the concurrent update() fold from manifest file I/O" },
+	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
+	{ file: "src/fleet-widget.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the golden row rendering from widget composition" },
+	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
+];
+
+const sizeOffenders = listTsFiles(resolve(ROOT, "src"))
+	.map((f) => ({ f, lines: readFileSync(f, "utf8").split("\n").length }))
+	.filter(({ lines }) => lines > LAW5_SIZE_LIMIT)
+	.map(({ f }) => relative(ROOT, f).replaceAll("\\", "/"))
+	.sort();
+
+const ledgerFiles = decompositionLedger.map((r) => r.file).sort();
+const unplanned = sizeOffenders.filter((f) => !ledgerFiles.includes(f));
+const stalePlans = ledgerFiles.filter((f) => !sizeOffenders.includes(f));
+const duplicateRows = decompositionLedger.length !== new Set(ledgerFiles).size;
+check(
+	`T1.10 Law 5 size ledger: every src/ file above ${LAW5_SIZE_LIMIT} lines has exactly one decomposition row, and no row names a file under the threshold`,
+	unplanned.length === 0 && stalePlans.length === 0 && !duplicateRows,
+	`over-threshold without a row: ${unplanned.join(", ") || "none"}; rows without an over-threshold file: ${stalePlans.join(", ") || "none"}; duplicate rows: ${duplicateRows}`,
+);
 
 console.log(failures === 0 ? "\nALL STATIC CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

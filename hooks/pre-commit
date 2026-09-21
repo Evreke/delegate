@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Smoke gate (AGENTS.md "QA gates", Law 11): typecheck + static pins only.
+# Budget: under 1 minute. A hanging check is a bug in the hook — both stages
+# are bounded; a red exit blocks the commit.
+set -u
+cd "$(git rev-parse --show-toplevel)" || exit 2
+rc=0
+
+echo "[hook] typecheck (tsc --noEmit, QA config)"
+timeout 40 bunx tsc --noEmit -p test/tsconfig.qa.json || rc=1
+
+echo "[hook] static pins (test/static-check.ts)"
+timeout 40 bun run test/static-check.ts || rc=1
+
+if [ $rc -ne 0 ]; then
+  echo "[hook] smoke RED — commit blocked. Fix the check or the code; never bypass."
+fi
+exit $rc

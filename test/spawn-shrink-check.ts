@@ -8,7 +8,10 @@
  * out of the closure: the pre-placement name/brief validation and the
  * dual-gauge governor moved to src/pre-placement.ts; the tier-mismatch
  * detection, the brief-reportSchema violation note and the last-live-worker
- * nudge became module-level functions in src/spawn.ts. Prose rules rot, so
+ * nudge became module-level functions, and the Law 5 continuation moved the
+ * whole pure-phase region (tier/provider/model resolution, brief report-schema
+ * resolution included) to src/spawn-phases.ts — spawn.ts imports the five
+ * phases from there. Prose rules rot, so
  * every rule this move introduced is pinned here (Law 6) — test/static-check.ts
  * is deliberately NOT touched by this file.
  *
@@ -26,10 +29,11 @@
  *       is threaded into an extracted phase as an input field.
  *   P4  the AS-IS design holds: all seven mutables are still declared inside
  *       the execute() closure.
- *   P5  the DAG holds: src/pre-placement.ts never imports src/spawn.ts
- *       (spawn is the root consumer).
- *   P6  the last-live-worker nudge is module-level and every call site passes
- *       its three explicit deps (no closure capture remained).
+ *   P5  the DAG holds: src/pre-placement.ts and src/spawn-phases.ts never
+ *       import src/spawn.ts (spawn is the root consumer).
+ *   P6  the last-live-worker nudge is module-level (in src/spawn-phases.ts
+ *       since the Law 5 continuation) and every call site passes its three
+ *       explicit deps (no closure capture remained).
  *   P7  behavior through the REAL tool: the three refusals the moved region
  *       owns come back byte-identical — E_NAME, E_CONTEXT, E_BUDGET — and
  *       none of them ever reaches transport.place().
@@ -74,6 +78,7 @@ function readSrc(rel: string): string {
 
 const spawnSrc = readSrc("spawn.ts");
 const preSrc = readSrc("pre-placement.ts");
+const phasesSrc = readSrc("spawn-phases.ts");
 const allSrc = spawnSrc + "\n" + preSrc;
 
 // ---------------------------------------------------------------------------
@@ -117,6 +122,9 @@ const allSrc = spawnSrc + "\n" + preSrc;
 {
 	// (text, owning module) — the literals are the ones the execute() closure
 	// spelled before the extraction; they are the frozen user-visible surface.
+	// Owner "spawn-phases.ts" = the pure-phase region moved there verbatim
+	// (Law 5 continuation); the text must exist EXACTLY once across the three
+	// extraction modules combined, and once in the owner.
 	const moved: Array<[string, string, string]> = [
 		[
 			'E_NAME — invalid worker name "${name}". ',
@@ -160,34 +168,35 @@ const allSrc = spawnSrc + "\n" + preSrc;
 		],
 		[
 			"brief declares ${declared} tier but worker runs ${modelStr} — tier mismatch",
-			"spawn.ts",
+			"spawn-phases.ts",
 			"tier-mismatch warning text",
 		],
 		[
 			"\\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — ",
-			"spawn.ts",
+			"spawn-phases.ts",
 			"reportSchema violation guidance",
 		],
 		[
 			"`\\nschema held: ${fragmentJson.length > 300 ? `${fragmentJson.slice(0, 300)}…` : fragmentJson}`",
-			"spawn.ts",
+			"spawn-phases.ts",
 			"schema-held quote",
 		],
 		[
 			"`\\nschema provenance: ${schemaProvenance.join(\" → \")}`",
-			"spawn.ts",
+			"spawn-phases.ts",
 			"schema-provenance chain line",
 		],
 	];
 	for (const [literal, owner, label] of moved) {
 		const inSpawn = spawnSrc.split(literal).length - 1;
 		const inPre = preSrc.split(literal).length - 1;
-		const total = inSpawn + inPre;
-		const inOwner = owner === "spawn.ts" ? inSpawn : inPre;
+		const inPhases = phasesSrc.split(literal).length - 1;
+		const total = inSpawn + inPre + inPhases;
+		const inOwner = owner === "spawn.ts" ? inSpawn : owner === "pre-placement.ts" ? inPre : inPhases;
 		check(
 			`P2 single spelling in ${owner} — ${label}`,
 			total === 1 && inOwner === 1,
-			`spawn.ts=${inSpawn} pre-placement.ts=${inPre}`,
+			`spawn.ts=${inSpawn} pre-placement.ts=${inPre} spawn-phases.ts=${inPhases}`,
 		);
 	}
 	// The advisory nudge text is owned by fleet-widget.ts (notifyFleetIdle) —
@@ -218,12 +227,14 @@ const allSrc = spawnSrc + "\n" + preSrc;
 	const ifaceParts: Array<string> = [
 		/export interface NameBriefInput \{[\s\S]*?\n\}/.exec(preSrc)?.[0] ?? "",
 		/export interface GaugeGovernorInput \{[\s\S]*?\n\}/.exec(preSrc)?.[0] ?? "",
-		/interface TierMismatchInput \{[\s\S]*?\n\}/.exec(spawnSrc)?.[0] ?? "",
-		/interface SchemaViolationNoteInput \{[\s\S]*?\n\}/.exec(spawnSrc)?.[0] ?? "",
-		/interface FleetIdleInput \{[\s\S]*?\n\}/.exec(spawnSrc)?.[0] ?? "",
+		/export interface TierResolutionInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
+		/export interface SchemaResolutionInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
+		/export interface TierMismatchInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
+		/export interface SchemaViolationNoteInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
+		/export interface FleetIdleInput \{[\s\S]*?\n\}/.exec(phasesSrc)?.[0] ?? "",
 	];
 	const ifaceSrc = ifaceParts.join("\n");
-	check("P3.1 all five extracted-phase input interfaces were found", ifaceParts.every((p) => p.length > 0));
+	check("P3.1 all seven extracted-phase input interfaces were found", ifaceParts.every((p) => p.length > 0));
 	for (const m of mutables) {
 		const fieldShape = new RegExp(`(^|\\n)\\s*(readonly\\s+)?${m}\\??\\s*[:,]`, "m");
 		check(
@@ -257,6 +268,12 @@ const allSrc = spawnSrc + "\n" + preSrc;
 		relativeImports.every((i) => !i.includes("spawn")),
 		relativeImports.join(", "),
 	);
+	const phasesImports = phasesSrc.match(/from\s*["']\.[^"']*["']/g) ?? [];
+	check(
+		"P5b src/spawn-phases.ts imports no spawn module (spawn stays the root consumer)",
+		phasesImports.every((i) => !i.includes("spawn")),
+		phasesImports.join(", "),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -267,8 +284,9 @@ const allSrc = spawnSrc + "\n" + preSrc;
 	const callSites = spawnSrc.split("void maybeNotifyFleetIdle({ transport, ctx, manifestDir });").length - 1;
 	check(
 		"P6.1 the nudge is a module-level function over explicit args, not a closure arrow",
-		/async function maybeNotifyFleetIdle\(input: FleetIdleInput\): Promise<void> \{/.test(spawnSrc) &&
-			!/const maybeNotifyFleetIdle = /.test(spawnSrc),
+		/async function maybeNotifyFleetIdle\(input: FleetIdleInput\): Promise<void> \{/.test(phasesSrc) &&
+			!/const maybeNotifyFleetIdle = /.test(phasesSrc) &&
+			!/async function maybeNotifyFleetIdle\(/.test(spawnSrc),
 	);
 	check(
 		"P6.2 every call site passes the three explicit deps (advisory fire-and-forget kept)",

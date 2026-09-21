@@ -31,11 +31,11 @@
  * Extraction state (Law 5, the wave-3 line — the rule above is what makes it
  * legal): every phase that reads NONE of the seven mutables is a pure
  * function over explicit args with a discriminated result the closure
- * consumes — tier/provider/model resolution and brief report-schema
- * resolution (module-level below), the pre-placement name/brief validation
- * and the dual-gauge governor (src/pre-placement.ts), the tier-mismatch
- * detection, the brief-reportSchema violation note and the last-live-worker
- * nudge (module-level below). What stays closure-bound is (a) the code that
+ * consumes — tier/provider/model resolution, brief report-schema resolution,
+ * the tier-mismatch detection, the brief-reportSchema violation note and the
+ * last-live-worker nudge (src/spawn-phases.ts), the pre-placement name/brief
+ * validation and the dual-gauge governor (src/pre-placement.ts). What stays
+ * closure-bound is (a) the code that
  * reads or writes one of the seven — the gauge summary, detach, the settle
  * proof, probe salvage, the strict collect, the success-result builder, the
  * heartbeat + mailbox-question interrupt, the probe verdict (every branch of
@@ -119,7 +119,7 @@ import { appendFile, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
-import { CONFIG_DIR_NAME, type Theme } from "@earendil-works/pi-coding-agent";
+import { type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	aggregateTaskUsage,
 	applyFleetTaskFields,
@@ -136,7 +136,7 @@ import { archiveReport } from "./archive.ts";
 import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
 import { EXTENSION_VERSION } from "./version.ts";
 import { manifestStore, type ManifestWorker } from "./manifest-store.ts";
-import { parseBriefSchema, resolveReportSchema, validateReport, validateReportAgainstSchema } from "./report-schema.ts";
+import { parseBriefSchema, validateReportAgainstSchema } from "./report-schema.ts";
 import {
 	questionPathFor,
 	readQuestion,
@@ -187,7 +187,7 @@ import { TEARDOWN_LOG_NAME } from "./expaths.ts";
 // results.
 import { applyGaugeGovernor, validateNameAndBrief } from "./pre-placement.ts";
 import { clampLines } from "./ui-text.ts";
-import { notifyFleetIdle, renderDelegateLines } from "./fleet-widget.ts";
+import { renderDelegateLines } from "./fleet-widget.ts";
 import {
 	CONTEXT_CRITICAL_PCT,
 	CONTEXT_TURNS_WARN,
@@ -291,7 +291,7 @@ const delegateParams = Type.Object({
 	timeoutMs: Type.Optional(Type.Number({ description: "Deprecated alias for waitMs — CAPPED at 120000 ms unless waitMs is set explicitly." })),
 	releaseOn: Type.Optional(StringEnum(["started", "settle"] as const, {
 		description:
-			"When to release this call: 'settle' (default) blocks the full window unless the worker settles inline; 'started' releases as soon as the worker is proven started and working — the background watcher wakes you on report-ready/question/death. Default from watch.releaseOn in ~/.pi/agent/pi-delegate.config.json. Never applies to probes.",
+			"When to release this call: 'started' (default) releases as soon as the worker is proven started and working — the background watcher wakes you on report-ready/question/death; 'settle' (opt-out) blocks the full window unless the worker settles inline. Default from watch.releaseOn in ~/.pi/agent/pi-delegate.config.json. Never applies to probes.",
 	})),
 
 	budgetTokens: Type.Optional(Type.Number({ minimum: 1, description: "Optional OUTPUT-token cap (sum of assistant output); over-budget workers are refused on retry with E_BUDGET." })),
@@ -412,326 +412,21 @@ function liveSessionFile(ctx: {
 import { appendWatcherAudit } from "./watcher.ts";
 
 // ===========================================================================
-// Wave 3 decomposition (step 4.5, the audit's "shrink its blast radius"):
-// the two execute() phases that read NO closure mutable state become pure
-// functions with explicit args — tier/provider/model resolution and
-// report-schema resolution. NOT a rewrite of execute(): each phase keeps its
-// exact decision logic, E_* texts and details payloads verbatim; only the
-// phase boundary becomes a discriminated result the closure returns (E_TIER/
-// E_BRIEF) or consumes.
-// Wave 3 continuation (the "remaining execute() closure shrink" this banner
-// planned — same rule, same verbatim discipline): the pre-placement name/
-// brief validation and the dual-gauge governor moved to src/pre-placement.ts
-// (E_NAME/E_BRIEF/E_CONTEXT/E_BUDGET became discriminated results), and the
-// tier-mismatch detection, the brief-reportSchema violation note and the
-// last-live-worker nudge became module-level functions below. A phase that
-// reads one of the seven closure mutables stays in the closure — the
-// MODULE_CONTRACT carries the extraction state; the structural edges are
-// pinned by test/spawn-shrink-check.ts.
-// ===========================================================================
-
-/** Explicit inputs of the tier-resolution phase (no closure state). */
-interface TierResolutionInput {
-	name: string;
-	tier?: string;
-	provider?: string;
-	model?: string;
-	thinking?: string;
-}
-
-/**
- * v1.9.2 tier resolution as a PURE function (verbatim decision logic from
- * the execute closure).
- * <p>
- * FUNCTION_CONTRACT:
- * Input:
- *   - input: the call's explicit tier/provider/model/thinking params + the
- *     worker name (for the E_TIER details payload)
- *   - tierTable: resolveTierTable() result (the config "tiers" section)
- *   - spawnDefaults: resolveSpawnDefaults() result (the config "defaults")
- * Output: {ok:true, provider, model, thinking} — every key resolved (string),
- *   or {ok:false, failure} — the E_TIER tool result to return verbatim
- * Guarantees:
- *   - explicit params > tiers[<tier>] > defaults, per key; there is NO
- *     built-in worker tier — an unconfigured environment fails with E_TIER
- *     (never a guessed provider)
- *   - pure: no I/O, no closure reads; the config reads happen in the CALLER
- * Raises: never
- */
-function resolveTierPlacement(
-	input: TierResolutionInput,
-	tierTable: Record<string, SpawnTier>,
-	spawnDefaults: { provider?: string; model?: string; thinking?: string; tier?: string },
-): { ok: true; provider: string; model: string; thinking: string } | { ok: false; failure: ToolResult } {
-	const requestedTier = input.tier ?? spawnDefaults.tier;
-	let tierEntry: SpawnTier | undefined;
-	if (requestedTier !== undefined) {
-		tierEntry = tierTable[requestedTier];
-		if (tierEntry === undefined) {
-			const available = Object.keys(tierTable).sort();
-			return {
-				ok: false,
-				failure: fail(
-					"E_TIER",
-					`E_TIER — unknown worker tier "${requestedTier}"` +
-						` (configured tiers: ${available.length > 0 ? available.join(", ") : "none"}). ` +
-						"Add it to ~/.pi/agent/pi-delegate.config.json under \"tiers\", drop the tier param, " +
-						"or pass provider/model/thinking explicitly.",
-					{ tier: requestedTier, availableTiers: available, name: input.name },
-				),
-			};
-		}
-	}
-	const pickTier = (
-		explicit: string | undefined,
-		fromTier: string | undefined,
-		fromDefaults: string | undefined,
-	): string | undefined => explicit ?? fromTier ?? fromDefaults;
-	const provider = pickTier(input.provider, tierEntry?.provider, spawnDefaults.provider);
-	const model = pickTier(input.model, tierEntry?.model, spawnDefaults.model);
-	const thinking = pickTier(input.thinking, tierEntry?.thinking, spawnDefaults.thinking);
-	const missingTierKeys = [
-		provider === undefined ? "provider" : undefined,
-		model === undefined ? "model" : undefined,
-		thinking === undefined ? "thinking" : undefined,
-	].filter((k): k is string => typeof k === "string");
-	if (missingTierKeys.length > 0) {
-		return {
-			ok: false,
-			failure: fail(
-				"E_TIER",
-				`E_TIER — no worker ${missingTierKeys.join("/")} configured (no built-in tier exists). ` +
-					"Set \"tiers\" / \"defaults\" in ~/.pi/agent/pi-delegate.config.json, e.g. " +
-					'{"tiers": {"flash": {"provider": "zai", "model": "glm-5.3-flash", "thinking": "high"}}, ' +
-					"\"defaults\": {\"tier\": \"flash\"}} — or pass provider/model/thinking explicitly.",
-				{ missing: missingTierKeys, name: input.name },
-			),
-		};
-	}
-	// The E_TIER guard above guarantees all three keys are defined (the same
-	// shape the execute closure's later `provider as string` sites relied on).
-	return { ok: true, provider: provider as string, model: model as string, thinking: thinking as string };
-}
-
-/** Explicit inputs of the report-schema resolution phase (no closure state). */
-interface SchemaResolutionInput {
-	name: string;
-	/** Resolved brief path (empty for probes). */
-	briefPath: string;
-	/** Session cwd — the project-local schema library root is resolved from it. */
-	cwd: string;
-	isProbe: boolean;
-}
-
-/**
- * v1.5 report-schema resolution as a PURE function (verbatim decision logic
- * from the execute closure; the one advisory side effect — the
- * "schema resolver threw" progress line — comes back as degradedWarning for
- * the caller to emit, keeping the function itself side-effect-free).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: name (worker name, for the E_BRIEF payload); briefPath (resolved);
- *   cwd; isProbe (probes have no brief → base schema only, no I/O)
- * Output: {ok:true, briefSchema, schemaProvenance, resolvedSchema,
- *   degradedWarning?} — the three closure variables' values, or
- *   {ok:false, failure} — the E_BRIEF tool result to return verbatim
- * Guarantees:
- *   - a bad schema rejects the spawn with E_BRIEF BEFORE place() (never
- *     wastes a worker)
- *   - an unexpected resolver THROW degrades to base-schema-only validation
- *     (ok:true + degradedWarning) — the {ok:false} path is the real
- *     rejection; schema null = the brief has no reportSchema key (base-only
- *     validation, never a rejection)
- *   - pure except the resolver's own documented fs reads (resolveReportSchema)
- * Raises: never (the resolver's throws are caught here, per the contract)
- */
-function resolveBriefReportSchema(input: SchemaResolutionInput): {
-	ok: true;
-	briefSchema: Record<string, unknown> | null;
-	schemaProvenance: string[];
-	resolvedSchema: Record<string, unknown> | null;
-	degradedWarning?: string;
-} | { ok: false; failure: ToolResult } {
-	const { name, briefPath, cwd, isProbe } = input;
-	if (isProbe) return { ok: true, briefSchema: null, schemaProvenance: [], resolvedSchema: null };
-	let resolved: ReturnType<typeof resolveReportSchema>;
-	let degradedWarning: string | undefined;
-	try {
-		// EXTERNAL_DEPENDENCY: filesystem — <cwd>/.pi/delegate-schemas/
-		// (via pi's CONFIG_DIR_NAME — the literal ".pi" honoring pi's
-		// project-config convention) and ~/.pi/agent/pi-delegate-schemas/
-		// (library type files <name>.json).
-		// Two-tier schema library: project-local
-		// <cwd>/.pi/delegate-schemas/ searched FIRST, user-level second.
-		resolved = resolveReportSchema(briefPath, resolve(cwd, CONFIG_DIR_NAME, "delegate-schemas"));
-	} catch (err) {
-		// A throw is not a resolution failure per the contract ({ok:false} is) —
-		// degrade to base-schema-only validation instead of rejecting the spawn.
-		resolved = { ok: true, schema: null, provenance: [] };
-		degradedWarning = errText(err);
-	}
-	if (!resolved.ok) {
-		return {
-			ok: false,
-			failure: fail(
-				"E_BRIEF",
-				`E_BRIEF — report schema resolution failed for ${name}: ${resolved.error}\n` +
-					"Fix the brief's reportSchema reference or inline fragment before spawning.",
-				{ briefPath, name, resolutionError: resolved.error },
-			),
-		};
-	}
-	// Corrected contract (merge gate): schema is null when the brief has no
-	// reportSchema key — ok-with-null → base-only validation, never a rejection.
-	return {
-		ok: true,
-		briefSchema: resolved.schema,
-		schemaProvenance: resolved.provenance,
-		resolvedSchema: resolved.schema,
-		...(degradedWarning !== undefined ? { degradedWarning } : {}),
-	};
-}
-
-/** Explicit inputs of the tier-mismatch detection phase (no closure state). */
-interface TierMismatchInput {
-	/** Resolved brief path (empty for probes). */
-	briefPath: string;
-	/** The resolved worker model — the E_TIER guard above guarantees it is set. */
-	model: string;
-	/** Probes carry no brief → the guard never fires. */
-	isProbe: boolean;
-}
-
-/**
- * The tier-mismatch guard as a PURE function (verbatim decision logic and the
- * verbatim warning text from the execute closure). The closure keeps the
- * tierWarning mutable it feeds — this phase only COMPUTES the advisory line,
- * the same shape as the wave-3 schema resolution returning degradedWarning.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: briefPath (resolved), model (resolved), isProbe
- * Output: the warning line ("brief declares <declared> tier but worker runs
- *   <model> — tier mismatch"), or "" when the brief declares no tier, the
- *   declared tier matches the model, the brief is unreadable, or this is a
- *   probe run
- * Guarantees:
- *   - advisory by contract: an unreadable brief yields "" and never blocks
- *     the run (the read failure is swallowed here, exactly as inline before);
- *   - reads NO closure mutable and takes none as a parameter
- * Raises: never
- * EXTERNAL_DEPENDENCY: filesystem — the brief file.
- */
-async function detectBriefTierMismatch(input: TierMismatchInput): Promise<string> {
-	const { briefPath, model, isProbe } = input;
-	if (isProbe) return "";
-	try {
-		const briefText = await readFile(briefPath, "utf8");
-		const tierMatch = briefText.match(/frontier tier|flash tier|execution tier/i);
-		if (tierMatch) {
-			const declared = /frontier/i.test(tierMatch[0]) ? "frontier" : "flash";
-			const modelStr = model as string; // guaranteed by the E_TIER guard above
-			const ok = declared === "frontier" ? /frontier/i.test(modelStr) : /flash|glm/i.test(modelStr);
-			if (!ok) return `brief declares ${declared} tier but worker runs ${modelStr} — tier mismatch`;
-		}
-	} catch {
-		// unreadable brief → guard is advisory, never blocks the run
-	}
-	return "";
-}
-
-/** Explicit inputs of the brief-reportSchema violation note (no closure state). */
-interface SchemaViolationNoteInput {
-	/** True when the report file is missing — nothing was validated then. */
-	missing: boolean;
-	/** The path the collect attempt actually read. */
-	usedReportPath: string;
-	/** The canonical worker name (validateReport's name expectation). */
-	canonical: string;
-	/** The merged fragment the report was held to (null = base-schema only). */
-	resolvedSchema: Record<string, unknown> | null;
-	/** The schema resolution provenance chain. */
-	schemaProvenance: string[];
-}
-
-/**
- * The v1.2/v1.5 brief-reportSchema violation note as a PURE function
- * (verbatim decision logic, guidance text, fragment quote and provenance
- * chain from the execute closure).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: missing, usedReportPath, canonical, resolvedSchema, schemaProvenance
- * Output: the dedicated guidance note ("" when the report is missing, when
- *   the BASE schema itself rejects the report, or when the base schema passes
- *   and there is nothing to distinguish)
- * Guarantees:
- *   - the note is appended to the E_REPORT_INVALID text by the caller — it
- *     never changes the code or the verdict, only the guidance;
- *   - "base passes, fragment rejects" is the ONLY case that produces the
- *     violation prose (unchanged);
- *   - pure except validateReport's own documented report read
- * Raises: never
- * EXTERNAL_DEPENDENCY: filesystem — the report file (via validateReport).
- */
-function briefSchemaViolationNote(input: SchemaViolationNoteInput): string {
-	const { missing, usedReportPath, canonical, resolvedSchema, schemaProvenance } = input;
-	let schemaNote = "";
-	if (!missing) {
-		const base = validateReport(usedReportPath, canonical);
-		if (base.ok) {
-			schemaNote =
-				"\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — " +
-				"either the worker or the schema fragment is wrong; compare evidence, then fix the brief or re-brief.";
-			// v1.5: the audit trail answers "what schema was this
-			// report held to" — quote the merged fragment (truncated) + provenance.
-			if (resolvedSchema) {
-				const fragmentJson = JSON.stringify(resolvedSchema);
-				schemaNote +=
-					`\nschema held: ${fragmentJson.length > 300 ? `${fragmentJson.slice(0, 300)}…` : fragmentJson}`;
-			}
-			if (schemaProvenance.length > 0) {
-				schemaNote += `\nschema provenance: ${schemaProvenance.join(" → ")}`;
-			}
-		}
-	}
-	return schemaNote;
-}
-
-/** Explicit inputs of the last-live-worker nudge (no closure state). */
-interface FleetIdleInput {
-	/** The injected Transport seam (the live-worker sensor). */
-	transport: Transport;
-	/** The tool context (notifyFleetIdle's UI handle). */
-	ctx: import("@earendil-works/pi-coding-agent").ExtensionContext;
-	/** The task dir whose manifest holds the worker count. */
-	manifestDir: string;
-}
-
-/**
- * The last-live-worker nudge as a PURE-over-its-args function (verbatim logic
- * from the execute closure): when no worker is live (working/blocked) anymore
- * after this collect, fire notifyFleetIdle with the task manifest's worker
- * count. Advisory — never affects outcomes.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: transport, ctx, manifestDir (all explicit — no closure state)
- * Output: resolves when the (skippable) nudge attempt is done
- * Guarantees:
- *   - fires only when zero workers are working/blocked; any failure
- *     (herdr unreachable) is swallowed — advisory only
- * Raises: never
- */
-async function maybeNotifyFleetIdle(input: FleetIdleInput): Promise<void> {
-	const { transport, ctx, manifestDir } = input;
-	try {
-		const statuses = await transport.listStatuses();
-		const live = statuses.filter((s) => s.status === "working" || s.status === "blocked");
-		if (live.length === 0) {
-			notifyFleetIdle(ctx, manifestStore.read(manifestDir)?.workers.length ?? 1);
-		}
-	} catch {
-		// advisory only — herdr unreachable → skip the nudge
-	}
-}
+// Law 5 execution (the wave-3 continuation this banner region planned): the
+// pure execute() phases — tier/provider/model resolution, brief report-schema
+// resolution, tier-mismatch detection, the brief-reportSchema violation note
+// and the last-live-worker nudge — moved verbatim to src/spawn-phases.ts
+// (the src/pre-placement.ts precedent). A phase that reads one of the seven
+// closure mutables stays in the closure — the MODULE_CONTRACT carries the
+// extraction state; the structural edges are pinned by
+// test/spawn-shrink-check.ts.
+import {
+	briefSchemaViolationNote,
+	detectBriefTierMismatch,
+	maybeNotifyFleetIdle,
+	resolveBriefReportSchema,
+	resolveTierPlacement,
+} from "./spawn-phases.ts";
 
 /**
  * Register the `delegate` tool on the extension API.
@@ -852,10 +547,10 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					: isProbe
 						? PROBE_TIMEOUT_MS
 						: settleGateMs);
-		// v1.14 early release — watch.releaseOn=started (or per-call override):
+		// Early release — watch.releaseOn, default "started" (per-call override):
 		// once the worker is proven started and working, hand off to the watcher
-		// instead of blocking the rest of the settle gate. Probes are exempt:
-		// their full window IS the smoke verdict.
+		// right away. The opt-out "settle" blocks the rest of the settle gate.
+		// Probes are exempt: their full window IS the smoke verdict.
 		const releaseOn = params.releaseOn ?? resolveWatchConfig().releaseOn;
 		const releaseOnStarted = !isProbe && releaseOn === "started";
 			// EXTERNAL_DEPENDENCY: ~/.pi/agent/pi-delegate.config.json — "tiers" and

@@ -119,12 +119,16 @@ Think of it as delegation to a real team. You (the orchestrator) hand a task to 
 The only question is what you do right after handing it over: stand over their shoulder,
 or go about your business.
 
-- **`releaseOn: "settle"` — the default: stand there until it is done.** The call blocks
+- **`releaseOn: "started"` — the default: hand over the task and walk away.** The call waits
+  only long enough to see the worker actually pick the task up (a couple of seconds).
+  Then the call ends and the orchestrator is free; the watcher stands guard from there —
+  it wakes the orchestrator the moment something needs a decision: the worker finished
+  and filed its report, asked a question, got stuck, or died without delivering anything.
+- **`releaseOn: "settle"` — opt-out: stand there until it is done.** The call blocks
   the orchestrator: it waits while the worker finishes (or until the wait limit expires —
   15 seconds by default). A short task comes back with its result right in the same turn,
   which is convenient. A long one outlives the limit — the watcher takes over and will
   wake you.
-- **`releaseOn: "started"` — opt-in: hand over the task and walk away.** The call waits
   only long enough to see the worker actually pick the task up (a couple of seconds).
   Then the call ends and the orchestrator is free; the watcher stands guard from there —
   it wakes the orchestrator the moment something needs a decision: the worker finished
@@ -231,7 +235,7 @@ would pass to pi itself):
   "watch": {
     "intervalMs": 10000,
     "settleGateMs": 15000,
-    "releaseOn": "settle"
+    "releaseOn": "started"
   }
 }
 ```
@@ -275,10 +279,11 @@ Optional extras (all have safe defaults; see the operational notes above):
   process — after it exits they finish their current task and exit (stdin EOF), so a LATER
   session sees their reports/mailbox files but cannot nudge them.
 - `watch` — watcher tuning: `intervalMs` (poll period, floor 1 s), `settleGateMs` (the
-  default blocking window of a call, floor applies too) and `releaseOn` — `"settle"`
-  (default) blocks the full window unless the worker settles inline; `"started"` enables
-  early release, handing control to the background watcher as soon as the worker is proven
-  started. The values shown are the defaults — the section may be omitted entirely.
+  default blocking window of a call, floor applies too) and `releaseOn` — `"started"`
+  (default) releases the call as soon as the worker is proven started, handing control
+  to the background watcher; `"settle"` (opt-out) blocks the full window unless the
+  worker settles inline. The values shown are the defaults — the section may be omitted
+  entirely.
 - `"contextWindow": <number>` — override the worker context window used by the `ctx%`
   gauge when the model is not in the built-in table.
 - Environment variable `PI_DELEGATE_EXCHANGE_ROOT` (absolute path) — relocate the exchange
@@ -395,15 +400,15 @@ done/idle.
 Единственный вопрос — что вы делаете сразу после передачи: стоите над душой или идёте
 заниматься своим.
 
-- **`releaseOn: "settle"` — по умолчанию: стоял рядом, пока не закончит.** Вызов блокирует
-  оркестратора: он ждёт, пока воркер не закончит (или пока не истечёт лимит ожидания — 15
-  секунд по умолчанию). Короткая задача возвращается с результатом прямо в этом же ходе —
-  удобно. Длинная задача переживает лимит — дальше эстафету берёт вотчер и разбудит вас.
-- **`releaseOn: "started"` — opt-in: дал задачу — пошёл дальше.** Вызов ждёт ровно
+- **`releaseOn: "started"` — по умолчанию: дал задачу — пошёл дальше.** Вызов ждёт ровно
   столько, чтобы увидеть, что воркер реально взялся за работу (пару секунд). Потом вызов
   завершается, и оркестратор свободен; дальше стоит сторож — вотчер: он разбудит
   оркестратора, когда понадобится ход — воркер закончил и сдал отчёт, задал вопрос,
   застрял или умер, не сдав ничего.
+- **`releaseOn: "settle"` — opt-out: стоял рядом, пока не закончит.** Вызов блокирует
+  оркестратора: он ждёт, пока воркер не закончит (или пока не истечёт лимит ожидания — 15
+  секунд по умолчанию). Короткая задача возвращается с результатом прямо в этом же ходе —
+  удобно. Длинная задача переживает лимит — дальше эстафету берёт вотчер и разбудит вас.
 
 На практике: для коротких задач удобен `settle` (по умолчанию) — ответ приходит сразу,
 без лишнего будильника; для больших фан-аутов из нескольких параллельных воркеров нужен
@@ -497,7 +502,7 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
   "watch": {
     "intervalMs": 10000,
     "settleGateMs": 15000,
-    "releaseOn": "settle"
+    "releaseOn": "started"
   }
 }
 ```
@@ -543,10 +548,10 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
   они завершают текущую задачу и выходят (EOF в stdin), поэтому более поздняя сессия
   видит их отчёты/файлы почтового ящика, но не может их подтолкнуть (nudge).
 - `watch` — настройка вотчера: `intervalMs` (период опроса, минимум 1 с), `settleGateMs`
-  (окно блокировки вызова по умолчанию) и `releaseOn` — `"settle"` (по умолчанию)
-  блокирует всё окно, если воркер не осел раньше; `"started"` включает раннее
-  отпускание — управление сразу переходит фоновому вотчеру, как только доказано, что
-  воркер стартовал. Показанные значения — значения по умолчанию; секцию можно опустить
+  (окно блокировки вызова по умолчанию) и `releaseOn` — `"started"` (по умолчанию)
+  отпускает вызов, как только доказано, что воркер взялся за работу, — управление сразу
+  переходит фоновому вотчеру; `"settle"` (opt-out) блокирует всё окно, если воркер не
+  осел раньше. Показанные значения — значения по умолчанию; секцию можно опустить
   целиком.
 - `"contextWindow": <число>` — переопределяет окно контекста воркера для гейджа `ctx%`,
   когда модели нет во встроенной таблице.

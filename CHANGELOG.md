@@ -33,6 +33,19 @@ Every delegated run now leaves a passport in the task manifest:
 
 Regression: `test/passport-check.ts` (P1–P5).
 
+### Changed
+
+- **Default `releaseOn` flipped to `"started"`.** A blocking `delegate` call no longer
+  stands in the settle gate for the full 15 s window: as soon as the worker is proven
+  started and working, the call releases and the background watcher owns the wait
+  (wakes the orchestrator on report-ready / question / death). The old inline block
+  never settled a real worker in practice — it only produced a guaranteed timeout
+  before the handover. The old behavior stays available as the explicit opt-out:
+  `watch.releaseOn: "settle"` in the config or `releaseOn: "settle"` per call (the
+  whitelist normalizer now honors exactly `"settle"`; everything else falls back to
+  the default `"started"`). Probes are exempt in both modes — their full window IS
+  the smoke verdict. Regression: `test/release-on-started-check.ts` (T-rel.4/T-rel.5).
+
 ## [1.17.1] — 2026-09-16
 ### Added
 

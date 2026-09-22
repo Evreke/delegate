@@ -34,7 +34,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 const ROOT = resolve(dirname(process.argv[1] ?? "."), "..");
 
@@ -92,13 +92,29 @@ function listTs(dir: string): string[] {
 }
 
 const HERDR_FILES = listTs(HERDR_DIR);
+/** Containment prefix for the inside/outside split. Both HERDR_DIR and listTs()
+ *  come from node:path, so on win32 their separator is "\" — a literal "/"
+ *  compared here matched nothing and classified every herdr file as OUTSIDE
+ *  (S4 and S6 then fired on the adapter's own files). `sep` keeps the POSIX
+ *  spelling byte-identical and makes the test portable to a real Windows host. */
+const HERDR_PREFIX = HERDR_DIR + sep;
 /** Every production + test module OUTSIDE src/herdr/ (the layer that must not
  *  reach into the adapter's internals). */
 const OUTSIDE_FILES = [
-	...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_DIR + "/")),
+	...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_PREFIX)),
 	resolve(ROOT, "index.ts"),
 	...listTs(resolve(ROOT, "test")),
 ];
+
+// --- S0 the inside/outside classifier is separator-portable ------------------
+// Canary for the bug above: if containment is ever spelled with a literal "/"
+// again, every HERDR_FILES entry lands in OUTSIDE_FILES and S4/S6 fire on the
+// adapter's own files (which is exactly what a Windows host observed).
+check(
+	"S0 no file inside src/herdr/ is classified as outside it (separator-portable containment)",
+	HERDR_FILES.every((f) => !OUTSIDE_FILES.includes(f)),
+	HERDR_FILES.filter((f) => OUTSIDE_FILES.includes(f)).join(" | "),
+);
 
 // --- S1/S2/S3 the shape of each new module's import list ---------------------
 
@@ -205,7 +221,7 @@ const PRE_SPLIT_EXPORTS = [
 	const inside = HERDR_FILES.map((f) => readFileSync(f, "utf8")).join("\n");
 	const missingInside = FROZEN.filter((t) => !inside.includes(t));
 	const PRODUCTION_OUTSIDE = [
-		...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_DIR + "/")),
+		...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_PREFIX)),
 		resolve(ROOT, "index.ts"),
 	];
 	const leaked: string[] = [];

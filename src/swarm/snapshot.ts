@@ -54,7 +54,8 @@ import { loadDelegateConfig } from "../profile.ts";
 import { createFileManifestStore } from "../manifest-store.ts";
 import { buildSwarmGraph, type SwarmManifestStore } from "./graph.ts";
 import { scanManifestsViaJournalReader } from "./journal-manifest-store.ts";
-import { createJournalReader, type JournalReader } from "./journal-read.ts";
+import { type JournalReader } from "./journal-read.ts";
+import { withJournalCopy } from "./journal-copy.ts";
 import { emitSuccess } from "./result.ts";
 import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from "./storage.ts";
 
@@ -100,7 +101,7 @@ function manifestSource(journal: JournalReader, cfg: SwarmStorageConfig, backend
 export async function runSnapshot(env: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const cfg = resolveSwarmStorage(env);
 	const backendName = activeBackendName();
-	const journal = createJournalReader({ dbPath: cfg.dbPath });
+	const { reader: journal, cleanup } = withJournalCopy(cfg.dbPath);
 	try {
 		const graph = await buildSwarmGraph({
 			journal,
@@ -109,6 +110,6 @@ export async function runSnapshot(env: NodeJS.ProcessEnv = process.env): Promise
 		});
 		emitSuccess("snapshot", { snapshot: graph });
 	} finally {
-		journal.close();
+		cleanup();
 	}
 }

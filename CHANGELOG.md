@@ -253,6 +253,16 @@ worker writes its report through `swarm write-report`).
   chain under the node runtime, so every rpc worker spawn died `E_START`
   before this fix. Driver choice is confined to `src/swarm/journal-driver.ts`
   (the #31 static pin's confinement glob covers it).
+- **Windows-portable pins — the QA gate read POSIX separators and `$HOME` as
+  universal.** `test/herdr-split-check.ts` classified modules as inside/outside
+  `src/herdr/` by comparing against a literal `"/"` while `node:path` yields a
+  backslash on Windows, so every herdr file counted as outside and S4/S6 fired
+  on the adapter's own files; containment now uses the platform separator, and a
+  new S0 canary fails if the literal ever returns. `test/static-check.ts` sent
+  the log-sink child to a fresh `$HOME`, which pi's `getAgentDir()` ignores on
+  Windows (there the home comes from `%USERPROFILE%`), leaving T4.1b red on a
+  green main; the child now pins the documented `PI_CODING_AGENT_DIR`. POSIX
+  launches stay byte-identical.
 
 ## [1.18.0] — 2026-09-21
 

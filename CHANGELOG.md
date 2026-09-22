@@ -10,6 +10,20 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Static pins for the new seams (#31, swarm-core-v1, Law 6).** Three
+  shape pins in `test/static-check.ts` make §4.1.2/§4.1.3 fail CI, not
+  reviews: **sqlite confinement** (T1.12 — no src/ module outside the
+  `src/swarm/journal*.ts` family references a sqlite driver, across the
+  static/side-effect/dynamic/require spellings), **watcher-no-direct-FS**
+  (T1.13 — the watcher family's import-verified node:fs reads never touch
+  an expaths-built exchange path; watcher satellites and store-routed reads
+  are the sanctioned shapes, and the journal is consumed only through
+  `swarm/journal-read.ts`), **single projection writer** (T1.14 — the
+  report/q/a/p projection's writer set is exactly the swarm CLI verbs plus
+  the named Phase A legacy rows, exact in both directions, with one LIVE
+  waiver for the Phase A q-archive rename). Every pin carries canary
+  fixtures, precision fixtures and a seeded-file probe walked by the real
+  scanner, so a vacuous pin fails its own check.
 - **Read API for external UIs: `swarm snapshot` + `swarm events --after
   <seq>` (#30, swarm-core-v1).** The `swarm` CLI now exposes the two
   orchestrator-side read verbs that make it the UI's backend contract (Law

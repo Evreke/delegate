@@ -38,10 +38,11 @@
  * plus a top-level watchdog. Exit 0 only if all checks pass.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { manifestPath } from "../src/manifest-store.ts";
 import { createJournalWriter, type JournalAppendInput } from "../src/swarm/journal.ts";
 import { swarmSessionIdFor } from "../src/swarm/storage.ts";
@@ -64,6 +65,16 @@ function check(name: string, ok: boolean, detail = "") {
 
 const ROOT = resolve(dirname(process.argv[1] ?? "."), "..");
 const CLI = join(ROOT, "src", "swarm", "cli.ts");
+/** Deterministic file hash for pure-read verification — catches any byte-level
+ *  modification including WAL checkpoint writes that might race mtime. */
+function fileHash(filePath: string): string | null {
+	try {
+		return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+	} catch {
+		return null;
+	}
+}
+
 const SANDBOX = mkdtempSync(join(tmpdir(), "swarm-api-check-"));
 const AGENT = join(SANDBOX, "agent"); // hermetic config tier (no real ~/.pi/agent)
 const EX = join(SANDBOX, "ex");
@@ -369,11 +380,17 @@ writeGoldenManifest();
 
 	// A8b precondition: snapshot must not modify the seeded database, and the
 	// beta-fleet dir must start projection-free.
+	// Note: WAL/SHM sidecars may be created by SQLite even on a read-only open
+	// of a WAL-mode database — that is a reader artifact, not a mutation of the
+	// DB file. The pure-read contract covers the main database file and the
+	// manifest projection.
 	const before = statSync(DB);
+	const beforeHash = fileHash(DB);
 	const manifestFile = manifestPath(betaDir);
 
 	const r = runCli(["snapshot"], { SWARM_STORAGE: "journal" });
 	const after = statSync(DB);
+	const afterHash = fileHash(DB);
 	const g = (r.json?.snapshot ?? null) as
 		| { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>>; sources?: Record<string, unknown> }
 		| null;
@@ -393,9 +410,13 @@ writeGoldenManifest();
 	const r2 = runCli(["snapshot"], { SWARM_STORAGE: "journal" });
 	check("A6.3 determinism: two journal-mode snapshot runs byte-equal", r2.status === 0 && r2.stdout === r.stdout, "");
 	check(
-		"A8b journal-mode snapshot is a PURE READ: events.db size+mtime unchanged, no manifest.json projection written",
-		r.status === 0 && before.size === after.size && before.mtimeMs === after.mtimeMs && !existsSync(manifestFile),
-		`size ${before.size}→${after.size}, mtime ${before.mtimeMs}→${after.mtimeMs}, projection ${existsSync(manifestFile)}`,
+		"A8b journal-mode snapshot is a PURE READ: events.db size+mtime+hash unchanged, no manifest.json projection written",
+		r.status === 0
+			&& before.size === after.size
+			&& before.mtimeMs === after.mtimeMs
+			&& beforeHash === afterHash
+			&& !existsSync(manifestFile),
+		`size ${before.size}→${after.size}, mtime ${before.mtimeMs}→${after.mtimeMs}, hash ${beforeHash?.slice(0,8)}→${afterHash?.slice(0,8)}, projection ${existsSync(manifestFile)}`,
 	);
 }
 

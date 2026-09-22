@@ -103,14 +103,16 @@ function mapRow(r: EventRow): JournalEvent | null {
 /**
  * Open the journal read-only. Returns null when the file is absent, cannot be
  * opened, or carries a FUTURE `user_version` (Law 7 gate → empty result).
+ * Uses a true read-only open (bun:sqlite `{ readonly: true }` / node:sqlite
+ * `{ readOnly: true }`) so the database file is never touched — no WAL
+ * sidecar creation, no checkpoint, no mtime change (Law 13, A8b).
  */
 function openReadOnly(dbPath: string): JournalDb | null {
 	try {
 		if (!existsSync(dbPath)) return null;
-		// NOTE: `{ create: false }` throws SQLITE_MISUSE on bun 1.3.x, so the
-		// existsSync guard above is the create gate instead (the driver's bun leg
-		// opens without the create option for the same reason).
-		const db = openJournalDatabase(dbPath);
+		// Open read-only: prevents WAL sidecar touches on the database file —
+		// a journal-mode snapshot must be a PURE READ (Law 13, A8b).
+		const db = openJournalDatabase(dbPath, { readOnly: true });
 		const row = db.queryOne<{ user_version?: number }>("PRAGMA user_version");
 		if (Number(row?.user_version ?? 0) > JOURNAL_DB_VERSION) {
 			db.close();

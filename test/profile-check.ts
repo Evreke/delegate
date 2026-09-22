@@ -26,6 +26,7 @@
  *   P11 empty PI_DELEGATE_PROFILE counts as unset
  */
 
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,9 +67,9 @@ writeFileSync(join(PROFILES, "from-key.json"), JSON.stringify({ contextWindow: 2
 // base config AFTER the profile files exist
 writeFileSync(BASE, JSON.stringify(BASE_CFG));
 
-const USAGE = new URL("../src/usage.ts", import.meta.url).pathname;
-const PROFILE = new URL("../src/profile.ts", import.meta.url).pathname;
-const WATCHCFG = new URL("../src/watch-config.ts", import.meta.url).pathname;
+const USAGE = fileURLToPath(new URL("../src/usage.ts", import.meta.url));
+const PROFILE = fileURLToPath(new URL("../src/profile.ts", import.meta.url));
+const WATCHCFG = fileURLToPath(new URL("../src/watch-config.ts", import.meta.url));
 
 /** Run one expression in a child bun process with the given env overrides. */
 function runInChild(expr: string, env: Record<string, string>): { stdout: string; stderr: string; code: number } {

@@ -253,6 +253,19 @@ worker writes its report through `swarm write-report`).
   chain under the node runtime, so every rpc worker spawn died `E_START`
   before this fix. Driver choice is confined to `src/swarm/journal-driver.ts`
   (the #31 static pin's confinement glob covers it).
+- **Windows-portable config-seam checks — `$HOME` is not the agent dir there,
+  and `URL.pathname` is not a path.** Twelve spawn sites across
+  `collect-teardown`, `release-on-started`, `retire`, `usage`, `watcher` and
+  `double-mount` steered pi's config reader with a fresh `$HOME`; on Windows pi
+  resolves the agent dir from `%USERPROFILE%`, so the pinned config was never
+  read and every default/override check failed. Each site now also sets the
+  documented
+  `PI_CODING_AGENT_DIR`. Five module-path constants (`profile`, `retire`,
+  `usage`, `watcher`, `collect-teardown`) and `double-mount`'s ROOT were built
+  with `new URL(…, import.meta.url).pathname`, which yields `/C:/...` on
+  Windows — the child died `Cannot find module` before any check ran; they now
+  use `fileURLToPath`. POSIX is unchanged: there the pinned agent dir is the
+  path `$HOME` produced and `fileURLToPath` returns what `.pathname` returned.
 - **Windows-portable pins — the QA gate read POSIX separators and `$HOME` as
   universal.** `test/herdr-split-check.ts` classified modules as inside/outside
   `src/herdr/` by comparing against a literal `"/"` while `node:path` yields a

@@ -467,7 +467,28 @@ function selectDefaultManifestStore(): ManifestStore {
 	return createFileManifestStore();
 }
 
-export const manifestStore: ManifestStore = selectDefaultManifestStore();
+/** The process-default manifest store, initialized lazily on first access.
+ *  Module-import (e.g. CLI read verbs like `snapshot` and `events --after`)
+ *  does NOT trigger the initialization — only actual store access does.
+ *  This keeps CLI read verbs pure: they never open the journal database
+ *  through the manifest-store path (their own reads go through withJournalCopy).
+ *  Write verbs (spawn, collect, write-report) naturally access the store and
+ *  trigger initialization on first use. */
+let _manifestStore: ManifestStore | undefined;
+export const manifestStore: ManifestStore = {
+	read(dir: string) {
+		return (_manifestStore ?? (_manifestStore = selectDefaultManifestStore())).read(dir);
+	},
+	scan(backendName: string) {
+		return (_manifestStore ?? (_manifestStore = selectDefaultManifestStore())).scan(backendName);
+	},
+	append(dir: string, entry: ManifestWorker) {
+		return (_manifestStore ?? (_manifestStore = selectDefaultManifestStore())).append(dir, entry);
+	},
+	async update(dir: string, updater: (m: ExchangeManifest) => ExchangeManifest) {
+		return (_manifestStore ?? (_manifestStore = selectDefaultManifestStore())).update(dir, updater);
+	},
+};
 
 // Phase B (issue #23): the third port implementation lives in the journal
 // module family (src/swarm/journal-manifest-store.ts) and is re-exported

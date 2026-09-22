@@ -1103,6 +1103,8 @@ const WATCHER_FAMILY_FILES: ReadonlyArray<string> = [
 	"watch-role.ts",
 	"watch-cursor.ts",
 	"watch-store.ts",
+	"watch-retire.ts",
+	"watch-config.ts",
 ];
 
 /** Every path builder src/expaths.ts exports — the exchange-layer path

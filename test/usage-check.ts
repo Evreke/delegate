@@ -26,6 +26,7 @@
  * Exit 0 only if all checks pass.
  */
 
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -202,12 +203,12 @@ check(
 // honored, so the config branch is exercised via the spawn seam).
 // ---------------------------------------------------------------------------
 
-const MOD = new URL("../src/usage.ts", import.meta.url).pathname;
+const MOD = fileURLToPath(new URL("../src/usage.ts", import.meta.url));
 
 function resolveWindowInHome(home: string, modelArg: string): number {
 	const src = `import {resolveContextWindow} from ${JSON.stringify(MOD)}; console.log(resolveContextWindow(${modelArg}))`;
 	const res = spawnSync("bun", ["-e", src], {
-		env: { ...process.env, HOME: home },
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
 		encoding: "utf8",
 		timeout: 20_000, // fail-fast: a hung bun -e child must not freeze the run
 	});
@@ -402,7 +403,7 @@ function spawnDefaultsInHome(configJson: string): unknown {
 	mkdirSync(configDir, { recursive: true });
 	if (configJson !== "") writeFileSync(join(configDir, "pi-delegate.config.json"), configJson);
 	const src = `import {resolveSpawnDefaults} from ${JSON.stringify(MOD)}; console.log(JSON.stringify(resolveSpawnDefaults()))`;
-	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 	rmSync(home, { recursive: true, force: true });
 	try {
 		return JSON.parse(res.stdout.toString().trim());
@@ -459,7 +460,7 @@ function tierTableInHome(configJson: string): unknown {
 	mkdirSync(configDir, { recursive: true });
 	if (configJson !== "") writeFileSync(join(configDir, "pi-delegate.config.json"), configJson);
 	const src = `import {resolveTierTable} from ${JSON.stringify(MOD)}; console.log(JSON.stringify(resolveTierTable()))`;
-	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 	rmSync(home, { recursive: true, force: true });
 	try {
 		return JSON.parse(res.stdout.toString().trim());
@@ -521,7 +522,7 @@ check(
 		const src =
 			`import {resolveContextWindow, resolveSpawnDefaults} from ${JSON.stringify(MOD)}; ` +
 			`console.log(JSON.stringify([resolveContextWindow(undefined), resolveSpawnDefaults()]))`;
-		const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+		const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 		rmSync(home, { recursive: true, force: true });
 		return res.stdout.toString().trim() === JSON.stringify([123456, { provider: "zai" }]);
 	})(),

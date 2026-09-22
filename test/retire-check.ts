@@ -31,6 +31,7 @@
  * Exit 0 only if all checks pass.
  */
 
+import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -83,7 +84,7 @@ process.env.HOME = ARCHIVE_HOME;
 // R1. Config — watch.retireTtlMs (child bun process, $HOME at spawn time)
 // ---------------------------------------------------------------------------
 
-const WATCH_MOD = new URL("../src/observe.ts", import.meta.url).pathname;
+const WATCH_MOD = fileURLToPath(new URL("../src/observe.ts", import.meta.url));
 
 function retireConfigInHome(
 	configJson: string,
@@ -97,7 +98,7 @@ function retireConfigInHome(
 		`import {resolveWatchConfig} from ${JSON.stringify(WATCH_MOD)};` +
 		"resolveWatchConfig(); console.log(JSON.stringify(resolveWatchConfig()))";
 	// Fail-fast: a hung bun -e child must surface as SPAWN FAILED (20 s cap).
-	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 	rmSync(home, { recursive: true, force: true });
 	const raw = res.stdout.toString().trim();
 	const warnings = (res.stderr.toString().match(/bad watch\.retire/g) ?? []).length;

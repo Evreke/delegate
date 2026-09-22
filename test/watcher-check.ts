@@ -84,6 +84,7 @@
  *       (zero wake-ups, zero records) and never masked as report-ready.
  */
 
+import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -186,7 +187,7 @@ check(
 // W2. Config — child bun process with $HOME at spawn time
 // ---------------------------------------------------------------------------
 
-const WATCH_MOD = new URL("../src/observe.ts", import.meta.url).pathname;
+const WATCH_MOD = fileURLToPath(new URL("../src/observe.ts", import.meta.url));
 
 function watchConfigInHome(configJson: string): { intervalMs: number; settleGateMs: number; staleAfterMs: number; legacyFailOpen?: boolean; durableDelivery?: boolean; raw: string; stderr: string } {
 	const home = mkdtempSync(join(tmpdir(), "watcher-check-home-"));
@@ -196,7 +197,7 @@ function watchConfigInHome(configJson: string): { intervalMs: number; settleGate
 	const src = `import {resolveWatchConfig} from ${JSON.stringify(WATCH_MOD)}; console.log(JSON.stringify(resolveWatchConfig()))`;
 	// Fail-fast: a hung bun -e child (seen in shared-VM environments) must
 	// surface as SPAWN FAILED, not freeze the whole check run forever.
-	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 	rmSync(home, { recursive: true, force: true });
 	const raw = res.stdout.toString().trim();
 	const stderr = res.stderr.toString();

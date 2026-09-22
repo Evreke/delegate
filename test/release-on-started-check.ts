@@ -86,7 +86,7 @@ try {
 			join(home, ".pi", "agent", "pi-delegate.config.json"),
 			JSON.stringify({ watch: { releaseOn: "started" } }),
 		);
-		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home }, stdout: "pipe", timeout: 20_000 });
+		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, stdout: "pipe", timeout: 20_000 });
 		const out = child.stdout.toString().trim();
 		check("T-rel.3 resolveWatchConfig parses releaseOn=started", out === '"started"', out || child.stderr.toString());
 		rmSync(home, { recursive: true, force: true });
@@ -98,7 +98,7 @@ try {
 	{
 		const home = mkdtempSync(join(tmpdir(), "rel-def-"));
 		mkdirSync(join(home, ".pi", "agent"), { recursive: true });
-		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home }, stdout: "pipe", timeout: 20_000 });
+		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, stdout: "pipe", timeout: 20_000 });
 		const out = child.stdout.toString().trim();
 		check("T-rel.4 default releaseOn (no config) is started", out === '"started"', out || child.stderr.toString());
 		rmSync(home, { recursive: true, force: true });
@@ -112,7 +112,7 @@ try {
 			join(home, ".pi", "agent", "pi-delegate.config.json"),
 			JSON.stringify({ watch: { releaseOn: "settle" } }),
 		);
-		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home }, stdout: "pipe", timeout: 20_000 });
+		const child = Bun.spawnSync(["bun", "-e", `import { resolveWatchConfig } from ${JSON.stringify(join(import.meta.dir, "..", "src", "observe.ts"))}; console.log(JSON.stringify(resolveWatchConfig().releaseOn))`], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, stdout: "pipe", timeout: 20_000 });
 		const out = child.stdout.toString().trim();
 		check("T-rel.5 explicit releaseOn=settle stays settle", out === '"settle"', out || child.stderr.toString());
 		rmSync(home, { recursive: true, force: true });

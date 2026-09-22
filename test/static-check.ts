@@ -701,9 +701,10 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 // recording transport.
 {
 	// T4.1/T4.2 — the sink audits every line and surfaces ONLY error-shaped
-	// ones to the pane. Child bun: fresh $HOME + a fresh module registry.
+	// ones to the pane. Child bun: fresh agent dir + a fresh module registry.
 	const home = mkdtempSync(join(tmpdir(), "static-check-home-"));
-	mkdirSync(join(home, ".pi", "agent"), { recursive: true }); // production always has this dir; a fresh $HOME must pre-create it for the audit append
+	const agentDir = join(home, ".pi", "agent");
+	mkdirSync(agentDir, { recursive: true }); // production always has this dir; a fresh agent dir must pre-create it for the audit append
 	const sinkSrc =
 		`const { makeWatcherLogSink } = await import(${JSON.stringify(resolve(ROOT, "src/observe.ts"))});` +
 		`const { appendFileSync } = await import("node:fs");` +
@@ -715,7 +716,16 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 		`await new Promise((r) => setTimeout(r, 150));` + // async append must land
 		`const audit = appendFileSync; ` +
 		`orig(JSON.stringify(seen));`;
-	const res = spawnSync("bun", ["-e", sinkSrc], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	// The audit path is derived by pi's getAgentDir(): PI_CODING_AGENT_DIR when
+	// set, else join(os.homedir(), ".pi", "agent") — and os.homedir() is $HOME on
+	// POSIX but %USERPROFILE% on Windows. Pinning the documented override is what
+	// makes this check portable: HOME alone left a Windows child reading the real
+	// agent dir, so the audit file stayed empty and T4.1b failed on a green main.
+	const res = spawnSync("bun", ["-e", sinkSrc], {
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir },
+		encoding: "utf8",
+		timeout: 20_000,
+	});
 	let paneLines: string[] = [];
 	try {
 		// console.error writes to stderr — the surfaced-line JSON is the last line there
@@ -723,7 +733,7 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 	} catch {
 		// spawn flake — surfaced by the empty-panes check below
 	}
-	const auditPath = join(home, ".pi", "agent", "delegate-watch.log");
+	const auditPath = join(agentDir, "delegate-watch.log");
 	let audit = "";
 	try {
 		audit = readFileSync(auditPath, "utf8");

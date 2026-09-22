@@ -74,7 +74,11 @@ function resolveDriver(): { name: JournalDriverName; open: (path: string, create
 	} catch {
 		// node runtime: node:sqlite (experimental warning is expected, harmless).
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const { DatabaseSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+		// NOTE: bun-types declares DatabaseSync with a 1-arg constructor, but node
+		// 22's runtime accepts an options bag ({ readOnly: true }). Cast through
+		// unknown so the runtime option flows while the 1-arg declaration compiles.
+		const { DatabaseSync: DBSync } = req("node:sqlite") as { DatabaseSync: new (p: string) => any };
+		const DatabaseSync = DBSync as unknown as new (p: string, o?: { readOnly?: boolean }) => any;
 		cachedDriver = {
 			name: "node:sqlite",
 			open: (path, _create, readOnly) => {

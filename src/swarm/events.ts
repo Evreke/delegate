@@ -40,7 +40,7 @@
  */
 
 import { flagStr, type ParsedArgs } from "./args.ts";
-import { createJournalReader } from "./journal-read.ts";
+import { withJournalCopy } from "./journal-copy.ts";
 import { emitSuccess, SwarmError } from "./result.ts";
 import { resolveSwarmStorage } from "./storage.ts";
 
@@ -79,7 +79,7 @@ export function parseAfterCursor(raw: string | undefined): number {
 export function runEvents(parsed: ParsedArgs, env: NodeJS.ProcessEnv = process.env): void {
 	const cursor = parseAfterCursor(flagStr(parsed, "after"));
 	const cfg = resolveSwarmStorage(env);
-	const reader = createJournalReader({ dbPath: cfg.dbPath });
+	const { reader, cleanup } = withJournalCopy(cfg.dbPath);
 	try {
 		emitSuccess("events", {
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
@@ -88,6 +88,6 @@ export function runEvents(parsed: ParsedArgs, env: NodeJS.ProcessEnv = process.e
 			journal: { count: reader.count(), dbSizeBytes: reader.dbSizeBytes() },
 		});
 	} finally {
-		reader.close();
+		cleanup();
 	}
 }

@@ -379,18 +379,23 @@ writeGoldenManifest();
 	]);
 
 	// A8b precondition: snapshot must not modify the seeded database, and the
-	// beta-fleet dir must start projection-free.
-	// Note: WAL/SHM sidecars may be created by SQLite even on a read-only open
-	// of a WAL-mode database — that is a reader artifact, not a mutation of the
-	// DB file. The pure-read contract covers the main database file and the
-	// manifest projection.
+	// beta-fleet dir must start projection-free. The snapshot verb operates on
+	// a temp copy (journal-copy.ts) — the live events.db is never opened by
+	// the read verb itself. (WAL/SHM sidecars may appear due to module-import
+	// side effects during CLI startup — that is pre-existing and not part of
+	// the pure-read contract.)
 	const before = statSync(DB);
 	const beforeHash = fileHash(DB);
+	// Count swarm-journal- temp dirs before (for cleanup assertion).
+	const prevTempDirs = [...new Bun.Glob("swarm-journal-*").scanSync({ cwd: tmpdir(), absolute: false, onlyFiles: false })];
 	const manifestFile = manifestPath(betaDir);
 
 	const r = runCli(["snapshot"], { SWARM_STORAGE: "journal" });
 	const after = statSync(DB);
 	const afterHash = fileHash(DB);
+	// Verify no new swarm-journal- temp dirs remain (the verb's cleanup ran).
+	const postTempDirs = [...new Bun.Glob("swarm-journal-*").scanSync({ cwd: tmpdir(), absolute: false, onlyFiles: false })];
+	const newTempDirs = postTempDirs.filter((d) => !prevTempDirs.includes(d));
 	const g = (r.json?.snapshot ?? null) as
 		| { nodes?: Array<Record<string, unknown>>; edges?: Array<Record<string, unknown>>; sources?: Record<string, unknown> }
 		| null;
@@ -410,13 +415,14 @@ writeGoldenManifest();
 	const r2 = runCli(["snapshot"], { SWARM_STORAGE: "journal" });
 	check("A6.3 determinism: two journal-mode snapshot runs byte-equal", r2.status === 0 && r2.stdout === r.stdout, "");
 	check(
-		"A8b journal-mode snapshot is a PURE READ: events.db size+mtime+hash unchanged, no manifest.json projection written",
+		"A8b journal-mode snapshot is a PURE READ on the live DB: size+mtime+hash unchanged, no manifest projection, temp copy cleaned up",
 		r.status === 0
 			&& before.size === after.size
 			&& before.mtimeMs === after.mtimeMs
 			&& beforeHash === afterHash
-			&& !existsSync(manifestFile),
-		`size ${before.size}→${after.size}, mtime ${before.mtimeMs}→${after.mtimeMs}, hash ${beforeHash?.slice(0,8)}→${afterHash?.slice(0,8)}, projection ${existsSync(manifestFile)}`,
+			&& !existsSync(manifestFile)
+			&& newTempDirs.length === 0,
+		`size ${before.size}→${after.size}, mtime ${before.mtimeMs}→${after.mtimeMs}, hash ${beforeHash?.slice(0,8)}→${afterHash?.slice(0,8)}, projection ${existsSync(manifestFile)}, newTempDirs=${newTempDirs.length}`,
 	);
 }
 

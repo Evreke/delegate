@@ -254,6 +254,18 @@ worker writes its report through `swarm write-report`).
   before this fix. Driver choice is confined to `src/swarm/journal-driver.ts`
   (the #31 static pin's confinement glob covers it).
 
+- **The operator-token line no longer corrupts the TUI composer.** The swarm
+  server's token announcement wrote one raw JSON line to `process.stderr`
+  on every mount; inside the interactive TUI that write escapes the renderer
+  and stamps the line onto the live frame (over the input area at startup).
+  The announcement now goes through the `announceToken` sink on
+  `MountSwarmServerDeps`: headless modes keep the byte-identical structured
+  stderr line (the automation contract, still pinned by check M1.2); a TUI
+  session injects a `ctx.ui.notify` toast (`swarm server :<port> — operator
+  token <token>`). Channel law unchanged: session UI only — never the
+  journal, a response body or a log file (Law 11); ARCHITECTURE §4.2, README
+  and docs/swarm-http-api.md updated to name both halves of the channel.
+
 ## [1.18.0] — 2026-09-21
 
 ### Removed

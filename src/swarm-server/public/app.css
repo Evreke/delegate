@@ -217,3 +217,126 @@ main {
 	text-transform: uppercase;
 	font-size: 0.7rem;
 }
+/* Console panel + steering controls (issue #54). */
+.console {
+	margin-top: 0.4rem;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	background: #14171c;
+}
+
+.console-banner {
+	padding: 0.15rem 0.5rem;
+	font-size: 0.72rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--info);
+	border-bottom: 1px solid var(--border);
+}
+
+.console[data-console-state="ended"] .console-banner,
+.console[data-console-state="ended-with-retained-backlog"] .console-banner {
+	color: var(--warn);
+}
+
+.console[data-console-state="unavailable"] .console-banner,
+.console[data-console-state="refused"] .console-banner,
+.console[data-console-state="error"] .console-banner {
+	color: var(--muted);
+}
+
+.console-detail {
+	padding: 0.15rem 0.5rem;
+	font-size: 0.72rem;
+	color: var(--muted);
+	font-style: italic;
+}
+
+.console-tail {
+	margin: 0;
+	padding: 0.35rem 0.5rem;
+	max-height: 12rem;
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 0.72rem;
+	line-height: 1.35;
+	color: #cfd6e0;
+}
+
+.controls {
+	margin-top: 0.35rem;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	align-items: center;
+}
+
+.controls .reason {
+	color: var(--warn);
+	font-size: 0.72rem;
+}
+
+.controls input {
+	flex: 1 1 12rem;
+	background: #14171c;
+	color: inherit;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	padding: 0.15rem 0.35rem;
+}
+
+.controls button {
+	background: #222831;
+	color: inherit;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	padding: 0.15rem 0.6rem;
+	cursor: pointer;
+}
+
+.controls button[disabled],
+.controls input[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.pending {
+	font-size: 0.72rem;
+	color: var(--info);
+}
+
+.pending-failed {
+	color: var(--warn);
+}
+
+.pending-confirmed {
+	color: #7fc48a;
+}
+
+.answer {
+	flex: 1 1 100%;
+	display: flex;
+	gap: 0.35rem;
+	align-items: center;
+}
+
+.answer .question {
+	font-size: 0.72rem;
+	color: var(--info);
+}
+
+.token {
+	color: var(--muted);
+	font-size: 0.72rem;
+	margin-left: 0.75rem;
+}
+
+.token[data-token-state="set"] {
+	color: #7fc48a;
+}
+
+.token[data-token-state="re-prompt"] {
+	color: var(--warn);
+}

@@ -57,12 +57,13 @@
  *      no src/swarm-server/** file may make a direct mailbox write (the
  *      server delegates to the core — it cannot publish an envelope without
  *      the journal row); and the mount wires the core (runOrchestratorVerb).
- *  12. fleet-dashboard static pins (#53, Law 6/§4.2): the read-only
- *      dashboard SPA under src/swarm-server/public/ is a static asset set
- *      (no build step, no framework/bundler, no external network, no
- *      mutation shape) whose sessionStorage holds only the reconnect
- *      cursor. T1.20–T1.23 pin the asset set, the forbidden shapes, the
- *      cursor scope and the absence of build artifacts.
+ *  12. fleet-dashboard static pins (#53/#54, Law 6/§4.2): the dashboard SPA
+ *      under src/swarm-server/public/ is a static asset set (no build step,
+ *      no framework/bundler, no external network) whose sessionStorage holds
+ *      only the reconnect cursor (app.js) and the operator token (steer.js).
+ *      The TWO documented mutation routes live only in steer.js (#54);
+ *      T1.20–T1.24 pin the asset set, the forbidden shapes, the cursor/token
+ *      scope, the mutation surface and the absence of build artifacts.
  *
  * Exit 0 only if all checks pass.
  */
@@ -1791,20 +1792,48 @@ function listDashboardAssets(root: string): string[] {
 	const assets = listDashboardAssets(ROOT).map((f) => relative(ROOT, f).replaceAll("\\", "/"));
 	check(
 		"T1.20 the dashboard assets exist (index.html + one file per module)",
-		["index.html", "app.js", "app.css", "tree.js", "stream.js", "degrade.js"].every((n) => assets.includes(`src/swarm-server/public/${n}`)),
+		["index.html", "app.js", "app.css", "tree.js", "stream.js", "degrade.js", "console.js", "steer.js"].every((n) => assets.includes(`src/swarm-server/public/${n}`)),
 		assets.join(", "),
 	);
 
 	const offenders: string[] = [];
 	for (const f of listDashboardAssets(ROOT)) {
 		const rel = relative(ROOT, f).replaceAll("\\", "/");
-		for (const o of scanDashboardAsset(readFileSync(f, "utf8"))) offenders.push(`${rel}: ${o.rule} [${o.match}]`);
+		for (const o of scanDashboardAsset(readFileSync(f, "utf8"))) {
+			// #54: the steering client is the ONE asset that legitimately issues
+			// mutations (the two documented POST routes) — the dedicated pin below
+			// constrains it; every other asset stays mutation-free.
+			if (o.rule === "mutation-verb" && rel === "src/swarm-server/public/steer.js") continue;
+			offenders.push(`${rel}: ${o.rule} [${o.match}]`);
+		}
 	}
 	check(
-		"T1.21 dashboard assets make ZERO external network calls and carry no framework/bundler/mutation-shape (#53)",
+		"T1.21 dashboard assets make ZERO external network calls and carry no framework/bundler; mutation shapes live ONLY in steer.js (#53/#54)",
 		offenders.length === 0,
 		offenders.join(" | "),
 	);
+
+	// #54 mutation-surface pin: the steering client posts ONLY the two
+	// documented routes, carries the token in an Authorization Bearer header
+	// (never a URL/console/localStorage), and app.js delegates — it never
+	// reimplements a mutation.
+	{
+		const steerJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "steer.js"), "utf8");
+		const appJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
+		const noTokenShape = !/\bconsole\s*\./.test(steerJs) && !/\?\s*token=|token=/.test(steerJs);
+		check(
+			"T1.24 the steering client posts ONLY the two documented mutation routes with an Authorization Bearer token (no token in a URL/log)",
+			steerJs.includes("method: \"POST\"") &&
+				steerJs.includes("/api/workers/") &&
+				steerJs.includes("/api/asks/") &&
+				/authorization/.test(steerJs) &&
+				/Bearer/.test(steerJs) &&
+				steerJs.includes("swarm.dashboard.operatorToken") &&
+				noTokenShape &&
+				!appJs.includes("method: \"POST\""),
+			JSON.stringify({ noTokenShape, appDelegates: !appJs.includes("method: \"POST\"") }),
+		);
+	}
 }
 
 check(
@@ -1815,12 +1844,15 @@ check(
 );
 
 {
-	// sessionStorage is the cursor store ONLY; localStorage is banned.
+	// sessionStorage is the cursor store (app.js) + the operator token store
+	// (steer.js, #54) ONLY; localStorage is banned everywhere.
 	const app = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
-	const others = ["tree.js", "stream.js", "degrade.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
+	const steerJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "steer.js"), "utf8");
+	const others = ["tree.js", "stream.js", "degrade.js", "console.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
+	const anyLocalStorage = listDashboardAssets(ROOT).some((f) => scanDashboardAsset(readFileSync(f, "utf8")).some((o) => o.rule === "local-storage"));
 	check(
-		"T1.22 sessionStorage is used only by app.js and only for the cursor key (no localStorage)",
-		app.includes("swarm.dashboard.lastSeq") && others.length === 0 && scanDashboardAsset(app).every((o) => o.rule !== "local-storage"),
+		"T1.22 sessionStorage is the cursor + operator-token store only (app.js cursor, steer.js token); no localStorage",
+		app.includes("swarm.dashboard.lastSeq") && steerJs.includes("swarm.dashboard.operatorToken") && others.length === 0 && !anyLocalStorage,
 		others.join(", "),
 	);
 

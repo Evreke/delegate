@@ -19,7 +19,8 @@
  * core over node:net is the ONE spelling that runs identically in both; the
  * alternative (the `ws` npm package) is an avoidable runtime dependency
  * (repo rule: dependencies only when zero-dep is genuinely impossible). The
- * protocol subset is bounded: GET-only routes, no request bodies, one
+ * protocol subset is bounded: GET-only read routes plus the two #51 mutation
+ * routes (POST with a small JSON body, capped by MAX_BODY_BYTES), one
  * response per connection, no chunked encoding, no keep-alive.
  *
  * Dependencies: node:net, node:crypto (nothing above src/ — a leaf).
@@ -45,7 +46,8 @@ export const SWARM_SERVER_BIND_HOST = "127.0.0.1";
  *  ONE spelling — Law 9 — with no circular imports. */
 export const SWARM_HTTP_SCHEMA_VERSION = 1;
 
-/** One parsed HTTP/1.1 request head (no body parsing — the API is GET-only). */
+/** One parsed HTTP/1.1 request: the head plus, when the request declared
+ *  one, the body bytes decoded as UTF-8 (empty string when no body). */
 export interface Http1Request {
 	method: string;
 	/** The request-target path (before "?"). */
@@ -54,6 +56,9 @@ export interface Http1Request {
 	query: URLSearchParams;
 	/** Header names lowercased, values verbatim (last write wins). */
 	headers: Record<string, string>;
+	/** The request body (UTF-8). Present ("") for a body-bearing request,
+	 *  absent for a bodyless one. Bounded by MAX_BODY_BYTES. */
+	body?: string;
 }
 
 /** A handler response: status + optional body (already-serialized JSON). */
@@ -78,6 +83,9 @@ const MAX_HEAD_BYTES = 16 * 1024;
 /** Idle-socket deadline: a connection that sends nothing gets destroyed. */
 const IDLE_TIMEOUT_MS = 30_000;
 
+/** Request-body cap: a bigger declared body is a 413 + close (no buffer risk). */
+const MAX_BODY_BYTES = 64 * 1024;
+
 export interface Http1ServerOptions {
 	/** Requested port; 0 = OS-assigned. */
 	port: number;
@@ -96,8 +104,14 @@ function statusText(status: number): string {
 			return "Bad Request";
 		case 404:
 			return "Not Found";
+		case 401:
+			return "Unauthorized";
+		case 403:
+			return "Forbidden";
 		case 405:
 			return "Method Not Allowed";
+		case 413:
+			return "Payload Too Large";
 		case 431:
 			return "Request Header Fields Too Large";
 		case 500:
@@ -126,6 +140,15 @@ function writeResponse(socket: Socket, res: Http1Response): void {
 	socket.write(head + body, "utf8", () => {
 		socket.end();
 	});
+}
+
+/** Declared body length; null when the header is present but malformed. */
+function contentLengthOf(req: Http1Request): number | null {
+	const raw = req.headers["content-length"];
+	if (raw === undefined) return 0;
+	if (!/^\d+$/.test(raw)) return null;
+	const n = Number(raw);
+	return Number.isSafeInteger(n) ? n : null;
 }
 
 /** Parse a request head (head = everything before \r\n\r\n). Returns null on malformed. */
@@ -172,40 +195,14 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 		socket.setTimeout(IDLE_TIMEOUT_MS, () => socket.destroy());
 
 		let headBuf = Buffer.alloc(0);
-		socket.on("data", (chunk: Buffer) => {
-			if (closed) return;
-			headBuf = Buffer.concat([headBuf, chunk]);
-			const sep = headBuf.indexOf("\r\n\r\n");
-			if (sep === -1) {
-				if (headBuf.length > MAX_HEAD_BYTES) {
-					// Cap exceeded: answer 431 and STOP reading — detach the data
-					// listener and pause before writing, so a peer that never sends
-					// CRLFCRLF cannot keep growing headBuf (the cap must be a real
-					// "431 + close, never a buffer risk" bound, not just a reply).
-					socket.removeAllListeners("data");
-					socket.pause();
-					writeResponse(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small GET request heads only.") });
-				}
-				return;
-			}
-			const head = headBuf.subarray(0, sep).toString("utf8");
-			const rest = Buffer.from(headBuf.subarray(sep + 4));
-			socket.removeAllListeners("data");
-			const req = parseRequestHead(head);
-			if (req === null) {
-				writeResponse(socket, { status: 400, body: badRequestBody("malformed HTTP request head", "The read API accepts well-formed HTTP/1.1 GET request heads only.") });
-				return;
-			}
-			const wantsUpgrade =
-				(req.headers.upgrade ?? "").toLowerCase().includes("websocket") &&
-				(req.headers.connection ?? "").toLowerCase().includes("upgrade");
-			if (wantsUpgrade) {
-				const taken = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
-				if (!taken) {
-					writeResponse(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain GET.") });
-				}
-				return;
-			}
+		// Body state: null while reading the head; once the head is parsed and a
+		// body is pending, pendingReq + bodyLen + bodyBuf carry the accumulation.
+		let pendingReq: Http1Request | null = null;
+		let bodyBuf: Buffer | null = null;
+		let bodyLen = 0;
+
+		function dispatch(req: Http1Request): void {
+			socket.removeListener("data", onData);
 			// Deferred evaluation: a handler that throws SYNCHRONOUSLY must land
 			// in the .catch (a structured 500), never escape into the socket's
 			// data handler — an unanswered socket is a client hang (Law 8).
@@ -222,7 +219,78 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 						}),
 					}),
 				);
-		});
+		}
+
+		function finishBody(): void {
+			if (pendingReq === null || bodyBuf === null) return;
+			pendingReq.body = bodyBuf.subarray(0, bodyLen).toString("utf8");
+			const req = pendingReq;
+			pendingReq = null;
+			bodyBuf = null;
+			dispatch(req);
+		}
+
+		function onData(chunk: Buffer): void {
+			if (closed) return;
+			if (pendingReq !== null) {
+				bodyBuf = Buffer.concat([bodyBuf ?? Buffer.alloc(0), chunk]);
+				if (bodyBuf.length >= bodyLen) finishBody();
+				return;
+			}
+			headBuf = Buffer.concat([headBuf, chunk]);
+			const sep = headBuf.indexOf("\r\n\r\n");
+			if (sep === -1) {
+				if (headBuf.length > MAX_HEAD_BYTES) {
+					// Cap exceeded: answer 431 and STOP reading — detach the data
+					// listener and pause before writing, so a peer that never sends
+					// CRLFCRLF cannot keep growing headBuf (the cap must be a real
+					// "431 + close, never a buffer risk" bound, not just a reply).
+					socket.removeListener("data", onData);
+					socket.pause();
+					writeResponse(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small request heads only.") });
+				}
+				return;
+			}
+			const head = headBuf.subarray(0, sep).toString("utf8");
+			const rest = Buffer.from(headBuf.subarray(sep + 4));
+			const req = parseRequestHead(head);
+			if (req === null) {
+				socket.removeListener("data", onData);
+				writeResponse(socket, { status: 400, body: badRequestBody("malformed HTTP request head", "The read API accepts well-formed HTTP/1.1 request heads only.") });
+				return;
+			}
+			const wantsUpgrade =
+				(req.headers.upgrade ?? "").toLowerCase().includes("websocket") &&
+				(req.headers.connection ?? "").toLowerCase().includes("upgrade");
+			if (wantsUpgrade) {
+				socket.removeListener("data", onData);
+				const taken = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
+				if (!taken) {
+					writeResponse(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests.") });
+				}
+				return;
+			}
+			const len = contentLengthOf(req);
+			if (len === null) {
+				socket.removeListener("data", onData);
+				writeResponse(socket, { status: 400, body: badRequestBody("invalid Content-Length header", "A request body must declare a non-negative integer Content-Length.") });
+				return;
+			}
+			if (len > MAX_BODY_BYTES) {
+				socket.removeListener("data", onData);
+				writeResponse(socket, { status: 413, body: badRequestBody("request body too large", `A request body must not exceed ${MAX_BODY_BYTES} bytes.`) });
+				return;
+			}
+			if (len === 0) {
+				dispatch(req);
+				return;
+			}
+			pendingReq = req;
+			bodyLen = len;
+			bodyBuf = rest;
+			if (bodyBuf.length >= bodyLen) finishBody();
+		}
+		socket.on("data", onData);
 	});
 
 	return new Promise<Http1ServerHandle>((resolve, reject) => {

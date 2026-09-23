@@ -78,6 +78,21 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   (#30) is the next client surface.
 ### Changed
 
+- **The OS launch policy moved below the seam (`src/spawn-policy.ts`).** The
+  `cmd.exe` quoting, the shell-wrapper launch shape and the `/T /F` tree-kill
+  recipe lived inside the herdr adapter; the rpc backend needs the same OS
+  policy, and that vocabulary names the host OS, not a backend. Pure move (the
+  helpers are byte-identical), plus one new export — `treeKillCommand`, so no
+  backend spells the kill recipe itself. Herdr behavior is unchanged and
+  `winQuoteArg` stays in the adapter's export surface (re-export). Pins:
+  S1/S2 now allows `src/herdr/cli.ts` exactly the `../spawn-policy.ts`
+  specifier and REQUIRES it (the vocabulary may not move back), a new **S1b**
+  pins the policy module dependency-free (it sits below both adapters), and S6
+  splits the frozen strings into herdr vocabulary (adapter-local) and OS launch
+  vocabulary (confined to the policy module, which may never speak herdr).
+  `src/herdr/cli.ts` fell under the Law 5 threshold with the move — its
+  decomposition row is retired per the ledger convention.
+
 - **Watcher consumes the journal cursor; the delivered-facts store is
   retired (#26, swarm-core-v1).** Wake-up dedup moved from the per-task
   `delivered-<key>.json` files to a durable per-audience journal cursor

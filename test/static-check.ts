@@ -853,7 +853,6 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/usage.ts", owner: "operator", targetRelease: "1.19.0", plan: "the one-parser law stays; extract budget-threshold validation from line parsing" },
 	{ file: "src/manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the concurrent update() fold from manifest file I/O" },
 	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
-	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 	{ file: "src/swarm/journal-manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the pure replay/diff fold (replayManifest + diffManifestEvents) into a journal-manifest-replay.ts sibling" },
 ];
 

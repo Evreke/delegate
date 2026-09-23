@@ -1,5 +1,8 @@
 node_modules/
 
+# IDE directories
+.idea/
+
 # Secrets never belong in the repo (Law 11)
 .env*
 *.key

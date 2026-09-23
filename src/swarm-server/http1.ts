@@ -40,6 +40,11 @@ import { createServer, type Server, type Socket } from "node:net";
 /** The loopback bind constant (§4.2 trust model — not configurable). */
 export const SWARM_SERVER_BIND_HOST = "127.0.0.1";
 
+/** The HTTP surface's own contract version (Law 7; additive-only). Lives on
+ *  this leaf so every layer (core error envelopes, routes, WS frames) shares
+ *  ONE spelling — Law 9 — with no circular imports. */
+export const SWARM_HTTP_SCHEMA_VERSION = 1;
+
 /** One parsed HTTP/1.1 request head (no body parsing — the API is GET-only). */
 export interface Http1Request {
 	method: string;
@@ -100,6 +105,14 @@ function statusText(status: number): string {
 		default:
 			return "Status";
 	}
+}
+
+function badRequestBody(message: string, hint: string): string {
+	return JSON.stringify({
+		ok: false,
+		schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+		error: { code: "E_SWARM_USAGE", message, hint },
+	});
 }
 
 /** Serialize + send one plain response, then half-close the socket. */
@@ -165,7 +178,7 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 			const sep = headBuf.indexOf("\r\n\r\n");
 			if (sep === -1) {
 				if (headBuf.length > MAX_HEAD_BYTES) {
-					writeResponse(socket, { status: 431, body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"request head too large","hint":"The read API accepts small GET request heads only."}}' });
+					writeResponse(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small GET request heads only.") });
 				}
 				return;
 			}
@@ -174,21 +187,17 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 			socket.removeAllListeners("data");
 			const req = parseRequestHead(head);
 			if (req === null) {
-				writeResponse(socket, { status: 400, body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"malformed HTTP request head","hint":"The read API accepts well-formed HTTP/1.1 GET request heads only."}}' });
+				writeResponse(socket, { status: 400, body: badRequestBody("malformed HTTP request head", "The read API accepts well-formed HTTP/1.1 GET request heads only.") });
 				return;
 			}
 			const wantsUpgrade =
 				(req.headers.upgrade ?? "").toLowerCase().includes("websocket") &&
 				(req.headers.connection ?? "").toLowerCase().includes("upgrade");
-			if (wantsUpgrade && opts.onUpgrade) {
-				const taken = opts.onUpgrade(req, socket, rest);
+			if (wantsUpgrade) {
+				const taken = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
 				if (!taken) {
-					writeResponse(socket, { status: 400, body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"websocket upgrade refused","hint":"Only /api/swarm/stream speaks WebSocket; other paths are plain GET."}}' });
+					writeResponse(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain GET.") });
 				}
-				return;
-			}
-			if (wantsUpgrade && !opts.onUpgrade) {
-				writeResponse(socket, { status: 400, body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"websocket upgrade refused","hint":"Only /api/swarm/stream speaks WebSocket; other paths are plain GET."}}' });
 				return;
 			}
 			// Deferred evaluation: a handler that throws SYNCHRONOUSLY must land
@@ -200,7 +209,11 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 				.catch(() =>
 					writeResponse(socket, {
 						status: 500,
-						body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_IO","message":"internal server error","hint":"The read server could not serve this request; retry or check the orchestrator log."}}',
+						body: JSON.stringify({
+							ok: false,
+							schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+							error: { code: "E_SWARM_IO", message: "internal server error", hint: "The read server could not serve this request; retry or check the orchestrator log." },
+						}),
 					}),
 				);
 		});

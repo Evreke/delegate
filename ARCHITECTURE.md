@@ -684,3 +684,69 @@ accepted loss, recorded here rather than discovered in the field.
    class: the orchestrator cannot even state that its fleet died); every
    observation UI would reimplement format knowledge, which Law 13's client
    rule forbids.
+
+### 4.2 swarm-server: the session-hosted read endpoint (issue #50)
+
+Status: this record lands with #50's implementation. It binds the
+session-hosted HTTP/WS read endpoint under the swarm-core-v1 constraints
+(§4.1, Law 13).
+
+#### 4.2.1 Session-hosted ruling
+
+The read API's first network surface is **session-hosted**: each pi session
+that enables it mounts ONE server in its `session_start` and tears it down in
+the paired `session_shutdown` (Law 3 — a globalThis mount registry keyed by
+session file refuses a second mount for the same session; two parallel
+sessions are two independent servers, necessarily on different ports). The
+port (`swarm.server.port`, default 7331; `0` = OS-assigned) is a REQUEST, not
+a requirement: on `EADDRINUSE` the mount retries once on an OS-assigned port
+and logs the substitution. The server is **OFF by default**
+(`swarm.server.enabled: false`) and **advisory by contract** (Law 8): every
+startup failure — bad port, bound port, failing journal reader — is logged
+(one structured JSON stderr line) and never blocks session start, spawn, or
+collect; pinned by `test/swarm-server-fault-check.ts`.
+
+The session holds ONE long-lived read-only journal reader
+(`src/swarm-server/journal-session.ts` over `src/swarm/journal-read.ts` — the
+openReadOnly precedent), never the CLI verbs' per-request temp-copy
+workaround (a one-shot-process affordance). A reader opened before the
+journal exists reopens exactly once on the absence→presence transition (a
+session mounts before the first journal write creates events.db).
+
+#### 4.2.2 Protocol identity with a future daemon
+
+The HTTP surface is the read API's SAME contracts, not a new one
+("protocol identity"): `GET /api/swarm/snapshot` and
+`GET /api/swarm/events?after=<seq>` return the `swarm snapshot` /
+`swarm events` CLI envelopes verbatim (byte-equality pinned against real CLI
+runs in `test/swarm-server-endpoints-check.ts`); the server's addition is
+LIVE in-process sources the separate-process CLI structurally lacks — the
+session's Transport statuses and usage summaries fold into the snapshot, so
+`no-live-status` / `usage-unavailable` appear only when genuinely
+unavailable. Every envelope, success and error, carries `schemaVersion: 1`
+(Law 7) and structured E_* errors (Law 8); `E_SWARM_NOT_FOUND` joins the
+taxonomy by addition. A future standalone daemon must speak these same
+envelopes over the same paths — the identity constraint is what keeps the
+session-hosted server and a daemon swappable for clients.
+
+`WS /api/swarm/stream?after=<seq>` pushes: ONE snapshot frame on connect,
+then event frames as the journal cursor advances (poll interval default
+500 ms), ordering by `seq` preserved; a client reconnects with its last
+consumed `seq` (cursor-resume). The HTTP stack is a hand-rolled zero-dep
+HTTP/1.1 + RFC 6455 core on `node:net` (`src/swarm-server/http1.ts`,
+`ws.ts`): the platform has no server-side WebSocket, and `node:http`'s
+upgrade path silently drops writes under bun 1.3.x (the repo's check
+runtime) — one spelling that runs identically under node (the extension
+runtime) and bun (the check runtime).
+
+#### 4.2.3 Loopback trust model
+
+The server binds `127.0.0.1` ONLY — a constant in code, not an operator
+knob (fail-closed: there is no config spelling that widens the bind). There
+is NO auth in v1 beyond the loopback bind: every process on the machine can
+read the read API. That is the documented boundary: single-operator
+authority (§0) covers the operator's own processes; multi-user hosts and
+off-machine access are OUT OF SCOPE for this surface. Non-goals (issue #50):
+no frontend, no console streaming (#52), no mutation endpoints (#51), no
+multi-session aggregation, no daemon mode, no TLS, no auth — each joins by
+addition under its own issue.

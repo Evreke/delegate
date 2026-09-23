@@ -520,6 +520,7 @@ async function main(): Promise<void> {
 	// -- P9 — app wiring: console panel + steer confirmation -----------------
 	{
 		const appMod = (await import(publicUrl("app.js"))) as any;
+		const streamMod = (await import(publicUrl("stream.js"))) as any;
 		const els: Record<string, any> = {};
 		const doc = fakeDoc(els);
 		const graph = {
@@ -533,7 +534,7 @@ async function main(): Promise<void> {
 			orphans: [],
 		};
 		let journalRows: any[] = [];
-		let capturedStream: any = null;
+		let fakeSocket: any = null;
 		let tailOpts: any = null;
 		const fetchImpl = async (url: string, init?: any) => {
 			if (init && init.method === "POST" && url.includes("/api/workers/")) return { status: 200, json: async () => ({ ok: true, verb: "steer", worker: "w1", via: "http" }) };
@@ -552,10 +553,15 @@ async function main(): Promise<void> {
 			fetch: fetchImpl,
 			storage,
 			location: { protocol: "http:", host: "h" },
-			stream: (opts: any) => {
-				capturedStream = opts;
-				return { state: { lastSeq: 0 }, close() {} };
-			},
+			// The REAL stream state machine over a fake socket: it advances
+			// lastSeq BEFORE invoking onFrame (exactly like production), so the
+			// exclusive-after cursor race (B1) is reproducible here.
+			stream: (opts: any) =>
+				streamMod.createSwarmStream({
+					...opts,
+					connect: () => (fakeSocket = { close() {} }),
+					schedule: () => 0,
+				}),
 			consoleTail: (opts: any) => {
 				tailOpts = opts;
 				return { close() {} };
@@ -573,10 +579,55 @@ async function main(): Promise<void> {
 		await app.sendSteer("w1", "go");
 		check("P9.4 a steer POST shows pending before confirmation", app.pending.length === 1 && app.pending[0].status === "pending", JSON.stringify(app.pending));
 		journalRows = [{ seq: 1, kind: "steer", worker: "w1", payload: { text: "go", via: "http" } }];
-		capturedStream.onFrame({ type: "events", events: [{ seq: 1 }] }, "events");
+		// Drive a real `events` frame carrying the confirming row. The stream has
+		// already advanced lastSeq to 1, and the REST refetch is exclusive
+		// (?after=1 returns nothing) — only folding the frame's OWN rows confirms.
+		fakeSocket.onmessage({ data: JSON.stringify({ ok: true, type: "events", after: 0, events: journalRows }) });
 		await new Promise((r) => setTimeout(r, 200));
-		check("P9.5 the journal `steer` event confirms the pending mutation in the app", app.pending[0].status === "confirmed" && app.pending[0].detail.includes("http"), JSON.stringify(app.pending));
+		check("P9.5 the `steer` row arriving ON the frame itself confirms the pending mutation (no exclusive-after gap)", app.pending[0].status === "confirmed" && app.pending[0].detail.includes("http"), JSON.stringify(app.pending));
+
+		// F2: a worker with no session id gets an honest terminal reason, not a
+		// forever-pending "checking ownership…".
+		const noSession = steer.controlsView({ worker: "wX", hasSession: false });
+		check("P9.6 no session id → the honest 'no session id' disabled reason (never 'checking ownership…')", noSession.disabled === true && noSession.reasonCode === "no-session" && noSession.reason.includes("no session id"), JSON.stringify(noSession));
 		app.close();
+
+		// F1: a rejected token re-prompts at most MAX_AUTH_RETRIES times and NEVER
+		// stacks a second pending marker (the old recursive submit did both).
+		{
+			const authEls: Record<string, any> = {};
+			let authPosts = 0;
+			let prompts = 0;
+			const authFetch = async (url: string, init?: any) => {
+				if (init && init.method === "POST" && url.includes("/api/workers/")) {
+					authPosts++;
+					return { status: 401, json: async () => ({ ok: false, error: { code: "E_SWARM_AUTH", message: "bad token" } }) };
+				}
+				if (url.startsWith("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: graph }) };
+				if (url.startsWith("/api/swarm/events")) return { json: async () => ({ ok: true, events: [], journal: { count: 0, dbSizeBytes: 0 } }) };
+				if (url.includes("/console")) return { json: async () => ({ ok: true, worker: "w1", nodeId: "n1", state: "live", chunk: "hi", nextOffset: 2, oldestOffset: 0, dropped: false }) };
+				throw new Error(`unexpected fetch ${url}`);
+			};
+			const authStorage = fakeStorage();
+			authStorage.setItem(steer.TOKEN_KEY, TOKEN);
+			const authApp = appMod.createFleetApp({
+				doc: fakeDoc(authEls),
+				fetch: authFetch,
+				storage: authStorage,
+				location: { protocol: "http:", host: "h" },
+				stream: () => streamMod.createSwarmStream({ url: "ws://h/api/swarm/stream", connect: () => ({ close() {} }), schedule: () => 0 }),
+				consoleTail: () => ({ close() {} }),
+				prompt: () => {
+					prompts++;
+					return TOKEN;
+				},
+			});
+			await authApp.start();
+			await authApp.sendSteer("w1", "retry me");
+			check("P9.7 a rejected token caps re-prompts (1 POST + MAX_AUTH_RETRIES) and stacks ONE pending marker", authPosts === appMod.MAX_AUTH_RETRIES + 1 && prompts === appMod.MAX_AUTH_RETRIES && authApp.pending.length === 1, JSON.stringify({ authPosts, prompts, pending: authApp.pending }));
+			check("P9.8 the capped token state is terminal ('rejected'), not an infinite prompt loop", authApp.pending[0].status === "failed" && authEls["token-state"].attributes["data-token-state"] === "rejected", JSON.stringify({ pending: authApp.pending[0], token: authEls["token-state"].attributes }));
+			authApp.close();
+		}
 	}
 
 	// The dashboard shell references the new modules (no build step).

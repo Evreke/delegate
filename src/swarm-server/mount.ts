@@ -36,10 +36,12 @@
  */
 
 import { resolveSwarmServerConfig } from "./config.ts";
-import { routeRequest, type SwarmServerDeps } from "./server.ts";
+import { defaultUsageSource, routeRequest, type SwarmServerDeps } from "./server.ts";
 import { startHttp1Server, type Http1ServerHandle } from "./http1.ts";
 import { createJournalReader, type JournalReader } from "../swarm/journal-read.ts";
-import { resolveSwarmStorage } from "../swarm/storage.ts";
+import { resolveSwarmStorage, type SwarmStorageConfig } from "../swarm/storage.ts";
+import { activeBackendName } from "../swarm/snapshot.ts";
+import type { SwarmUsageSource } from "../swarm/graph.ts";
 
 /** globalThis slot of the per-session server mount registry (Law 3). */
 const SWARM_SERVER_MOUNT_REGISTRY_KEY = "__piDelegateSwarmServerMounts";
@@ -50,7 +52,7 @@ export interface SwarmServerHandle extends Omit<Http1ServerHandle, "close"> {
 	stop(): void;
 }
 
-export interface MountSwarmServerDeps extends SwarmServerDeps {
+export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage"> {
 	/** This session's file identity (the registry key; the Law-3 owner). */
 	sessionFile?: string;
 	/** The process environment (config + test tiers). */
@@ -61,6 +63,10 @@ export interface MountSwarmServerDeps extends SwarmServerDeps {
 	 *  ONE long-lived read-only reader per session — openReadOnly precedent,
 	 *  never the CLI's per-request temp copy). */
 	journalFactory?: (dbPath: string | undefined) => JournalReader | undefined;
+	/** Usage resolver override (the read-model's input seam). `false` binds NO
+	 *  resolver — the identity spelling that matches the CLI verb's sources
+	 *  exactly (protocol identity); the default binds defaultUsageSource. */
+	usage?: SwarmUsageSource | false;
 }
 
 /** One structured stderr line (the writeJournalWarning shape — machine-readable). */
@@ -136,16 +142,27 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	// openReadOnly precedent — a single reader per session, NOT the CLI's
 	// per-request temp-copy workaround). A factory failure is advisory: the
 	// server mounts degraded (empty-but-valid read envelopes), Law 8.
+	let storage: SwarmStorageConfig;
+	try {
+		storage = resolveSwarmStorage(env);
+	} catch {
+		storage = { storage: "files", projection: true, warnings: [] }; // unreachable (resolver is total) — belt
+	}
 	let journal: JournalReader | undefined;
 	try {
-		const storage = resolveSwarmStorage(env);
 		const factory = deps.journalFactory ?? ((dbPath: string | undefined) => createJournalReader({ dbPath }));
 		journal = factory(storage.dbPath);
 	} catch (err) {
 		logAdvisory("journal-reader-failed", { error: String((err as Error).message ?? err) });
 		journal = undefined;
 	}
-	const serverDeps: SwarmServerDeps = { transport: deps.transport, journal };
+	const serverDeps: SwarmServerDeps = {
+		transport: deps.transport,
+		journal,
+		usage: deps.usage === false ? undefined : (deps.usage ?? defaultUsageSource),
+		storage,
+		backendName: deps.transport?.backendName?.() ?? activeBackendName(),
+	};
 
 	let bound: Http1ServerHandle;
 	try {

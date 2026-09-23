@@ -165,7 +165,66 @@ function renderBadges(doc, parent, degraded) {
 	}
 }
 
-function renderWorkers(doc, parent, node) {
+/**
+ * Render one worker's console panel (issue #54): the state banner, the
+ * honest detail line (never a fake terminal) and the monospace tail. The
+ * panel is rendered from a `consoleBanner` view supplied by the app; absent
+ * views render nothing (a read-only consumer of #53 needs no panel).
+ */
+function renderConsolePanel(doc, parent, panel) {
+	const node = el(doc, "div", {
+		class: "console",
+		"data-console-for": panel.worker,
+		"data-console-node": panel.nodeId,
+		"data-console-state": panel.state,
+		"data-console-retained": panel.retained ? "1" : "0",
+	});
+	node.appendChild(el(doc, "div", { class: "console-banner", "data-console-banner": panel.state }, panel.label));
+	if (panel.detail) node.appendChild(el(doc, "div", { class: "console-detail", "data-console-detail": panel.state }, panel.detail));
+	node.appendChild(el(doc, "pre", { class: "console-tail", "data-console-tail": "1" }, panel.text));
+	parent.appendChild(node);
+}
+
+/**
+ * Render one worker's steering controls (issue #54): the steer input/button,
+ * the optimistic pending indicator and the answer form for a pending ask.
+ * Controls are DISABLED-WITH-REASON, never hidden — a foreign/unowned or
+ * ended card states why (honesty over tidiness).
+ */
+function renderControls(doc, parent, worker, ctl) {
+	const box = el(doc, "div", {
+		class: "controls",
+		"data-steer-worker": worker.name,
+		"data-steer-node": worker.sessionId,
+		"data-steer-disabled": ctl.disabled ? "1" : "0",
+	});
+	if (ctl.disabled) box.appendChild(el(doc, "span", { class: "reason", "data-disabled-reason": ctl.reasonCode || "disabled" }, ctl.reason));
+	const input = el(doc, "input", { class: "steer-input", "data-steer-input": "1", type: "text", value: ctl.draft || "", placeholder: "steer this worker\u2026" });
+	const send = el(doc, "button", { class: "steer-send", "data-steer-send": "1" }, "steer");
+	if (ctl.disabled) {
+		input.setAttribute("disabled", "disabled");
+		send.setAttribute("disabled", "disabled");
+	}
+	box.appendChild(input);
+	box.appendChild(send);
+	if (ctl.pending) box.appendChild(el(doc, "span", { class: `pending pending-${ctl.pending.status}`, "data-steer-pending": ctl.pending.status }, ctl.pending.detail));
+	if (ctl.pendingAsk) {
+		const ask = el(doc, "div", { class: "answer", "data-answer-worker": worker.name, "data-answer-pending": String(ctl.pendingAsk.seq) });
+		ask.appendChild(el(doc, "span", { class: "question", "data-answer-question": "1" }, ctl.pendingAsk.question));
+		const aInput = el(doc, "input", { class: "answer-input", "data-answer-input": "1", type: "text", placeholder: "answer\u2026" });
+		const aSend = el(doc, "button", { class: "answer-send", "data-answer-send": "1" }, "answer");
+		if (ctl.disabled) {
+			aInput.setAttribute("disabled", "disabled");
+			aSend.setAttribute("disabled", "disabled");
+		}
+		ask.appendChild(aInput);
+		ask.appendChild(aSend);
+		box.appendChild(ask);
+	}
+	parent.appendChild(box);
+}
+
+function renderWorkers(doc, parent, node, extras) {
 	if (node.workers.length === 0) return;
 	const list = el(doc, "ul", { class: "workers", "data-workers-for": node.id });
 	for (const w of node.workers) {
@@ -192,6 +251,14 @@ function renderWorkers(doc, parent, node) {
 			["retired", w.retiredAt],
 		]);
 		renderBadges(doc, item, w.degraded);
+		if (extras && typeof extras.panelOf === "function") {
+			const panel = extras.panelOf(w);
+			if (panel) renderConsolePanel(doc, item, panel);
+		}
+		if (extras && typeof extras.controlsOf === "function") {
+			const ctl = extras.controlsOf(w);
+			if (ctl) renderControls(doc, item, w, ctl);
+		}
 		list.appendChild(item);
 	}
 	parent.appendChild(list);
@@ -206,7 +273,7 @@ function renderOrphans(doc, parent, orphans) {
 	parent.appendChild(list);
 }
 
-function renderNode(doc, node) {
+function renderNode(doc, node, extras) {
 	const kindClass = node.kind === "session" ? "node-session" : "node-task";
 	const item = el(doc, "li", {
 		class: `node ${kindClass}`,
@@ -230,11 +297,11 @@ function renderNode(doc, node) {
 		["description", node.description],
 	]);
 	renderBadges(doc, item, node.degraded);
-	renderWorkers(doc, item, node);
+	renderWorkers(doc, item, node, extras);
 	renderOrphans(doc, item, node.orphans);
 	if (node.children.length > 0) {
 		const childList = el(doc, "ul", { class: "children" });
-		for (const child of node.children) childList.appendChild(renderNode(doc, child));
+		for (const child of node.children) childList.appendChild(renderNode(doc, child, extras));
 		item.appendChild(childList);
 	}
 	return item;
@@ -245,13 +312,15 @@ function renderNode(doc, node) {
  * <p>
  * FUNCTION_CONTRACT:
  * Input: view — a buildTreeView result; root — the container element; doc —
- *   a document-like seam ({createElement, createTextNode})
+ *   a document-like seam ({createElement, createTextNode}); extras — optional
+ *   per-worker panel/control view providers ({panelOf(worker), controlsOf(worker)})
  * Output: none (root is mutated)
  * Guarantees: no innerHTML; edges rendered once each in a dedicated list;
- *   every view node rendered exactly once; deterministic order
+ *   every view node rendered exactly once; deterministic order; a worker
+ *   panel/control view renders only when the provider supplies one
  * Raises: never on a well-formed view
  */
-export function renderTree(view, root, doc) {
+export function renderTree(view, root, doc, extras) {
 	while (root.firstChild) root.removeChild(root.firstChild);
 	if (!view || !Array.isArray(view.roots)) return;
 	const edgeList = el(doc, "ul", { class: "edges", "data-edges": String((view.edges || []).length) });
@@ -262,6 +331,6 @@ export function renderTree(view, root, doc) {
 	}
 	root.appendChild(edgeList);
 	const list = el(doc, "ul", { class: "tree", "data-node-count": String(view.nodeCount) });
-	for (const node of view.roots) list.appendChild(renderNode(doc, node));
+	for (const node of view.roots) list.appendChild(renderNode(doc, node, extras));
 	root.appendChild(list);
 }

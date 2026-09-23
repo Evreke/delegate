@@ -118,16 +118,35 @@ check(
 
 // --- S1/S2/S3 the shape of each new module's import list ---------------------
 
-for (const [name, rule] of [
-	["cli.ts", "node builtins only (no relative import at all — so it cannot import socket.ts)"],
-	["socket.ts", "node builtins only (no src/ import of any kind)"],
-] as const) {
-	const file = join(HERDR_DIR, name);
-	const relative = importSpecs(file).filter((s) => s.startsWith("."));
+// cli.ts stays the leaf of the adapter — no herdr sibling may be reached from
+// it. The ONE allowed exception is the OS launch policy module
+// (src/spawn-policy.ts): the launch/kill policy names the OS, not herdr, and
+// both host backends must speak it from a single implementation. The exception
+// is a specifier, not a category — anything else still fires this pin.
+{
+	const POLICY_SPECS = ["../spawn-policy.ts"];
+	for (const [name, rule] of [
+		["cli.ts", `node builtins plus the OS launch policy only (no herdr sibling — so it cannot import socket.ts)`],
+		["socket.ts", "node builtins only (no src/ import of any kind)"],
+	] as const) {
+		const file = join(HERDR_DIR, name);
+		const specs = importSpecs(file).filter((s) => s.startsWith("."));
+		const relative = name === "cli.ts" ? specs.filter((s) => !POLICY_SPECS.includes(s)) : specs;
+		const policySpecs = name === "cli.ts" ? specs.filter((s) => POLICY_SPECS.includes(s)) : [];
+		check(
+			`S1/S2 src/herdr/${name} imports ${rule}`,
+			existsSync(file) && relative.length === 0 && (name !== "cli.ts" || policySpecs.length > 0),
+			relative.length > 0 ? relative.join(", ") : policySpecs.length === 0 ? "the policy import is gone — the OS launch vocabulary would move back into the adapter" : "",
+		);
+	}
+	// The policy module must stay BELOW both adapters: a src/ import of its own
+	// would let the OS launch vocabulary reach anything through it.
+	const policyFile = resolve(ROOT, join("src", "spawn-policy.ts"));
+	const policyRelative = existsSync(policyFile) ? importSpecs(policyFile).filter((s) => s.startsWith(".")) : ["<missing>"];
 	check(
-		`S1/S2 src/herdr/${name} imports ${rule}`,
-		existsSync(file) && relative.length === 0,
-		relative.join(", "),
+		"S1b src/spawn-policy.ts is dependency-free (the bottom of the graph — both adapters may import it, it imports nothing)",
+		policyRelative.length === 0,
+		policyRelative.join(", "),
 	);
 }
 
@@ -208,32 +227,44 @@ const PRE_SPLIT_EXPORTS = [
 // --- S6 the frozen herdr surface stays adapter-local -------------------------
 
 {
-	const FROZEN = [
+	// The herdr backend's own vocabulary — must never leave the adapter.
+	const HERDR_VOCAB = [
 		"not_linked_worktree",
 		"is_linked_worktree",
 		"workspace.worktree.checkout_path",
 		"root_pane.pane_id",
 		"tab.tab_id",
-		"taskkill",
-		"cmd.exe",
 		"HERDR_WORKSPACE_ID",
 	];
+	// The OS launch policy is NOT herdr vocabulary: cmd.exe and taskkill name the
+	// host OS, and since this commit the rpc backend runs on the SAME policy
+	// module (a bare `pi` never resolves on Windows). They are confined to that
+	// one module — the amendment is "which single module", not "anywhere".
+	const OS_LAUNCH = ["taskkill", "cmd.exe"];
+	const POLICY_MODULE = resolve(ROOT, join("src", "spawn-policy.ts"));
 	const inside = HERDR_FILES.map((f) => readFileSync(f, "utf8")).join("\n");
-	const missingInside = FROZEN.filter((t) => !inside.includes(t));
+	const policySrc = existsSync(POLICY_MODULE) ? readFileSync(POLICY_MODULE, "utf8") : "";
+	const missingInside = [
+		...HERDR_VOCAB.filter((t) => !inside.includes(t)),
+		...OS_LAUNCH.filter((t) => !inside.includes(t) && !policySrc.includes(t)),
+	];
 	const PRODUCTION_OUTSIDE = [
-		...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_PREFIX)),
+		...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_PREFIX) && f !== POLICY_MODULE),
 		resolve(ROOT, "index.ts"),
 	];
 	const leaked: string[] = [];
 	for (const file of PRODUCTION_OUTSIDE) {
 		if (!existsSync(file)) continue;
 		const src = readFileSync(file, "utf8");
-		for (const t of FROZEN) if (src.includes(t)) leaked.push(`${file}: ${t}`);
+		for (const t of [...HERDR_VOCAB, ...OS_LAUNCH]) if (src.includes(t)) leaked.push(`${file}: ${t}`);
 	}
+	// The policy module speaks OS vocabulary ONLY — a herdr token moving into it
+	// would be exactly the leak this rule exists to catch.
+	const vocabInPolicy = HERDR_VOCAB.filter((t) => policySrc.includes(t));
 	check(
-		"S6 the frozen herdr CLI/OS strings live inside src/herdr/ and nowhere else in production src/ (they never leak above the adapter)",
-		missingInside.length === 0 && leaked.length === 0,
-		`missing: ${missingInside.join(", ")} | leaked: ${leaked.join(", ")}`,
+		"S6 the frozen herdr CLI strings live inside src/herdr/ and the OS launch strings inside src/spawn-policy.ts — nowhere else in production src/ (they never leak above the adapter)",
+		missingInside.length === 0 && leaked.length === 0 && vocabInPolicy.length === 0,
+		`missing: ${missingInside.join(", ")} | leaked: ${leaked.join(", ")} | herdr vocab in the policy module: ${vocabInPolicy.join(", ")}`,
 	);
 }
 

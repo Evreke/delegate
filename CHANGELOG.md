@@ -10,6 +10,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Dashboard console panel + steering controls (#54, ARCHITECTURE §4.2.4).**
+  The fleet dashboard SPA now streams each worker's console and steers it from
+  the page. Per worker card: a monospace console panel preloads the backlog via
+  `GET /api/workers/:id/console?offset=0` and live-tails it over
+  `WS /api/workers/:id/console/stream`, with a DISTINCT honest banner for
+  `live` / `ended` / `ended-with-retained-backlog` (backlog shown, marked
+  retained) / `unavailable` (no fake terminal) and the fail-closed foreign
+  refusal. Steering is optimistic-with-confirmation: a POST to
+  `POST /api/workers/:id/steer` (`/api/asks/:id/answer` for a pending ask)
+  starts a pending marker that turns `confirmed` ONLY when the matching journal
+  `steer`/`answer` event arrives over the read stream (`via:"http"` shown) and
+  `failed` on a structured error. Pending questions are folded from `ask`
+  events without a matching `answer`. The operator token is prompted once,
+  kept in `sessionStorage` ONLY (never localStorage, a URL or a log), sent as
+  `Authorization: Bearer`, and a structured 401/403 re-prompts. Controls are
+  DISABLED-WITH-REASON (never hidden) for foreign-fleet and ended cards, while
+  a console-`unavailable` backend still steers. New client modules
+  `src/swarm-server/public/console.js` and `steer.js`; the static pins evolve
+  (T1.20/T1.22 asset set + token store) and gain T1.24 (the mutation surface
+  lives only in `steer.js`). Check: `test/swarm-dashboard-steer-check.ts`.
+
 - **Read-only fleet dashboard (#53, ARCHITECTURE §4.2.4).** `GET /` on the
   session-hosted read server now serves a static dashboard SPA from
   `src/swarm-server/public/` (vanilla ES modules + CSS — **no build step**, no

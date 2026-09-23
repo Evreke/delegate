@@ -54,6 +54,26 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   bounded JSON bodies on those two routes only. Checks:
   `test/swarm-server-mutation-check.ts` (+ T1.16 in `test/static-check.ts`).
 
+- **Worker console stream endpoint (#52, swarm-core-v1, ARCHITECTURE
+  §4.2.4).** The session-hosted read server gains the console half:
+  `GET /api/workers/:id/console?offset=<n>` and `WS
+  /api/workers/:id/console/stream?offset=<n>` serve one worker's console as
+  frames `{ok, schemaVersion, worker, nodeId, task, state, chunk,
+  nextOffset, oldestOffset, dropped}`. `:id` is the SwarmGraph session node
+  id of a worker session; resolution is fail-closed through the canonical
+  `src/watch-role.ts` ownership verdict (unknown/foreign/task ids are
+  `E_CONSOLE_WORKER_REFUSED`, 404 — no existence oracle). States are
+  transport-derived: `live`, `ended-with-retained-backlog`, `ended`, or
+  `unavailable` (a backend without a console stream — herdr — answers HTTP
+  200 with `E_CONSOLE_UNAVAILABLE` + recovery hint, never a fabricated
+  stream). The rpc backend reuses its `FidelityStore` console stream. The
+  server-side retained backlog is bounded by pi's `DEFAULT_MAX_BYTES`
+  (drop-oldest, `console-buffer.ts`) and served by character offset with
+  `oldestOffset`/`dropped` honesty; console text is ephemeral — never
+  journalled, never in the swarm snapshot — and the surface is advisory by
+  contract. Zero new dependencies. Checks:
+  `test/swarm-console-{rest,ws}-check.ts`.
+
 - **Static pins for the new seams (#31, swarm-core-v1, Law 6).** Three
   shape pins in `test/static-check.ts` make §4.1.2/§4.1.3 fail CI, not
   reviews: **sqlite confinement** (T1.12 — no src/ module outside the

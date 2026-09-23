@@ -121,7 +121,7 @@ async function main(): Promise<void> {
 			const sub = lines.map(asJson).find((j) => j?.event === "port-substituted");
 			check(
 				"F1.2 the substitution is logged as one structured port-substituted line naming both ports",
-				sub !== undefined && sub.requested === P && typeof sub.bound === "number" && (sub.bound as number) === h?.port,
+				sub != null && sub.requested === P && typeof sub.bound === "number" && (sub.bound as number) === h?.port,
 				lines.join(" | ").slice(0, 200),
 			);
 			if (h) {

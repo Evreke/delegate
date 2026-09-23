@@ -39,6 +39,18 @@
  *      canary fixtures (T1.9b efficacy precedent) AND a seeded-file probe: a
  *      fixture tree walked by the real scanner must produce the offender —
  *      the pin is provably not vacuous.
+ *  10. swarm-server pins (#50, Law 6/13; binding spec §4.2): the session-
+ *      hosted read server family (src/swarm-server/) is a Law-13 CLIENT —
+ *      fleet state enters ONLY via the read-model. T1.15 bans the family's
+ *      direct imports of durable stores, observation surfaces, backend
+ *      adapters and the journal WRITER half (manifest-store, watch-store,
+ *      exchange, observe, watcher, fleet, worker-view, the herdr/rpc adapter
+ *      modules, swarm/journal.ts, swarm/journal-copy.ts,
+ *      swarm/journal-driver.ts, swarm/journal-manifest-store.ts); the
+ *      sanctioned doors are ../swarm/journal-read.ts (the reader),
+ *      ../swarm/{graph,events,snapshot,result,storage}.ts (the read API),
+ *      ../host.ts (the Transport TYPE seam, Law 4) and ../usage.ts (the
+ *      read-model's declared usage input seam).
  *
  * Exit 0 only if all checks pass.
  */
@@ -1491,6 +1503,141 @@ const PROJECTION_COMBO_WAIVERS: ReadonlyArray<{ file: string; api: string; reaso
 		"T1.14e seeded-file probe: a new projection-writing module enters the computed writer set and trips the combo ban; the read-only sibling does not",
 		seeded.length === 1 && seeded[0] === "src/fleet.ts" && seededCombos.length === 1,
 		JSON.stringify({ seeded, seededCombos }),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 10. swarm-server pins (#50, Law 6/13; binding spec §4.2). The session-hosted
+//     read server is a Law-13 CLIENT: fleet state enters ONLY via the
+//     read-model. The pin bans the family's direct imports of durable stores,
+//     observation surfaces, backend adapters and the journal writer half;
+//     the journal is consumed ONLY through swarm/journal-read.ts (the
+//     reader), the read API through the swarm verb/read-model modules.
+// ---------------------------------------------------------------------------
+
+/** The banned import targets for src/swarm-server/**, relative from the
+ *  family root (normalized to repo-relative paths at scan time). */
+const SWARM_SERVER_BANNED_IMPORTS: ReadonlyArray<string> = [
+	"src/manifest-store.ts", // durable store (Law 13)
+	"src/watch-store.ts", // durable store (Law 13)
+	"src/exchange.ts", // exchange-layer reads incl. progress files (Law 13)
+	"src/observe.ts", // observation surface internals (Law 6 allowlist edge)
+	"src/watcher.ts", // watcher internals (not a client surface)
+	"src/fleet.ts", // observation-surface state derivation (Law 13)
+	"src/worker-view.ts", // observation-surface state derivation (Law 13)
+	"src/herdr/host.ts", // backend adapter (Law 4 — index.ts only)
+	"src/host/rpc.ts", // backend adapter (Law 4 — index.ts only)
+	"src/swarm/journal.ts", // the journal WRITER half; the reader is the only door
+	"src/swarm/journal-copy.ts", // the CLI-only temp-copy workaround (§4.2 spec)
+	"src/swarm/journal-driver.ts", // the sqlite seam (also T1.12)
+	"src/swarm/journal-manifest-store.ts", // manifest replay enters via snapshot.ts's manifestSource
+];
+
+/** Pure per-source scan (T1.9 convention: unit-callable for canaries).
+ *  Input: file text + the file's repo-relative path (for specifier
+ *  normalization); flags every static/dynamic/side-effect relative import
+ *  that resolves to a banned target. */
+export function scanCodeForSwarmServerBannedImports(
+	code: string,
+	fromRelPath: string,
+): Array<{ line: number; target: string; text: string }> {
+	const out: Array<{ line: number; target: string; text: string }> = [];
+	const dir = fromRelPath.includes("/") ? fromRelPath.slice(0, fromRelPath.lastIndexOf("/")) : "";
+	const importRe = /(?:\bfrom\s*|\bimport\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g;
+	const stripped = stripComments(code);
+	let m: RegExpExecArray | null;
+	while ((m = importRe.exec(stripped)) !== null) {
+		const spec = m[1];
+		// resolve <dir>/<spec> against the repo root, POSIX-normalized
+		const parts = (dir ? dir.split("/") : []);
+		for (const seg of spec.split("/")) {
+			if (seg === ".") continue;
+			if (seg === "..") parts.pop();
+			else parts.push(seg);
+		}
+		const target = parts.join("/");
+		if (SWARM_SERVER_BANNED_IMPORTS.includes(target)) {
+			const line = stripped.slice(0, m.index).split("\n").length;
+			out.push({ line, target, text: m[0].replace(/\s+/g, " ").trim() });
+		}
+	}
+	return out;
+}
+
+/** Walk the family tree under <root>/src/swarm-server (recursively). */
+function scanTreeForSwarmServerBannedImports(root: string): string[] {
+	const offenders: string[] = [];
+	for (const f of listTsFiles(resolve(root, "src", "swarm-server"))) {
+		const rel = relative(root, f).replaceAll("\\", "/");
+		for (const o of scanCodeForSwarmServerBannedImports(readFileSync(f, "utf8"), rel)) {
+			offenders.push(`${rel}:${o.line} → ${o.target} [${o.text}]`);
+		}
+	}
+	return offenders;
+}
+
+{
+	const offenders = scanTreeForSwarmServerBannedImports(ROOT);
+	check(
+		"T1.15 swarm-server family (Law 13 read-path): no direct import of a durable store, observation surface, backend adapter or the journal writer half (#50, §4.2)",
+		offenders.length === 0,
+		offenders.join(" | "),
+	);
+}
+
+// LIVE (T1.9d): the family exists and really crosses the sanctioned doors —
+// a deleted family (or a renamed dir) must fail the audit that retires this pin.
+check(
+	"T1.15b the pin is LIVE: src/swarm-server/ exists and the sanctioned doors exist (reader + read API)",
+	existsSync(resolve(ROOT, "src", "swarm-server", "server.ts")) &&
+		existsSync(resolve(ROOT, "src", "swarm", "journal-read.ts")) &&
+		existsSync(resolve(ROOT, "src", "swarm", "graph.ts")),
+);
+{
+	const mountSrc = readFileSync(resolve(ROOT, "src", "swarm-server", "journal-session.ts"), "utf8");
+	check(
+		"T1.15c the family consumes the journal ONLY through the reader (journal-session.ts wires createJournalReader from ../swarm/journal-read.ts)",
+		/createJournalReader/.test(stripComments(mountSrc)) && /journal-read\.ts/.test(mountSrc),
+	);
+}
+
+// Canary + precision + seeded probe (T1.9b/c/e): every banned shape fires,
+// the sanctioned doors stay clean, and a seeded offender tree goes red.
+{
+	const canaries: ReadonlyArray<[string, string]> = [
+		["manifest-store", 'import { manifestStore } from "../manifest-store.ts";'],
+		["exchange", 'import { readLastProgress } from "../exchange.ts";'],
+		["herdr adapter", 'import { createHerdrTransport } from "../herdr/host.ts";'],
+		["journal writer", 'import { createJournalWriter } from "../swarm/journal.ts";'],
+		["journal-copy", 'const { withJournalCopy } = await import("../swarm/journal-copy.ts");'],
+		["dynamic manifest-store", 'const s = await import("../manifest-store.ts");'],
+	];
+	const missed = canaries
+		.filter(([, code]) => scanCodeForSwarmServerBannedImports(code, "src/swarm-server/x.ts").length === 0)
+		.map(([name, code]) => `${name}: ${code}`);
+	check("T1.15d the pin BITES: every banned-import canary is flagged (unit-called scanner)", missed.length === 0, missed.join(" | "));
+
+	const clean: ReadonlyArray<string> = [
+		'import { createJournalReader } from "../swarm/journal-read.ts";',
+		'import { buildSwarmGraph } from "../swarm/graph.ts";',
+		'import { parseSessionUsage } from "../usage.ts";',
+		'import type { Transport } from "../host.ts";',
+		'import { mountSwarmServer } from "./mount.ts";',
+	];
+	const falsePositives = clean
+		.filter((code) => scanCodeForSwarmServerBannedImports(code, "src/swarm-server/x.ts").length > 0);
+	check("T1.15e the pin is PRECISE: the sanctioned doors (reader, read API, usage seam, host TYPE, family-internal) stay clean", falsePositives.length === 0, falsePositives.join(" | "));
+
+	const seed = mkdtempSync(resolve(tmpdir(), "swarm-server-pin-probe-"));
+	mkdirSync(resolve(seed, "src", "swarm-server"), { recursive: true });
+	writeFileSync(resolve(seed, "src", "swarm-server", "evil.ts"), 'import { manifestStore } from "../manifest-store.ts";\nexport const x = 1;\n');
+	writeFileSync(resolve(seed, "src", "swarm-server", "ok.ts"), 'import { createJournalReader } from "../swarm/journal-read.ts";\nexport const y = 2;\n');
+	const seeded = scanTreeForSwarmServerBannedImports(seed);
+	check(
+		"T1.15f seeded-file probe: a family module importing a durable store goes red; the reader-door sibling stays clean",
+		seeded.length === 1 && seeded[0].includes("evil.ts") && seeded[0].includes("src/manifest-store.ts"),
+		seeded.join(" | "),
 	);
 	rmSync(seed, { recursive: true, force: true });
 }

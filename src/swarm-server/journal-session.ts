@@ -31,8 +31,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { createJournalReader, type JournalReader } from "../swarm/journal-read.ts";
-import { journalDbPath } from "../swarm/journal.ts";
+import { createJournalReader, journalDbPath, type JournalReader } from "../swarm/journal-read.ts";
 
 /**
  * Open the session's ONE journal reader (with the cold-start reopen).

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>pi-delegate — fleet dashboard</title>
+	<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+	<header class="topbar">
+		<h1>Fleet dashboard</h1>
+		<span id="connection-state" data-connection-state="connecting" class="conn conn-connecting">connecting</span>
+	</header>
+	<main>
+		<div id="error" class="error" hidden></div>
+		<section id="fleet-tree" class="fleet-tree" aria-label="Fleet tree"></section>
+	</main>
+	<footer class="statusbar">
+		<span class="journal">journal: <span id="journal-count" data-journal-count>0</span> events</span>
+		<span class="journal">db: <span id="journal-bytes" data-journal-bytes>0</span> bytes</span>
+		<span class="readonly">read-only</span>
+	</footer>
+	<script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -57,6 +57,12 @@
  *      no src/swarm-server/** file may make a direct mailbox write (the
  *      server delegates to the core — it cannot publish an envelope without
  *      the journal row); and the mount wires the core (runOrchestratorVerb).
+ *  12. fleet-dashboard static pins (#53, Law 6/§4.2): the read-only
+ *      dashboard SPA under src/swarm-server/public/ is a static asset set
+ *      (no build step, no framework/bundler, no external network, no
+ *      mutation shape) whose sessionStorage holds only the reconnect
+ *      cursor. T1.20–T1.23 pin the asset set, the forbidden shapes, the
+ *      cursor scope and the absence of build artifacts.
  *
  * Exit 0 only if all checks pass.
  */
@@ -1728,6 +1734,131 @@ export function scanCodeForServerDirectMailboxWrite(code: string): string[] {
 	check(
 		"T1.16e seeded-file probe: a family module writing the mailbox directly goes red; the core-delegating sibling stays clean",
 		seeded.length === 1 && seeded[0].includes("bad.ts"),
+		seeded.join(" | "),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 12. fleet-dashboard static pins (#53, Law 6/§4.2). The read-only dashboard
+//     is a static SPA served as source: no build step, no framework/bundler,
+//     no external network, no mutation verbs, sessionStorage for the cursor
+//     ONLY. The pins are textual by nature (they prohibit literals/shapes)
+//     and carry canaries + a seeded-file probe so a vacuous pin self-fails.
+// ---------------------------------------------------------------------------
+
+/** The dashboard asset root (issue #53). */
+const DASHBOARD_PUBLIC_DIR = resolve(ROOT, "src", "swarm-server", "public");
+
+/** The rule ids the dashboard-asset scanner can emit. */
+export type DashboardAssetRule =
+	| "external-url"
+	| "framework-or-bundler"
+	| "mutation-verb"
+	| "local-storage";
+
+/** Pure scan of one dashboard asset (JS/HTML/CSS) for forbidden runtime
+ *  shapes. Comments are stripped first so prose (docs in the module header)
+ *  never trips a rule. Input: the raw file text. Output: one entry per match. */
+export function scanDashboardAsset(code: string): Array<{ rule: DashboardAssetRule; match: string }> {
+	const out: Array<{ rule: DashboardAssetRule; match: string }> = [];
+	const stripped = stripComments(code);
+	const push = (rule: DashboardAssetRule, m: RegExpMatchArray | null) => {
+		if (m) out.push({ rule, match: m[0].replace(/\s+/g, " ").trim() });
+	};
+	for (const m of stripped.matchAll(/https?:\/\/[^\s"'`)]+/g)) out.push({ rule: "external-url", match: m[0] });
+	push(
+		"framework-or-bundler",
+		stripped.match(/\b(react|preact|vue|svelte|angular|jquery|webpack|rollup|esbuild|vite|parcel|node_modules)\b/i),
+	);
+	push("mutation-verb", stripped.match(/["'](POST|PUT|PATCH|DELETE)["']|\bmethod\s*:/));
+	push("local-storage", stripped.match(/\blocalStorage\b/));
+	return out;
+}
+
+/** Walk every dashboard asset under <root>/src/swarm-server/public. */
+function listDashboardAssets(root: string): string[] {
+	try {
+		return readdirSync(resolve(root, "src", "swarm-server", "public"), { withFileTypes: true })
+			.filter((e) => e.isFile() && /\.(js|html|css)$/.test(e.name))
+			.map((e) => resolve(root, "src", "swarm-server", "public", e.name));
+	} catch {
+		return [];
+	}
+}
+
+{
+	const assets = listDashboardAssets(ROOT).map((f) => relative(ROOT, f).replaceAll("\\", "/"));
+	check(
+		"T1.20 the dashboard assets exist (index.html + one file per module)",
+		["index.html", "app.js", "app.css", "tree.js", "stream.js", "degrade.js"].every((n) => assets.includes(`src/swarm-server/public/${n}`)),
+		assets.join(", "),
+	);
+
+	const offenders: string[] = [];
+	for (const f of listDashboardAssets(ROOT)) {
+		const rel = relative(ROOT, f).replaceAll("\\", "/");
+		for (const o of scanDashboardAsset(readFileSync(f, "utf8"))) offenders.push(`${rel}: ${o.rule} [${o.match}]`);
+	}
+	check(
+		"T1.21 dashboard assets make ZERO external network calls and carry no framework/bundler/mutation-shape (#53)",
+		offenders.length === 0,
+		offenders.join(" | "),
+	);
+}
+
+check(
+	"T1.21b the pin is LIVE: the server wires the static route and static.ts owns the html/js/css MIME set",
+	existsSync(resolve(ROOT, "src", "swarm-server", "static.ts")) &&
+		/serveStaticFile/.test(readFileSync(resolve(ROOT, "src", "swarm-server", "server.ts"), "utf8")) &&
+		/\.html/.test(readFileSync(resolve(ROOT, "src", "swarm-server", "static.ts"), "utf8")),
+);
+
+{
+	// sessionStorage is the cursor store ONLY; localStorage is banned.
+	const app = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
+	const others = ["tree.js", "stream.js", "degrade.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
+	check(
+		"T1.22 sessionStorage is used only by app.js and only for the cursor key (no localStorage)",
+		app.includes("swarm.dashboard.lastSeq") && others.length === 0 && scanDashboardAsset(app).every((o) => o.rule !== "local-storage"),
+		others.join(", "),
+	);
+
+	// No build artifacts: only flat source assets, no maps/bundles/dist.
+	const artifacts = readdirSync(DASHBOARD_PUBLIC_DIR, { withFileTypes: true })
+		.filter((e) => e.isDirectory() || /\.(map|min\.js|bundle\.js)$/.test(e.name))
+		.map((e) => e.name);
+	check("T1.23 no build artifacts under the dashboard asset root (no dist/, no *.map/*.min.js)", artifacts.length === 0, artifacts.join(", "));
+}
+
+{
+	// Canaries: every rule bites; a clean asset stays clean.
+	const canaries: ReadonlyArray<[DashboardAssetRule, string]> = [
+		["external-url", 'fetch("https://cdn.example.com/x.js");'],
+		["framework-or-bundler", 'import React from "react";'],
+		["mutation-verb", 'fetch("/api/x", { method: "POST" });'],
+		["local-storage", 'localStorage.setItem("x", "1");'],
+	];
+	const missed = canaries.filter(([rule, code]) => !scanDashboardAsset(code).some((o) => o.rule === rule)).map(([rule]) => rule);
+	check("T1.23b the pin BITES: every forbidden shape has a canary that fires", missed.length === 0, missed.join(", "));
+
+	const clean = [
+		'const res = await fetch("/api/swarm/snapshot");',
+		'import { buildTreeView } from "./tree.js";',
+		'sessionStorage.setItem("swarm.dashboard.lastSeq", String(seq));',
+	];
+	const falsePositives = clean.filter((code) => scanDashboardAsset(code).length > 0);
+	check("T1.23c the pin is PRECISE: relative fetches, relative imports and the cursor write stay clean", falsePositives.length === 0, falsePositives.join(" | "));
+
+	// Seeded-file probe: a fixture tree walked by the real scanner goes red.
+	const seed = mkdtempSync(resolve(tmpdir(), "dashboard-pin-probe-"));
+	mkdirSync(resolve(seed, "src", "swarm-server", "public"), { recursive: true });
+	writeFileSync(resolve(seed, "src", "swarm-server", "public", "evil.js"), 'fetch("https://evil.example/x");\n', "utf8");
+	writeFileSync(resolve(seed, "src", "swarm-server", "public", "ok.js"), 'fetch("/api/swarm/snapshot");\n', "utf8");
+	const seeded = listDashboardAssets(seed).flatMap((f) => scanDashboardAsset(readFileSync(f, "utf8")).map((o) => `${relative(seed, f)}:${o.rule}`));
+	check(
+		"T1.23d seeded-file probe: a fixture with an external URL goes red; the relative sibling stays clean",
+		seeded.length === 1 && seeded[0].includes("evil.js") && seeded[0].includes("external-url"),
 		seeded.join(" | "),
 	);
 	rmSync(seed, { recursive: true, force: true });

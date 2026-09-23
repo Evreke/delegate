@@ -747,10 +747,11 @@ read API carries NO auth beyond the loopback bind: every process on the
 machine can READ it. That is the documented boundary: single-operator
 authority (§0) covers the operator's own processes; multi-user hosts and
 off-machine access are OUT OF SCOPE for this surface. Non-goals (issue #50):
-no frontend, no multi-session aggregation, no daemon mode, no TLS — each
+no multi-session aggregation, no daemon mode, no TLS — each
 joins by addition under its own issue. The mutation endpoints and their
 operator token joined in §4.2.4 (#51); worker console streaming, once a #50
-non-goal, joins by addition in §4.2.4 (#52).
+non-goal, joins by addition in §4.2.4 (#52); the read-only dashboard
+frontend joins by addition in §4.2.4 (#53).
 
 #### 4.2.4 Mutation surface + operator token (issue #51)
 
@@ -841,3 +842,22 @@ frame, structurally incapable of failing spawn/collect).
 Checks: `test/swarm-console-rest-check.ts`, `test/swarm-console-ws-check.ts`.
 The `T1.15` family pin covers the new modules unchanged (no durable store,
 journal writer or backend adapter import).
+
+#### 4.2.4 The fleet dashboard (issue #53)
+
+`GET /` serves a read-only dashboard SPA from `src/swarm-server/public/`
+(`./static.ts`): vanilla ES modules + CSS, **no build step** and no
+framework/bundler in the runtime path — the assets are the shipped bytes.
+It is a pure Law-13 client of the read API: `GET /api/swarm/snapshot` builds
+the tree (SessionNode → TaskNode → worker embodiments, parented by the
+graph's `spawned_by` edges), `WS /api/swarm/stream?after=<seq>` applies
+frames live (snapshot replaces, events advance the cursor; reconnect resumes
+from the last consumed `seq`), and `GET /api/swarm/events` feeds the
+journal-health footer (`journal.count` / `journal.dbSizeBytes`). The client
+issues ZERO mutation requests (GET + WS only) and makes ZERO external network
+calls (pinned statically, T1.20–T1.23). Each of the four degradation flags
+(`no-session-path`, `no-live-status`, `legacy-orphan`, `usage-unavailable`)
+renders a distinct honest visual state with the flag name verbatim; degraded
+nodes are shown, never hidden or faked healthy. `sessionStorage` holds ONLY
+the reconnect cursor. The dashboard is the first frontend of the milestone;
+steering UI (#54) joins by addition.

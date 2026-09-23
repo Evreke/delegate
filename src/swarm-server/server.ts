@@ -47,6 +47,9 @@
 
 import type { Http1Request, Http1Response } from "./http1.ts";
 import { EXTENSION_VERSION } from "../version.ts";
+import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
+import { SwarmError } from "../swarm/result.ts";
+import type { JournalReader } from "../swarm/journal-read.ts";
 
 /** The HTTP surface's own contract version (Law 7; additive-only evolution). */
 export const SWARM_HTTP_SCHEMA_VERSION = 1;
@@ -75,10 +78,19 @@ export function httpError(status: number, code: SwarmServerErrorCode, message: s
 	};
 }
 
+/** The journal reader seam the endpoint layer consumes (the read half of
+ *  src/swarm/journal-read.ts — the ONE long-lived read-only reader per
+ *  session, mounted open once and never the CLI's temp-copy workaround). */
+export type SwarmServerJournal = Pick<JournalReader, "eventsAfter" | "count" | "dbSizeBytes" | "close">;
+
 /** The injected dependencies of the endpoint layer. */
 export interface SwarmServerDeps {
 	/** The session's live transport (live status folds into the snapshot). */
 	transport?: { backendName(): string; listStatuses(): Promise<Array<{ name: string; status: string; placementRef?: string }>> };
+	/** The session's ONE long-lived read-only journal reader (openReadOnly
+	 *  precedent); absent only when the factory failed at mount (the read
+	 *  endpoints then degrade to empty-but-valid envelopes — Law 8). */
+	journal?: SwarmServerJournal;
 }
 
 /** GET /api/version — the frozen identity envelope. */
@@ -90,6 +102,39 @@ function versionResponse(): Http1Response {
 			schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
 			serverVersion: EXTENSION_VERSION,
 			protocol: SWARM_HTTP_PROTOCOL,
+		}),
+	};
+}
+
+/** GET /api/swarm/events — the `swarm events` CLI envelope, verbatim
+ *  (events.ts parseAfterCursor + the reader's rows; protocol identity). */
+function eventsResponse(deps: SwarmServerDeps, req: Http1Request): Http1Response {
+	let cursor: number;
+	try {
+		cursor = parseAfterCursor(req.query.get("after") ?? undefined);
+	} catch (err) {
+		if (err instanceof SwarmError) {
+			return {
+				status: 400,
+				body: JSON.stringify({
+					ok: false,
+					schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+					error: { code: err.code, message: err.message, hint: err.hint },
+				}),
+			};
+		}
+		throw err;
+	}
+	const journal = deps.journal;
+	return {
+		status: 200,
+		body: JSON.stringify({
+			ok: true,
+			verb: "events",
+			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
+			after: cursor,
+			events: journal ? journal.eventsAfter(cursor) : [],
+			journal: journal ? { count: journal.count(), dbSizeBytes: journal.dbSizeBytes() } : { count: 0, dbSizeBytes: 0 },
 		}),
 	};
 }
@@ -106,10 +151,11 @@ function versionResponse(): Http1Response {
  *   - every envelope (success + error) carries schemaVersion (Law 7)
  * Raises: never (all failures are structured error envelopes)
  */
-export function routeRequest(_deps: SwarmServerDeps, req: Http1Request): Http1Response {
+export function routeRequest(deps: SwarmServerDeps, req: Http1Request): Http1Response {
 	if (req.method !== "GET") {
 		return httpError(405, "E_SWARM_USAGE", `method ${JSON.stringify(req.method)} is not served; the read API is GET-only`);
 	}
 	if (req.path === "/api/version") return versionResponse();
+	if (req.path === "/api/swarm/events") return eventsResponse(deps, req);
 	return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
 }

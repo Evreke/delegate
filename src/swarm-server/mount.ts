@@ -22,10 +22,11 @@
  * substituted port, so two parallel sessions each get an independent server
  * on different ports (issue #50 acceptance 4).
  *
- * Dependencies: node builtins, ./config.ts, ./server.ts, ./http1.ts. The
- * long-lived journal reader (ONE per session, the src/swarm/journal-read.ts
- * openReadOnly precedent — NEVER the CLI's per-request temp-copy workaround)
- * lands with the events/snapshot routes. No herdr adapter import (Law 4).
+ * Dependencies: node builtins, ./config.ts, ./server.ts, ./http1.ts, plus
+ * ../swarm/journal-read.ts (the ONE long-lived read-only journal reader per
+ * session — the openReadOnly precedent, never the CLI's per-request
+ * temp-copy workaround) and ../swarm/storage.ts (the ONE db-path override
+ * spelling: SWARM_JOURNAL_DB). No herdr adapter import (Law 4).
  *
  * Critical invariants:
  *   - total: never throws (a mount failure is a logged null);
@@ -37,12 +38,15 @@
 import { resolveSwarmServerConfig } from "./config.ts";
 import { routeRequest, type SwarmServerDeps } from "./server.ts";
 import { startHttp1Server, type Http1ServerHandle } from "./http1.ts";
+import { createJournalReader, type JournalReader } from "../swarm/journal-read.ts";
+import { resolveSwarmStorage } from "../swarm/storage.ts";
 
 /** globalThis slot of the per-session server mount registry (Law 3). */
 const SWARM_SERVER_MOUNT_REGISTRY_KEY = "__piDelegateSwarmServerMounts";
 
-export interface SwarmServerHandle extends Http1ServerHandle {
-	/** Tear down THIS session's server (listener + sockets + registry key). */
+export interface SwarmServerHandle extends Omit<Http1ServerHandle, "close"> {
+	/** Tear down THIS session's server (listener + sockets + journal reader +
+	 *  registry key). Idempotent. */
 	stop(): void;
 }
 
@@ -53,6 +57,10 @@ export interface MountSwarmServerDeps extends SwarmServerDeps {
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
 	listen?: (port: number, deps: SwarmServerDeps) => Promise<Http1ServerHandle>;
+	/** Journal-reader factory override (fault-injection seam; default the
+	 *  ONE long-lived read-only reader per session — openReadOnly precedent,
+	 *  never the CLI's per-request temp copy). */
+	journalFactory?: (dbPath: string | undefined) => JournalReader | undefined;
 }
 
 /** One structured stderr line (the writeJournalWarning shape — machine-readable). */
@@ -124,9 +132,24 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 				onRequest: (req) => routeRequest(serverDeps, req),
 			}));
 
+	// The session's ONE long-lived read-only journal reader (§4.2: the
+	// openReadOnly precedent — a single reader per session, NOT the CLI's
+	// per-request temp-copy workaround). A factory failure is advisory: the
+	// server mounts degraded (empty-but-valid read envelopes), Law 8.
+	let journal: JournalReader | undefined;
+	try {
+		const storage = resolveSwarmStorage(env);
+		const factory = deps.journalFactory ?? ((dbPath: string | undefined) => createJournalReader({ dbPath }));
+		journal = factory(storage.dbPath);
+	} catch (err) {
+		logAdvisory("journal-reader-failed", { error: String((err as Error).message ?? err) });
+		journal = undefined;
+	}
+	const serverDeps: SwarmServerDeps = { transport: deps.transport, journal };
+
 	let bound: Http1ServerHandle;
 	try {
-		bound = await listen(cfg.port, deps);
+		bound = await listen(cfg.port, serverDeps);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code !== "EADDRINUSE" || cfg.port === 0) {
@@ -134,7 +157,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 			return null;
 		}
 		try {
-			bound = await listen(0, deps);
+			bound = await listen(0, serverDeps);
 			logAdvisory("port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
 		} catch (err2) {
 			logAdvisory("bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
@@ -147,6 +170,11 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		address: bound.address,
 		stop() {
 			bound.close();
+			try {
+				journal?.close();
+			} catch {
+				// advisory — a close failure never propagates past stop()
+			}
 			if (registry.get(key) === handle) registry.delete(key);
 		},
 	};

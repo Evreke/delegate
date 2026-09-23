@@ -115,6 +115,18 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   contract. Zero new dependencies. Checks:
   `test/swarm-console-{rest,ws}-check.ts`.
 
+- **Aggregation chain check: `swarm verify [--task <id>]`.** The third
+  orchestrator-side read verb machine-checks the orchestration convention
+  that fleet numbers travel verbatim up the chain: for every task manifest
+  it reads each worker's report and emits pass/fail lines for `presence`,
+  `schema` (the ONE base validator), `chain` (every parent fact
+  `k="<child>_number"` equals the child's fact `k="number"`) and `arithmetic`
+  (a parent fact `k="partial_sum"` — and a `partial_sum=<S>` summary token,
+  when present — equals the child-number sum). Pure read over the snapshot
+  verb's storage-mode wiring (exported so the files/journal mode choice has
+  ONE writer); degraded data yields degraded verdicts, never a crash (Law 8);
+  the envelope's `verify.ok` carries the chain verdict. Pinned by
+  `test/swarm-verify-check.ts`.
 - **Static pins for the new seams (#31, swarm-core-v1, Law 6).** Three
   shape pins in `test/static-check.ts` make §4.1.2/§4.1.3 fail CI, not
   reviews: **sqlite confinement** (T1.12 — no src/ module outside the
@@ -198,6 +210,32 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **E_PLACE guidance names the sub-orchestrator escape hatch.** The §7
+  dictionary hint for `E_PLACE` now states the authority-model rule and the
+  working move — a session whose cwd is inside a worktree is a
+  sub-orchestrator, worktree placement is rejected there, retry with
+  `mode: "shared"` — next to the existing /delegate-teardown remedy (which a
+  sub-orchestrator session cannot call). Field lesson: two identical
+  orchestrator fleets lost 3 retry turns each on the same E_PLACE because the
+  hint named only the unreachable remedy; the tab placement that works was
+  never mentioned. Text-only change in the ONE guidance writer (`GUIDANCE`,
+  `src/host.ts`); adapters unchanged.
+
+- **The OS launch policy moved below the seam (`src/spawn-policy.ts`).** The
+  `cmd.exe` quoting, the shell-wrapper launch shape and the `/T /F` tree-kill
+  recipe lived inside the herdr adapter; the rpc backend needs the same OS
+  policy, and that vocabulary names the host OS, not a backend. Pure move (the
+  helpers are byte-identical), plus one new export — `treeKillCommand`, so no
+  backend spells the kill recipe itself. Herdr behavior is unchanged and
+  `winQuoteArg` stays in the adapter's export surface (re-export). Pins:
+  S1/S2 now allows `src/herdr/cli.ts` exactly the `../spawn-policy.ts`
+  specifier and REQUIRES it (the vocabulary may not move back), a new **S1b**
+  pins the policy module dependency-free (it sits below both adapters), and S6
+  splits the frozen strings into herdr vocabulary (adapter-local) and OS launch
+  vocabulary (confined to the policy module, which may never speak herdr).
+  `src/herdr/cli.ts` fell under the Law 5 threshold with the move — its
+  decomposition row is retired per the ledger convention.
+
 - **Watcher consumes the journal cursor; the delivered-facts store is
   retired (#26, swarm-core-v1).** Wake-up dedup moved from the per-task
   `delivered-<key>.json` files to a durable per-audience journal cursor
@@ -247,12 +285,56 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **The rpc host launches and kills correctly on Windows.** The adapter spawned
+  a bare `pi` — on Windows npm installs the `pi.cmd` shim, so the spawn died
+  before a worker existed — and killed with `child.kill("SIGKILL")`, which maps
+  to TerminateProcess of the DIRECT child: behind the OS launch wrapper that
+  kills the wrapper and leaves `pi` (and its children) running, at the
+  failed-start rollback and at teardown alike. Both launch and kill now go
+  through `src/spawn-policy.ts`: the shell-wrapper launch with per-argument
+  quoting, and the `/T /F` tree-kill. POSIX is byte-identical to the previous
+  shape (bare `pi`, signal escalation untouched). The policy target is
+  injectable (constructor `platform`), so both branches are pinned on any host.
+  A field proof on a real Windows host (the live `rpc-host-e2e` leg) exposed one
+  more Windows-only consequence: the tree-kill lands asynchronously and the
+  worker's cwd IS its worktree placement, which teardown removes immediately
+  after — a live process locks its cwd there, so `git worktree remove --force`
+  failed `EPERM` and left the worktree behind. The win32 teardown now waits
+  (bounded) for the child's real exit; POSIX still resolves right after SIGKILL.
+  The header's "POSIX-only for now" gap is closed. Regression:
+  `test/rpc-win-launch-check.ts` (P/L/K/R/W — policy units, launch shape,
+  teardown kill, rollback kill, teardown ORDERING — no real pi process, no LLM
+  traffic).
+
 - **Adaptive sqlite driver — the extension must load under node too.** The
   journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
   (node ≥ 22.13); a statically chosen driver crashed the extension import
   chain under the node runtime, so every rpc worker spawn died `E_START`
   before this fix. Driver choice is confined to `src/swarm/journal-driver.ts`
   (the #31 static pin's confinement glob covers it).
+- **Windows-portable config-seam checks — `$HOME` is not the agent dir there,
+  and `URL.pathname` is not a path.** Twelve spawn sites across
+  `collect-teardown`, `release-on-started`, `retire`, `usage`, `watcher` and
+  `double-mount` steered pi's config reader with a fresh `$HOME`; on Windows pi
+  resolves the agent dir from `%USERPROFILE%`, so the pinned config was never
+  read and every default/override check failed. Each site now also sets the
+  documented
+  `PI_CODING_AGENT_DIR`. Five module-path constants (`profile`, `retire`,
+  `usage`, `watcher`, `collect-teardown`) and `double-mount`'s ROOT were built
+  with `new URL(…, import.meta.url).pathname`, which yields `/C:/...` on
+  Windows — the child died `Cannot find module` before any check ran; they now
+  use `fileURLToPath`. POSIX is unchanged: there the pinned agent dir is the
+  path `$HOME` produced and `fileURLToPath` returns what `.pathname` returned.
+- **Windows-portable pins — the QA gate read POSIX separators and `$HOME` as
+  universal.** `test/herdr-split-check.ts` classified modules as inside/outside
+  `src/herdr/` by comparing against a literal `"/"` while `node:path` yields a
+  backslash on Windows, so every herdr file counted as outside and S4/S6 fired
+  on the adapter's own files; containment now uses the platform separator, and a
+  new S0 canary fails if the literal ever returns. `test/static-check.ts` sent
+  the log-sink child to a fresh `$HOME`, which pi's `getAgentDir()` ignores on
+  Windows (there the home comes from `%USERPROFILE%`), leaving T4.1b red on a
+  green main; the child now pins the documented `PI_CODING_AGENT_DIR`. POSIX
+  launches stay byte-identical.
 
 ## [1.18.0] — 2026-09-21
 

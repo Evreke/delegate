@@ -864,3 +864,44 @@ renders a distinct honest visual state with the flag name verbatim; degraded
 nodes are shown, never hidden or faked healthy. `sessionStorage` holds ONLY
 the reconnect cursor. The dashboard is the first frontend of the milestone;
 steering UI (#54) joins by addition.
+
+#### 4.2.4 Dashboard console panel + steering controls (issue #54)
+
+Issue #54 completes the dashboard's browser scope: worker-console streaming
+and operator steering, both additive to the read-only SPA.
+
+**Console panel.** Each worker card carries a console panel fed by the #52
+console surface: the backlog preload is `GET /api/workers/:id/console?offset=0`
+and the live tail is `WS /api/workers/:id/console/stream` (`:id` is the graph
+SESSION node id). The panel renders the console envelope's transport-derived
+state as a DISTINCT honest banner — `live`, `ended`,
+`ended-with-retained-backlog` (the backlog is shown and marked retained), and
+`unavailable` (an honest message, never a fake terminal) — plus the
+fail-closed refusal (`E_CONSOLE_WORKER_REFUSED`) as the foreign/unowned state.
+The tail is a plain monospace text node; ANSI is not interpreted. Console text
+remains ephemeral (never journaled, never in the snapshot).
+
+**Steering.** The page POSTs the #51 routes with `Authorization: Bearer
+<operator token>`: `POST /api/workers/:id/steer {text}` and
+`POST /api/asks/:id/answer {text}` (`:id` is the WORKER NAME the mutation
+gate resolves — not the console session node id). Steering is
+OPTIMISTIC-WITH-CONFIRMATION: a successful POST creates a pending marker that
+becomes `confirmed` ONLY when the matching journal `steer`/`answer` event
+arrives over `WS /api/swarm/stream` (the journal is the truth —
+`via:"http"` is shown), and `failed` on a structured error. Pending questions
+are folded from `ask` events without a matching `answer`; the answer form
+POSTs and clears on the `answer` event. Mutation controls are
+DISABLED-WITH-REASON, never hidden: a foreign-fleet (console-refused) or ended
+card states why; a merely `unavailable` console keeps steering enabled (the
+mutation surface is independent of console capture).
+
+**Token.** The operator token is prompted once, kept in `sessionStorage` ONLY
+(key `swarm.dashboard.operatorToken`), sent only in the `Authorization`
+header, and never placed in localStorage, a URL or a log; a structured
+401/403 clears it and re-prompts. Client modules: `public/console.js`
+(console reducer + WS tail) and `public/steer.js` (token + mutation +
+confirmation + pending-ask fold); `public/tree.js` renders the panel and
+controls through an optional per-worker view provider. No build step. Static
+pins T1.20/T1.22 evolve (asset set, token store) and T1.24 constrains the
+mutation surface to `steer.js`'s two routes with a Bearer header. Check:
+`test/swarm-dashboard-steer-check.ts`.

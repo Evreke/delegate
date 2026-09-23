@@ -46,6 +46,7 @@
  */
 
 import type { Http1Request, Http1Response } from "./http1.ts";
+import { SWARM_HTTP_SCHEMA_VERSION } from "./http1.ts";
 import { existsSync } from "node:fs";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
@@ -57,8 +58,10 @@ import type { SwarmStorageConfig } from "../swarm/storage.ts";
 import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts";
 import { StreamHub } from "./stream.ts";
 
-/** The HTTP surface's own contract version (Law 7; additive-only evolution). */
-export const SWARM_HTTP_SCHEMA_VERSION = 1;
+/** The HTTP surface's contract version (Law 7) — re-exported from the leaf
+ *  (./http1.ts) so consumers see one import surface; the leaf owns the one
+ *  spelling (Law 9). */
+export { SWARM_HTTP_SCHEMA_VERSION };
 
 /** The protocol identity string (§4.2 — frozen surface of the HTTP API). */
 export const SWARM_HTTP_PROTOCOL = "swarm-http/1";

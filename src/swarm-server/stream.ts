@@ -39,8 +39,8 @@
 
 import type { Socket } from "node:net";
 import type { Http1Request } from "./http1.ts";
+import { SWARM_HTTP_SCHEMA_VERSION } from "./http1.ts";
 import { decodeClientFrame, encodeCloseFrame, encodePongFrame, encodeTextFrame, wsHandshakeResponse } from "./ws.ts";
-import { SWARM_HTTP_SCHEMA_VERSION } from "./server.ts";
 import { emptyGraph } from "../swarm/graph.ts";
 import { parseAfterCursor } from "../swarm/events.ts";
 import { SwarmError } from "../swarm/result.ts";

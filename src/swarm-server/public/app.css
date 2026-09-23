@@ -1,0 +1,219 @@
+/*
+ * app.css — the fleet dashboard's styling (issue #53).
+ *
+ * The four degradation flags get DISTINCT visual states:
+ *   .degraded-grey       — no-session-path (a greyed, inactive node)
+ *   .degraded-ghost      — no-live-status (a ghosted, translucent node)
+ *   .degraded-badge-orphan — legacy-orphan (a warning badge)
+ *   .degraded-badge-usage  — usage-unavailable (an info badge)
+ * The flag name itself is always the badge text (rendered by degrade.js).
+ */
+
+:root {
+	--bg: #14161a;
+	--panel: #1d2026;
+	--fg: #e6e8eb;
+	--muted: #9aa2ad;
+	--accent: #6ea8fe;
+	--warn: #e0a458;
+	--info: #7fb2a8;
+	--border: #2b2f38;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.topbar,
+.statusbar {
+	display: flex;
+	gap: 1rem;
+	align-items: center;
+	padding: 0.6rem 1rem;
+	background: var(--panel);
+	border-bottom: 1px solid var(--border);
+}
+
+.statusbar {
+	border-top: 1px solid var(--border);
+	border-bottom: none;
+	position: sticky;
+	bottom: 0;
+	color: var(--muted);
+}
+
+.topbar h1 {
+	font-size: 1rem;
+	margin: 0;
+	flex: 1;
+}
+
+.conn {
+	padding: 0.15rem 0.6rem;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	font-size: 0.75rem;
+}
+
+.conn-open {
+	color: #9fdc9f;
+	border-color: #3f6b3f;
+}
+
+.conn-connecting,
+.conn-reconnecting {
+	color: var(--warn);
+	border-color: #6b5a3f;
+}
+
+.conn-closed {
+	color: #e08b8b;
+	border-color: #6b3f3f;
+}
+
+main {
+	padding: 1rem;
+}
+
+.error {
+	border: 1px solid #6b3f3f;
+	background: #2a1e1e;
+	color: #e08b8b;
+	padding: 0.5rem 0.75rem;
+	margin-bottom: 1rem;
+	border-radius: 4px;
+}
+
+.tree,
+.workers,
+.orphans,
+.edges {
+	list-style: none;
+	margin: 0;
+	padding-left: 1rem;
+}
+
+.tree {
+	padding-left: 0;
+}
+
+.edges {
+	display: none;
+}
+
+.node {
+	margin: 0.4rem 0;
+	padding: 0.5rem 0.75rem;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel);
+}
+
+.node-session {
+	border-left: 3px solid var(--accent);
+}
+
+.node-task {
+	border-left: 3px solid var(--info);
+}
+
+.node-header {
+	display: flex;
+	gap: 0.6rem;
+	align-items: baseline;
+	flex-wrap: wrap;
+}
+
+.node-kind {
+	color: var(--muted);
+	text-transform: uppercase;
+	font-size: 0.7rem;
+}
+
+.role-label,
+[data-role-label] {
+	font-size: 0.75rem;
+	padding: 0 0.4rem;
+	border-radius: 3px;
+	background: #2b3350;
+}
+
+.depth {
+	color: var(--muted);
+	font-size: 0.75rem;
+}
+
+.field {
+	display: inline-block;
+	margin: 0.2rem 0.6rem 0 0;
+	color: var(--muted);
+}
+
+/* --- degradation visuals ------------------------------------------------- */
+
+.degraded {
+	display: inline-block;
+	margin: 0.2rem 0.4rem 0.2rem 0;
+	padding: 0 0.4rem;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	font-size: 0.7rem;
+}
+
+.degraded-grey {
+	color: #7d838c;
+	background: #23262c;
+	border-color: #33373f;
+}
+
+.degraded-ghost {
+	color: #8b93a0;
+	background: transparent;
+	border-color: #3a3f49;
+	opacity: 0.55;
+	font-style: italic;
+}
+
+.degraded-badge {
+	background: #2c2620;
+}
+
+.degraded-badge-orphan {
+	color: var(--warn);
+	border-color: #6b5a3f;
+}
+
+.degraded-badge-usage {
+	color: var(--info);
+	border-color: #3f5f58;
+}
+
+.worker {
+	margin: 0.3rem 0 0.3rem 0.75rem;
+	padding: 0.3rem 0.5rem;
+	border-left: 2px solid var(--border);
+}
+
+.worker-name {
+	font-weight: 600;
+}
+
+.orphan {
+	color: var(--warn);
+}
+
+.readonly {
+	margin-left: auto;
+	color: var(--muted);
+	text-transform: uppercase;
+	font-size: 0.7rem;
+}

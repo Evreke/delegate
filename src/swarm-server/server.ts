@@ -55,6 +55,7 @@ import { buildSwarmGraph, type SwarmLiveTransport, type SwarmUsageSource } from 
 import type { JournalReader } from "../swarm/journal-read.ts";
 import type { SwarmStorageConfig } from "../swarm/storage.ts";
 import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts";
+import { StreamHub } from "./stream.ts";
 
 /** The HTTP surface's own contract version (Law 7; additive-only evolution). */
 export const SWARM_HTTP_SCHEMA_VERSION = 1;
@@ -166,19 +167,25 @@ function eventsResponse(deps: SwarmServerDeps, req: Http1Request): Http1Response
 	};
 }
 
-/** GET /api/swarm/snapshot — the `swarm snapshot` CLI envelope, verbatim,
- *  built from the LIVE in-process deps (transport status + usage fold in).
- *  The build is total (buildSwarmGraph never throws) — a failing source
- *  degrades the graph, never the response (Law 8/Law 13). */
-async function snapshotResponse(deps: SwarmServerDeps): Promise<Http1Response> {
+/** Build the SwarmGraph once for one snapshot request/frame — the ONE
+ *  spelling shared by the HTTP route and the WS snapshot frame (Law 9). */
+async function buildSnapshotGraph(deps: SwarmServerDeps): Promise<unknown> {
 	const storage: SwarmStorageConfig = deps.storage ?? { storage: "files", projection: true, warnings: [] };
-	const graph = await buildSwarmGraph({
+	return buildSwarmGraph({
 		journal: deps.journal,
 		manifests: manifestSource(deps.journal, storage, deps.backendName ?? activeBackendName()),
 		transport: deps.transport,
 		usage: deps.usage,
 		backendName: deps.backendName,
 	});
+}
+
+/** GET /api/swarm/snapshot — the `swarm snapshot` CLI envelope, verbatim,
+ *  built from the LIVE in-process deps (transport status + usage fold in).
+ *  The build is total (buildSwarmGraph never throws) — a failing source
+ *  degrades the graph, never the response (Law 8/Law 13). */
+async function snapshotResponse(deps: SwarmServerDeps): Promise<Http1Response> {
+	const graph = await buildSnapshotGraph(deps);
 	return {
 		status: 200,
 		body: JSON.stringify({ ok: true, verb: "snapshot", snapshot: graph }),
@@ -205,4 +212,28 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request): Http1Res
 	if (req.path === "/api/swarm/events") return eventsResponse(deps, req);
 	if (req.path === "/api/swarm/snapshot") return snapshotResponse(deps);
 	return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
+}
+
+/** The full route table the mount wires into the http1 core: the plain
+ *  router + the WS stream hub (one hub per server — the poll timer and the
+ *  connection set are server-scoped, not request-scoped). */
+export interface SwarmRouteTable {
+	onRequest: (req: Http1Request) => Http1Response | Promise<Http1Response>;
+	onUpgrade: (req: Http1Request, socket: import("node:net").Socket, head: Buffer) => boolean;
+	/** Stop the stream hub's poll timer (sockets are closed by the core). */
+	close(): void;
+}
+
+/** Build the route table (plain routes + the stream hub). */
+export function createRouteTable(deps: SwarmServerDeps & { pollMs?: number }): SwarmRouteTable {
+	const hub = new StreamHub({
+		journal: deps.journal,
+		buildSnapshot: () => buildSnapshotGraph(deps),
+		pollMs: deps.pollMs,
+	});
+	return {
+		onRequest: (req) => routeRequest(deps, req),
+		onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
+		close: () => hub.close(),
+	};
 }

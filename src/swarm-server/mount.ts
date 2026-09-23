@@ -36,9 +36,10 @@
  */
 
 import { resolveSwarmServerConfig } from "./config.ts";
-import { defaultUsageSource, routeRequest, type SwarmServerDeps } from "./server.ts";
+import { createRouteTable, defaultUsageSource, type SwarmServerDeps } from "./server.ts";
 import { startHttp1Server, type Http1ServerHandle } from "./http1.ts";
-import { createJournalReader, type JournalReader } from "../swarm/journal-read.ts";
+import { openSessionJournal } from "./journal-session.ts";
+import { type JournalReader } from "../swarm/journal-read.ts";
 import { resolveSwarmStorage, type SwarmStorageConfig } from "../swarm/storage.ts";
 import { activeBackendName } from "../swarm/snapshot.ts";
 import type { SwarmUsageSource } from "../swarm/graph.ts";
@@ -58,7 +59,7 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage"> {
 	/** The process environment (config + test tiers). */
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
-	listen?: (port: number, deps: SwarmServerDeps) => Promise<Http1ServerHandle>;
+	listen?: (port: number) => Promise<Http1ServerHandle>;
 	/** Journal-reader factory override (fault-injection seam; default the
 	 *  ONE long-lived read-only reader per session — openReadOnly precedent,
 	 *  never the CLI's per-request temp copy). */
@@ -67,6 +68,8 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage"> {
 	 *  resolver — the identity spelling that matches the CLI verb's sources
 	 *  exactly (protocol identity); the default binds defaultUsageSource. */
 	usage?: SwarmUsageSource | false;
+	/** The WS stream hub's cursor poll interval, ms (default 500; tests tighten). */
+	pollMs?: number;
 }
 
 /** One structured stderr line (the writeJournalWarning shape — machine-readable). */
@@ -132,10 +135,11 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 
 	const listen =
 		deps.listen ??
-		((port: number, serverDeps: SwarmServerDeps) =>
+		((port: number) =>
 			startHttp1Server({
 				port,
-				onRequest: (req) => routeRequest(serverDeps, req),
+				onRequest: routes.onRequest,
+				onUpgrade: routes.onUpgrade,
 			}));
 
 	// The session's ONE long-lived read-only journal reader (§4.2: the
@@ -150,7 +154,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	}
 	let journal: JournalReader | undefined;
 	try {
-		const factory = deps.journalFactory ?? ((dbPath: string | undefined) => createJournalReader({ dbPath }));
+		const factory = deps.journalFactory ?? openSessionJournal;
 		journal = factory(storage.dbPath);
 	} catch (err) {
 		logAdvisory("journal-reader-failed", { error: String((err as Error).message ?? err) });
@@ -163,10 +167,11 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		storage,
 		backendName: deps.transport?.backendName?.() ?? activeBackendName(),
 	};
+	const routes = createRouteTable({ ...serverDeps, pollMs: deps.pollMs });
 
 	let bound: Http1ServerHandle;
 	try {
-		bound = await listen(cfg.port, serverDeps);
+		bound = await listen(cfg.port);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code !== "EADDRINUSE" || cfg.port === 0) {
@@ -174,7 +179,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 			return null;
 		}
 		try {
-			bound = await listen(0, serverDeps);
+			bound = await listen(0);
 			logAdvisory("port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
 		} catch (err2) {
 			logAdvisory("bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
@@ -187,6 +192,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		address: bound.address,
 		stop() {
 			bound.close();
+			routes.close();
 			try {
 				journal?.close();
 			} catch {

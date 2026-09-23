@@ -194,9 +194,16 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   then journal events as they happen; reconnect with your last consumed
   `seq`). `swarm.server.port` (default 7331; `0` = OS-assigned) is a hint —
   if the port is taken, the session binds an OS-assigned port and logs the
-  substitution. The server binds 127.0.0.1 only, no auth in v1: every
-  process on the machine can read it. It is advisory — a startup failure
-  never blocks a session, spawn, or collect.
+  substitution. The server binds 127.0.0.1 only. Reads carry no auth (any
+  local process can read); WRITES are operator-only and land under **#51**:
+  `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
+  `{"text":"..."}`) require `Authorization: Bearer <operator token>`. The
+  token is generated per mount and printed ONLY on the session's stderr as a
+  structured `operator-token` line — copy it from the session UI. Writes only
+  reach workers the session itself spawned (foreign/unknown ids refuse) and
+  append the same `steer`/`answer` journal rows the tool path writes, with an
+  additive `via: "http"`. The server is advisory — a startup failure or a
+  failed write never blocks a session, spawn, or collect.
 - **Windows: real-host QA gate.** A real-Windows E2E run (delegate spawn →
   report → wake → mailbox, with herdr for Windows) is NOT part of CI — only
   Windows-shaped path tests (`path.win32` fixtures) run on the POSIX CI. An
@@ -479,9 +486,16 @@ done/idle.
   затем события журнала по мере появления; переподключайтесь с последним
   потреблённым `seq`). `swarm.server.port` (по умолчанию 7331; `0` = назначается
   ОС) — это подсказка: если порт занят, сессия возьмёт назначенный ОС порт и
-  залогирует подмену. Сервер слушает только 127.0.0.1, без аутентификации в v1:
-  читать может любой процесс на машине. Он advisory — сбой старта никогда не
-  блокирует сессию, spawn или collect.
+  залогирует подмену. Сервер слушает только 127.0.0.1. Чтение — без аутентификации
+  (читать может любой локальный процесс); ЗАПИСЬ — только для оператора и
+  появилась в **#51**: `POST /api/workers/<id>/steer` и `POST /api/asks/<id>/answer`
+  (тело `{"text":"..."}`) требуют `Authorization: Bearer <operator token>`.
+  Токен генерируется при монтировании и печатается ТОЛЬКО в stderr сессии
+  структурированной строкой `operator-token` — скопируйте его из UI сессии.
+  Запись доходит только до воркеров, которых породила эта сессия (чужие/
+  неизвестные id отклоняются) и добавляет те же строки журнала `steer`/`answer`,
+  что и tool-путь, с аддитивным `via: "http"`. Сервер advisory — сбой старта или
+  неудачная запись никогда не блокируют сессию, spawn или collect.
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

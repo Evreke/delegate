@@ -16,10 +16,16 @@
  *                             verbatim (protocol identity with the CLI verbs)
  *   WS  /api/swarm/stream?after=<seq> → ./ws.ts (one snapshot frame, then
  *                             event frames as the journal cursor advances)
+ *   POST /api/workers/<id>/steer → the #51 mutation route (operator-token
+ *                             gated; see the mutation block below)
+ *   POST /api/asks/<id>/answer   → the #51 mutation route
  *
- * TRUST MODEL (§4.2): loopback only, no auth in v1 beyond the loopback bind —
- * every process on this machine can read the read API; that is the documented
- * boundary (a future daemon may add auth; this server never listens off-loop).
+ * TRUST MODEL (§4.2): loopback only. The READ surface (GET/WS) has no auth
+ * beyond the loopback bind — every process on this machine can read it; that
+ * is the documented boundary (a future daemon may add auth; this server
+ * never listens off-loop). The #51 WRITE surface is operator-only: both POST
+ * routes require `Authorization: Bearer <operator token>` (./auth.ts), a
+ * per-mount secret surfaced only on the session's stderr (Law 11).
  *
  * Every JSON envelope — success AND error — carries `schemaVersion: 1`
  * (Law 7) and structured E_* errors (Law 8): 404 E_SWARM_NOT_FOUND, 400/405
@@ -33,6 +39,12 @@
  * statically in test/static-check.ts). No herdr adapter import (Law 4); no
  * sqlite driver import (the journal module family owns that seam; the journal
  * is consumed ONLY through ../swarm/journal-read.ts).
+ *
+ * The mutation routes (issue #51, §4.2.4) delegate the actual write to the
+ * injected `mutate` seam (wired in ./mount.ts to the shared swarm mailbox
+ * core, src/swarm/mailbox-verbs.ts): this layer owns ONLY auth, id/body
+ * validation and envelope mapping — never a mailbox write (pinned by T1.16),
+ * so a mutation cannot bypass the journal.
  *
  * Critical invariants:
  *   - handlers NEVER throw into the http1 core (the core wraps them, and the
@@ -51,6 +63,9 @@ import { existsSync } from "node:fs";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
 import { SwarmError } from "../swarm/result.ts";
+import { WORKER_NAME_RE } from "../host.ts";
+import { bearerTokenOf, tokenMatches } from "./auth.ts";
+import type { OrchestratorVerbOutcome } from "../swarm/mailbox-verbs.ts";
 import { activeBackendName, manifestSource } from "../swarm/snapshot.ts";
 import { buildSwarmGraph, type SwarmLiveTransport, type SwarmUsageSource } from "../swarm/graph.ts";
 import type { JournalReader } from "../swarm/journal-read.ts";
@@ -66,23 +81,32 @@ export { SWARM_HTTP_SCHEMA_VERSION };
 /** The protocol identity string (§4.2 — frozen surface of the HTTP API). */
 export const SWARM_HTTP_PROTOCOL = "swarm-http/1";
 
-/** The HTTP surface's E_* code ADDITION (taxonomy grows by addition only). */
-export type SwarmServerErrorCode = "E_SWARM_NOT_FOUND" | "E_SWARM_USAGE" | "E_SWARM_IO";
+/** The HTTP surface's E_* code ADDITIONS (taxonomy grows by addition only).
+ *  E_SWARM_AUTH / E_SWARM_FORBIDDEN are the #51 mutation-surface codes. */
+export type SwarmServerErrorCode =
+	| "E_SWARM_NOT_FOUND"
+	| "E_SWARM_USAGE"
+	| "E_SWARM_IO"
+	| "E_SWARM_AUTH"
+	| "E_SWARM_FORBIDDEN";
 
 const SERVER_ERROR_HINTS: Record<SwarmServerErrorCode, string> = {
-	E_SWARM_NOT_FOUND: "The read API serves /api/version, /api/swarm/snapshot, /api/swarm/events and the WS /api/swarm/stream — check the path.",
-	E_SWARM_USAGE: "Use GET with the documented query flags (events/stream need an integer ?after=<seq> cursor; 0 for everything).",
+	E_SWARM_NOT_FOUND: "The server serves /api/version, /api/swarm/snapshot, /api/swarm/events, the WS /api/swarm/stream, and the token-gated POST /api/workers/<id>/steer and /api/asks/<id>/answer — check the path.",
+	E_SWARM_USAGE: "Use GET with the documented query flags, or POST {text} to a mutation path with a canonical worker id.",
 	E_SWARM_IO: "The read server could not serve this request; retry or check the orchestrator log.",
+	E_SWARM_AUTH: "Every mutation request needs Authorization: Bearer <operator token>; the token is printed on the session's stderr at mount.",
+	E_SWARM_FORBIDDEN: "The mutation surface only reaches workers this session provably spawned.",
 };
 
-/** Build a structured error envelope (schemaVersion on every response — Law 7). */
-export function httpError(status: number, code: SwarmServerErrorCode, message: string): Http1Response {
+/** Build a structured error envelope (schemaVersion on every response — Law 7).
+ *  A caller may override the canned hint with a failure's own recovery hint. */
+export function httpError(status: number, code: SwarmServerErrorCode, message: string, hint?: string): Http1Response {
 	return {
 		status,
 		body: JSON.stringify({
 			ok: false,
 			schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
-			error: { code, message, hint: SERVER_ERROR_HINTS[code] },
+			error: { code, message, hint: hint ?? SERVER_ERROR_HINTS[code] },
 		}),
 	};
 }
@@ -122,7 +146,21 @@ export interface SwarmServerDeps {
 	/** The manifest scan's backend filter when no transport is bound
 	 *  (mirrors the CLI verb's tolerant spelling). */
 	backendName?: string;
+	/** The operator token of the #51 mutation surface (generated at mount).
+	 *  Absent → every mutation refuses E_SWARM_AUTH. NEVER serialized. */
+	operatorToken?: string;
+	/** The injected mutation core (wired by mount.ts from the swarm module
+	 *  family — the server layer maps its structured outcome to HTTP). Absent
+	 *  → mutation routes answer a structured 500. */
+	mutate?: SwarmMutate;
 }
+
+/** The mutation seam: run one steer/answer for a worker id this session owns. */
+export type SwarmMutate = (
+	kind: "steer" | "answer",
+	id: string,
+	text: string,
+) => Promise<OrchestratorVerbOutcome>;
 
 /** GET /api/version — the frozen identity envelope. */
 function versionResponse(): Http1Response {
@@ -195,21 +233,121 @@ async function snapshotResponse(deps: SwarmServerDeps): Promise<Http1Response> {
 	};
 }
 
+/** The two mutation routes (path params are decoded by mutationResponse). */
+const STEER_ROUTE_RE = /^\/api\/workers\/([^/]+)\/steer$/;
+const ANSWER_ROUTE_RE = /^\/api\/asks\/([^/]+)\/answer$/;
+
+/** Uniform auth refusal: missing and wrong tokens are indistinguishable. */
+function authRefusal(): Http1Response {
+	return httpError(401, "E_SWARM_AUTH", "missing or invalid operator token");
+}
+
+/** Parse + validate the {text} body of a mutation request. */
+function mutationText(req: Http1Request): string | null {
+	if (req.body === undefined) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(req.body);
+	} catch {
+		return null;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+	const text = (parsed as Record<string, unknown>).text;
+	return typeof text === "string" && text.trim().length > 0 ? text : null;
+}
+
+/**
+ * Serve one POST mutation: auth gate → id validation → body → ownership +
+ * envelope + journal (the injected swarm core).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: deps (token + mutate seam), req, kind, rawId (still URL-encoded)
+ * Output: the structured success envelope or a structured E_* refusal
+ * Guarantees:
+ *   - missing/wrong token → the SAME 401 E_SWARM_AUTH refusal;
+ *   - a non-canonical or undecodable id → 400 E_SWARM_USAGE (no core call);
+ *   - an invalid body → 400 E_SWARM_USAGE (no core call);
+ *   - a core refusal maps by code (E_SWARM_FORBIDDEN → 403, else 500);
+ *   - never throws (a core throw degrades to a structured 500)
+ * Raises: never
+ */
+async function mutationResponse(
+	deps: SwarmServerDeps,
+	req: Http1Request,
+	kind: "steer" | "answer",
+	rawId: string,
+): Promise<Http1Response> {
+	const expected = deps.operatorToken;
+	if (expected === undefined || !tokenMatches(bearerTokenOf(req), expected)) return authRefusal();
+
+	let id: string;
+	try {
+		id = decodeURIComponent(rawId);
+	} catch {
+		return httpError(400, "E_SWARM_USAGE", "worker id is not valid URL encoding");
+	}
+	if (!WORKER_NAME_RE.test(id)) {
+		return httpError(400, "E_SWARM_USAGE", `worker id ${JSON.stringify(id)} is not a canonical worker name`);
+	}
+	const text = mutationText(req);
+	if (text === null) return httpError(400, "E_SWARM_USAGE", "a JSON body with a non-empty string \"text\" is required");
+	if (deps.mutate === undefined) return httpError(500, "E_SWARM_IO", "the mutation core is not mounted");
+
+	let outcome: OrchestratorVerbOutcome;
+	try {
+		outcome = await deps.mutate(kind, id, text);
+	} catch (err) {
+		return httpError(500, "E_SWARM_IO", `mutation failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	if (!outcome.ok) {
+		const status = outcome.code === "E_SWARM_FORBIDDEN" ? 403 : outcome.code === "E_SWARM_USAGE" ? 400 : 500;
+		return httpError(status, outcome.code as SwarmServerErrorCode, outcome.message, outcome.hint);
+	}
+	return {
+		status: 200,
+		body: JSON.stringify({
+			ok: true,
+			schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+			verb: kind,
+			worker: outcome.worker,
+			via: "http",
+			answerPath: outcome.answerPath,
+			journal: outcome.journal,
+			nudged: outcome.nudged,
+		}),
+	};
+}
+
 /**
  * The plain-request router.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: deps — the injected read-model sources; req — one parsed request head
- * Output: the response (a promise for the snapshot route — graph build is async)
+ * Input: deps — the injected read-model sources + mutation seam; req — one
+ *   parsed request (head + optional body)
+ * Output: the response (a promise for the snapshot/mutation routes)
  * Guarantees:
- *   - non-GET → 405 E_SWARM_USAGE (the surface is GET-only)
+ *   - GET serves the read routes, no auth (the #50 loopback boundary);
+ *   - POST serves ONLY the two token-gated mutation routes, else 404;
+ *   - other methods → 405 E_SWARM_USAGE
  *   - unknown path → 404 E_SWARM_NOT_FOUND
  *   - every envelope (success + error) carries schemaVersion (Law 7)
  * Raises: never (all failures are structured error envelopes or degraded graphs)
  */
 export function routeRequest(deps: SwarmServerDeps, req: Http1Request): Http1Response | Promise<Http1Response> {
+	if (req.method === "POST") {
+		const steer = STEER_ROUTE_RE.exec(req.path);
+		if (steer) return mutationResponse(deps, req, "steer", steer[1]);
+		const answer = ANSWER_ROUTE_RE.exec(req.path);
+		if (answer) return mutationResponse(deps, req, "answer", answer[1]);
+		// A POST against a known GET path is a method error (405), not a
+		// missing path — the #50 read surface's method contract is preserved.
+		if (req.path === "/api/version" || req.path === "/api/swarm/events" || req.path === "/api/swarm/snapshot") {
+			return httpError(405, "E_SWARM_USAGE", `method POST is not served on ${JSON.stringify(req.path)}; it is a GET path`);
+		}
+		return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
+	}
 	if (req.method !== "GET") {
-		return httpError(405, "E_SWARM_USAGE", `method ${JSON.stringify(req.method)} is not served; the read API is GET-only`);
+		return httpError(405, "E_SWARM_USAGE", `method ${JSON.stringify(req.method)} is not served; the read API is GET-only (writes use POST)`);
 	}
 	if (req.path === "/api/version") return versionResponse();
 	if (req.path === "/api/swarm/events") return eventsResponse(deps, req);

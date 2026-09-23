@@ -204,6 +204,13 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   append a `steer`/`answer` journal row with the additive `via: "http"`
   field (the CLI tool path writes none). The server is advisory — a startup
   failure or a failed write never blocks a session, spawn, or collect.
+  Opening `http://127.0.0.1:7331/` serves the read-only **fleet dashboard**
+  (issue #53): the tree (sessions → tasks → workers) built from
+  `/api/swarm/snapshot`, live updates over the WS stream with cursor-resume
+  reconnect, the four degradation flags as distinct honest visuals, and a
+  journal-health footer. It is a static SPA (vanilla ES modules + CSS, no
+  build step, no framework, zero external network calls; GET + WS only —
+  sessionStorage holds just the reconnect cursor).
 - **Worker-console surface (issue #52).** The same session-hosted server
   streams one worker's console: `GET
   /api/workers/<nodeId>/console?offset=<n>` returns one frame
@@ -512,7 +519,13 @@ done/idle.
   неизвестные id отклоняются) и добавляет строку журнала `steer`/`answer`
   с аддитивным полем `via: "http"` (CLI tool-путь не пишет ни одной). Сервер
   advisory — сбой старта или неудачная запись никогда не блокируют сессию,
-  spawn или collect.
+  spawn или collect. Открытие `http://127.0.0.1:7331/` отдаёт read-only
+  **дашборд флота** (issue #53): дерево (сессии → задачи → воркеры) из
+  `/api/swarm/snapshot`, live-обновления по WS-стриму с reconnect по курсору,
+  четыре флага деградации как различные честные визуальные состояния и футер
+  со здоровьем журнала. Это статический SPA (vanilla ES-модули + CSS, без шага
+  сборки и фреймворка, ноль внешних сетевых вызовов; только GET + WS —
+  sessionStorage хранит лишь курсор reconnect).
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

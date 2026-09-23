@@ -10,6 +10,26 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Read-only fleet dashboard (#53, ARCHITECTURE §4.2.4).** `GET /` on the
+  session-hosted read server now serves a static dashboard SPA from
+  `src/swarm-server/public/` (vanilla ES modules + CSS — **no build step**, no
+  framework, no bundler in the runtime path). It is a pure Law-13 client:
+  `GET /api/swarm/snapshot` builds the tree (SessionNode → TaskNode → worker
+  embodiments, parented by the graph's `spawned_by` edges, deterministic
+  node-for-node), `WS /api/swarm/stream?after=<seq>` applies frames live
+  (snapshot replaces; events advance the cursor; reconnect resumes from the
+  last consumed `seq` — `sessionStorage` stores only that cursor), and
+  `GET /api/swarm/events` feeds the journal-health footer. The four
+  degradation flags (`no-session-path`, `no-live-status`, `legacy-orphan`,
+  `usage-unavailable`) render as four distinct, honest visual states with the
+  flag name verbatim — degraded nodes are shown, never hidden or faked
+  healthy. Read-only: GET + WS only, zero mutation requests, zero external
+  network calls. Server side: `src/swarm-server/static.ts` (path-safe
+  html/js/css serving wired into `routeRequest`). New static pins T1.20–T1.23
+  (asset set, no external URL/framework/mutation shape, sessionStorage scope,
+  no build artifacts) and the functional check
+  `test/swarm-dashboard-check.ts`.
+
 - **Session-hosted swarm read server (#50, swarm-core-v1, ARCHITECTURE
   §4.2).** A loopback HTTP/WS endpoint mounted per session (`src/swarm-server/`):
   `GET /api/version`, `GET /api/swarm/snapshot` and `GET /api/swarm/events?after=<seq>`

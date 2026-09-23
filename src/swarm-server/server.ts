@@ -19,6 +19,8 @@
  *   POST /api/workers/<id>/steer → the #51 mutation route (operator-token
  *                             gated; see the mutation block below)
  *   POST /api/asks/<id>/answer   → the #51 mutation route
+ *   GET / and /<asset>       → ./static.ts (the read-only dashboard SPA,
+ *                             served as source html/js/css; issue #53)
  *
  * Issue #52 adds the worker-console surface (./console.ts, §4.2.4):
  *   GET /api/workers/:id/console?offset=<n>       → one console frame
@@ -87,6 +89,7 @@ import type { ConsoleStreamSource } from "./console-buffer.ts";
 import { consoleRoute, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
 import { ConsoleHub } from "./console-ws.ts";
 import type { SwarmGraph } from "../swarm/graph.ts";
+import { serveStaticFile } from "./static.ts";
 
 /** The HTTP surface's contract version (Law 7) — re-exported from the leaf
  *  (./http1.ts) so consumers see one import surface; the leaf owns the one
@@ -167,6 +170,9 @@ export interface SwarmServerDeps {
 	/** A prebuilt read-model graph (composition root / test injection); absent
 	 *  → the console route builds one through buildSnapshotGraph. */
 	graph?: SwarmGraph;
+	/** The dashboard asset root override (tests; default the shipped
+	 *  src/swarm-server/public/ dir — issue #53). */
+	publicDir?: string;
 }
 
 /** The mutation seam: run one steer/answer for a worker id this session owns. */
@@ -373,6 +379,8 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 	if (matchConsoleStreamPath(req.path) !== null) {
 		return httpError(400, "E_SWARM_USAGE", "the console stream is a WebSocket endpoint (/api/workers/:id/console/stream)");
 	}
+	const asset = serveStaticFile(req.path, deps.publicDir);
+	if (asset !== null) return asset;
 	return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
 }
 

@@ -265,7 +265,21 @@ export default function (pi: ExtensionAPI) {
 		// its own gating (config tier, second-mount refusal, port fallback) and
 		// is TOTAL (a failure is a logged null; Law 8 — never blocks the
 		// session). The handle joins this session's context (Law 3).
-		const swarmServer = (await mountSwarmServer({ sessionFile, transport })) ?? undefined;
+		// Operator-token announcement (Law 11 channel): headless keeps the ONE
+		// structured stderr line (the automation contract, pinned by check
+		// M1.2); TUI injects a ui-notification sink — a raw stderr write there
+		// stamps the token onto the live frame and corrupts the composer.
+		const announceToken =
+			ctx.mode === "tui"
+				? (token: string, port: number) => {
+						try {
+							ctx.ui.notify(`swarm server :${port} — operator token ${token}`, "info");
+						} catch {
+							// the toast is advisory — never blocks the mount
+						}
+					}
+				: undefined;
+		const swarmServer = (await mountSwarmServer({ sessionFile, transport, announceToken })) ?? undefined;
 
 		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop, swarmServer };
 	});

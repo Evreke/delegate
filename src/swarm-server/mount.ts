@@ -71,8 +71,15 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	 *  default the read-model's manifestSource — Law 13). */
 	manifests?: SwarmManifestStore;
 	/** Operator-token override (tests); default a fresh random token surfaced
-	 *  on stderr. */
+	 *  through the session UI (stderr line headless, ui notification TUI). */
 	operatorToken?: string;
+	/** Token-announcement sink override (TUI seam): receives the fresh token
+	 *  and the bound port AFTER a successful bind. Default the ONE structured
+	 *  stderr `operator-token` line (the headless automation contract, pinned
+	 *  by check M1.2); a TUI session injects a ui-notification sink — a raw
+	 *  stderr write there would stamp the line onto the live frame and
+	 *  corrupt the composer. */
+	announceToken?: (token: string, port: number) => void;
 	/** The process environment (config + test tiers). */
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
@@ -98,8 +105,9 @@ function logAdvisory(event: string, fields: Record<string, unknown>): void {
 	}
 }
 
-/** Surface the operator token on stderr — the session UI is its ONLY channel
- *  (Law 11: never the journal, a response body or a log FILE). One line. */
+/** Default token announcement: the session's stderr, ONE structured line —
+ *  the headless half of the session UI channel (Law 11: never the journal,
+ *  a response body or a log FILE). Shape pinned by check M1.2. */
 function logOperatorToken(token: string): void {
 	try {
 		process.stderr.write(`${JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token })}\n`);
@@ -244,9 +252,10 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		}
 	}
 
-	// Bind succeeded — now (and only now) surface the token on the session's
-	// stderr. This is its ONLY channel (Law 11).
-	logOperatorToken(operatorToken);
+	// Bind succeeded — now (and only now) surface the token through the
+	// session UI: the structured stderr line headless (default), a ui
+	// notification in TUI (the announceToken seam; Law 11 channel).
+	(deps.announceToken ?? logOperatorToken)(operatorToken, bound.port);
 
 	const handle: SwarmServerHandle = {
 		port: bound.port,

@@ -20,6 +20,16 @@
  *                             gated; see the mutation block below)
  *   POST /api/asks/<id>/answer   → the #51 mutation route
  *
+ * Issue #52 adds the worker-console surface (./console.ts, §4.2.4):
+ *   GET /api/workers/:id/console?offset=<n>       → one console frame
+ *   WS  /api/workers/:id/console/stream?offset=<n> → live-tail console frames
+ * `:id` is a SwarmGraph session node id; resolution is fail-closed through
+ * the watch-role ownership verdict, states are transport-derived (live /
+ * ended / ended-with-retained-backlog / unavailable), and a backend without
+ * console capture yields `unavailable` + `E_CONSOLE_UNAVAILABLE` (never a
+ * fabricated stream, never an HTTP error). Console text is ephemeral — it
+ * never reaches the journal or the snapshot.
+ *
  * TRUST MODEL (§4.2): loopback only. The READ surface (GET/WS) has no auth
  * beyond the loopback bind — every process on this machine can read it; that
  * is the documented boundary (a future daemon may add auth; this server
@@ -58,7 +68,7 @@
  */
 
 import type { Http1Request, Http1Response } from "./http1.ts";
-import { SWARM_HTTP_SCHEMA_VERSION } from "./http1.ts";
+import { SWARM_HTTP_SCHEMA_VERSION, errorEnvelope } from "./http1.ts";
 import { existsSync } from "node:fs";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
@@ -72,6 +82,11 @@ import type { JournalReader } from "../swarm/journal-read.ts";
 import type { SwarmStorageConfig } from "../swarm/storage.ts";
 import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts";
 import { StreamHub } from "./stream.ts";
+import { ConsoleCapture } from "./console-buffer.ts";
+import type { ConsoleStreamSource } from "./console-buffer.ts";
+import { consoleRoute, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
+import { ConsoleHub } from "./console-ws.ts";
+import type { SwarmGraph } from "../swarm/graph.ts";
 
 /** The HTTP surface's contract version (Law 7) — re-exported from the leaf
  *  (./http1.ts) so consumers see one import surface; the leaf owns the one
@@ -101,14 +116,7 @@ const SERVER_ERROR_HINTS: Record<SwarmServerErrorCode, string> = {
 /** Build a structured error envelope (schemaVersion on every response — Law 7).
  *  A caller may override the canned hint with a failure's own recovery hint. */
 export function httpError(status: number, code: SwarmServerErrorCode, message: string, hint?: string): Http1Response {
-	return {
-		status,
-		body: JSON.stringify({
-			ok: false,
-			schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
-			error: { code, message, hint: hint ?? SERVER_ERROR_HINTS[code] },
-		}),
-	};
+	return errorEnvelope(status, code, message, hint ?? SERVER_ERROR_HINTS[code]);
 }
 
 /** The journal reader seam the endpoint layer consumes (the read half of
@@ -153,6 +161,12 @@ export interface SwarmServerDeps {
 	 *  family — the server layer maps its structured outcome to HTTP). Absent
 	 *  → mutation routes answer a structured 500. */
 	mutate?: SwarmMutate;
+	/** This session's file identity — the worker-console ownership gate's self
+	 *  (issue #52; the read-model is the identity source, fail-closed). */
+	sessionFile?: string;
+	/** A prebuilt read-model graph (composition root / test injection); absent
+	 *  → the console route builds one through buildSnapshotGraph. */
+	graph?: SwarmGraph;
 }
 
 /** The mutation seam: run one steer/answer for a worker id this session owns. */
@@ -210,7 +224,7 @@ function eventsResponse(deps: SwarmServerDeps, req: Http1Request): Http1Response
 
 /** Build the SwarmGraph once for one snapshot request/frame — the ONE
  *  spelling shared by the HTTP route and the WS snapshot frame (Law 9). */
-async function buildSnapshotGraph(deps: SwarmServerDeps): Promise<unknown> {
+async function buildSnapshotGraph(deps: SwarmServerDeps): Promise<SwarmGraph> {
 	const storage: SwarmStorageConfig = deps.storage ?? { storage: "files", projection: true, warnings: [] };
 	return buildSwarmGraph({
 		journal: deps.journal,
@@ -323,8 +337,10 @@ async function mutationResponse(
  * <p>
  * FUNCTION_CONTRACT:
  * Input: deps — the injected read-model sources + mutation seam; req — one
- *   parsed request (head + optional body)
- * Output: the response (a promise for the snapshot/mutation routes)
+ *   parsed request (head + optional body); runtime — the mounted console
+ *   capture (the WS/REST console routes share it; absent on direct calls →
+ *   single-shot console reads)
+ * Output: the response (a promise for the async routes)
  * Guarantees:
  *   - GET serves the read routes, no auth (the #50 loopback boundary);
  *   - POST serves ONLY the two token-gated mutation routes, else 404;
@@ -333,7 +349,7 @@ async function mutationResponse(
  *   - every envelope (success + error) carries schemaVersion (Law 7)
  * Raises: never (all failures are structured error envelopes or degraded graphs)
  */
-export function routeRequest(deps: SwarmServerDeps, req: Http1Request): Http1Response | Promise<Http1Response> {
+export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?: ConsoleRuntime): Http1Response | Promise<Http1Response> {
 	if (req.method === "POST") {
 		const steer = STEER_ROUTE_RE.exec(req.path);
 		if (steer) return mutationResponse(deps, req, "steer", steer[1]);
@@ -352,6 +368,11 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request): Http1Res
 	if (req.path === "/api/version") return versionResponse();
 	if (req.path === "/api/swarm/events") return eventsResponse(deps, req);
 	if (req.path === "/api/swarm/snapshot") return snapshotResponse(deps);
+	const consoleId = matchConsoleRestPath(req.path);
+	if (consoleId !== null) return consoleRoute(deps, consoleId, req.query.get("offset") ?? undefined, runtime);
+	if (matchConsoleStreamPath(req.path) !== null) {
+		return httpError(400, "E_SWARM_USAGE", "the console stream is a WebSocket endpoint (/api/workers/:id/console/stream)");
+	}
 	return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
 }
 
@@ -365,16 +386,28 @@ export interface SwarmRouteTable {
 	close(): void;
 }
 
-/** Build the route table (plain routes + the stream hub). */
+/** Build the route table (plain routes + the stream hubs). */
 export function createRouteTable(deps: SwarmServerDeps & { pollMs?: number }): SwarmRouteTable {
+	const captureTransport = deps.transport as ConsoleTransport | undefined;
+	const captureSource: ConsoleStreamSource = { streamConsole: captureTransport?.streamConsole?.bind(captureTransport) };
+	const runtime: ConsoleRuntime = { capture: new ConsoleCapture(captureSource) };
 	const hub = new StreamHub({
 		journal: deps.journal,
 		buildSnapshot: () => buildSnapshotGraph(deps),
 		pollMs: deps.pollMs,
 	});
+	const consoleHub = new ConsoleHub({
+		deps: { transport: deps.transport, sessionFile: deps.sessionFile, graph: deps.graph, buildGraph: () => buildSnapshotGraph(deps) },
+		capture: runtime.capture,
+		pollMs: deps.pollMs,
+	});
 	return {
-		onRequest: (req) => routeRequest(deps, req),
-		onUpgrade: (req, socket, head) => hub.handleUpgrade(req, socket, head),
-		close: () => hub.close(),
+		onRequest: (req) => routeRequest(deps, req, runtime),
+		onUpgrade: (req, socket, head) => consoleHub.handleUpgrade(req, socket, head) || hub.handleUpgrade(req, socket, head),
+		close: () => {
+			hub.close();
+			consoleHub.close();
+			runtime.capture.stop();
+		},
 	};
 }

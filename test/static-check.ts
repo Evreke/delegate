@@ -863,6 +863,7 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
 	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 	{ file: "src/swarm/journal-manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the pure replay/diff fold (replayManifest + diffManifestEvents) into a journal-manifest-replay.ts sibling" },
+	{ file: "src/swarm-server/server.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the #51 mutation-response cluster (auth + id/body validation + outcome mapping) into a server-mutation.ts sibling; the #51+#52 merge pushed the route layer over the threshold" },
 ];
 
 const sizeOffenders = listTsFiles(resolve(ROOT, "src"))

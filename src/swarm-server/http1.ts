@@ -130,7 +130,7 @@ function badRequestBody(message: string, hint: string): string {
 }
 
 /** Serialize + send one plain response, then half-close the socket. */
-function writeResponse(socket: Socket, res: Http1Response): void {
+export function writeHttp1Response(socket: Socket, res: Http1Response): void {
 	const body = res.body ?? "";
 	const head =
 		`HTTP/1.1 ${res.status} ${statusText(res.status)}\r\n` +
@@ -149,6 +149,25 @@ function contentLengthOf(req: Http1Request): number | null {
 	if (!/^\d+$/.test(raw)) return null;
 	const n = Number(raw);
 	return Number.isSafeInteger(n) ? n : null;
+}
+
+/**
+ * Build the ONE structured-error envelope every layer of the read API shares
+ * (Law 7/Law 8 — `schemaVersion` on success AND error, `{code,message,hint}`).
+ * Lives on this leaf so the routes, the WS hubs and the core itself share ONE
+ * spelling with no circular imports (Law 9).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: status, code (E_* token), message, hint (never empty by callers)
+ * Output: an Http1Response whose body is the serialized error envelope
+ * Guarantees: pure; the body always carries ok:false + schemaVersion
+ * Raises: never
+ */
+export function errorEnvelope(status: number, code: string, message: string, hint: string): Http1Response {
+	return {
+		status,
+		body: JSON.stringify({ ok: false, schemaVersion: SWARM_HTTP_SCHEMA_VERSION, error: { code, message, hint } }),
+	};
 }
 
 /** Parse a request head (head = everything before \r\n\r\n). Returns null on malformed. */
@@ -208,9 +227,9 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 			// data handler — an unanswered socket is a client hang (Law 8).
 			void Promise.resolve()
 				.then(() => opts.onRequest(req))
-				.then((res) => writeResponse(socket, res))
+				.then((res) => writeHttp1Response(socket, res))
 				.catch(() =>
-					writeResponse(socket, {
+					writeHttp1Response(socket, {
 						status: 500,
 						body: JSON.stringify({
 							ok: false,
@@ -247,7 +266,7 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 					// "431 + close, never a buffer risk" bound, not just a reply).
 					socket.removeListener("data", onData);
 					socket.pause();
-					writeResponse(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small request heads only.") });
+					writeHttp1Response(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small request heads only.") });
 				}
 				return;
 			}
@@ -256,7 +275,7 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 			const req = parseRequestHead(head);
 			if (req === null) {
 				socket.removeListener("data", onData);
-				writeResponse(socket, { status: 400, body: badRequestBody("malformed HTTP request head", "The read API accepts well-formed HTTP/1.1 request heads only.") });
+				writeHttp1Response(socket, { status: 400, body: badRequestBody("malformed HTTP request head", "The read API accepts well-formed HTTP/1.1 request heads only.") });
 				return;
 			}
 			const wantsUpgrade =
@@ -266,19 +285,19 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 				socket.removeListener("data", onData);
 				const taken = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
 				if (!taken) {
-					writeResponse(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests.") });
+					writeHttp1Response(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests.") });
 				}
 				return;
 			}
 			const len = contentLengthOf(req);
 			if (len === null) {
 				socket.removeListener("data", onData);
-				writeResponse(socket, { status: 400, body: badRequestBody("invalid Content-Length header", "A request body must declare a non-negative integer Content-Length.") });
+				writeHttp1Response(socket, { status: 400, body: badRequestBody("invalid Content-Length header", "A request body must declare a non-negative integer Content-Length.") });
 				return;
 			}
 			if (len > MAX_BODY_BYTES) {
 				socket.removeListener("data", onData);
-				writeResponse(socket, { status: 413, body: badRequestBody("request body too large", `A request body must not exceed ${MAX_BODY_BYTES} bytes.`) });
+				writeHttp1Response(socket, { status: 413, body: badRequestBody("request body too large", `A request body must not exceed ${MAX_BODY_BYTES} bytes.`) });
 				return;
 			}
 			if (len === 0) {

@@ -191,7 +191,11 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 				writeResponse(socket, { status: 400, body: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"websocket upgrade refused","hint":"Only /api/swarm/stream speaks WebSocket; other paths are plain GET."}}' });
 				return;
 			}
-			void Promise.resolve(opts.onRequest(req))
+			// Deferred evaluation: a handler that throws SYNCHRONOUSLY must land
+			// in the .catch (a structured 500), never escape into the socket's
+			// data handler — an unanswered socket is a client hang (Law 8).
+			void Promise.resolve()
+				.then(() => opts.onRequest(req))
 				.then((res) => writeResponse(socket, res))
 				.catch(() =>
 					writeResponse(socket, {

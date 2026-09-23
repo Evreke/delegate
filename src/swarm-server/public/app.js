@@ -25,6 +25,9 @@ import { clearToken, controlsView, failPending, newPending, pendingAsks, pending
 
 const STORAGE_KEY = "swarm.dashboard.lastSeq";
 
+/** Re-prompt cap for a rejected operator token (no infinite 401 recursion). */
+export const MAX_AUTH_RETRIES = 3;
+
 /** Read the persisted cursor (sessionStorage only — the documented store). */
 export function readCursor(storage) {
 	try {
@@ -126,6 +129,7 @@ export function createFleetApp(env = {}) {
 		const ctl = controlsView({
 			worker: worker.name,
 			consoleStatus: state ? state.status : undefined,
+			hasSession: Boolean(worker.sessionId),
 			pendingAsk: asks.find((a) => a.worker === worker.name) || null,
 		});
 		return { ...ctl, draft: drafts.get(worker.name) || "", pending: pending ? pendingView(pending) : null };
@@ -272,17 +276,26 @@ export function createFleetApp(env = {}) {
 
 	const errorText = (res) => (res && res.envelope && res.envelope.error ? `${res.envelope.error.code}: ${res.envelope.error.message}` : "mutation failed");
 
-	const submit = async (kind, worker, text, token) => {
-		const pending = newPending(kind, worker, text, currentSeq());
-		pendingList = [...pendingList, pending];
-		scheduleRender();
+	const submit = async (kind, worker, text, token, attempt = 0) => {
+		// Dedup: an auth re-prompt recurses with the SAME text — reuse the one
+		// outstanding marker instead of stacking a second pending row.
+		let pending = pendingList.find((p) => p.status === "pending" && p.kind === kind && p.worker === worker && p.text === text);
+		if (!pending) {
+			pending = newPending(kind, worker, text, currentSeq());
+			pendingList = [...pendingList, pending];
+			scheduleRender();
+		}
 		const res = await postMutation({ fetch: fetchImpl, token, kind, id: worker, text });
 		if (!res.ok) {
 			if (res.authRequired) {
 				clearToken(storage);
-				setTokenState("re-prompt");
-				const fresh = ensureToken("operator token rejected — re-enter it:");
-				if (fresh) return submit(kind, worker, text, fresh);
+				if (attempt < MAX_AUTH_RETRIES) {
+					setTokenState("re-prompt");
+					const fresh = ensureToken("operator token rejected — re-enter it:");
+					if (fresh) return submit(kind, worker, text, fresh, attempt + 1);
+				}
+				// Cap reached: an honest terminal state, never an infinite prompt loop.
+				setTokenState("rejected");
 			}
 			pendingList = pendingList.map((p) => (p === pending ? failPending(p, errorText(res)) : p));
 			scheduleRender();
@@ -337,6 +350,12 @@ export function createFleetApp(env = {}) {
 						return;
 					}
 					if (kind === "events") {
+						// B1: the stream advances lastSeq BEFORE calling onFrame and
+						// /api/swarm/events?after is EXCLUSIVE, so a REST refetch at this
+						// cursor can never re-read the row that arrived on the frame.
+						// Fold the frame's own rows first (the steer/answer confirmation),
+						// then refresh for anything appended after it (footer counts).
+						foldEvents(frame.events);
 						const seq = stream ? stream.state.lastSeq : cursor;
 						writeCursor(storage, seq);
 						refreshJournal(seq).catch(showError);

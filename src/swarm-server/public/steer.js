@@ -171,13 +171,16 @@ export function pendingAsks(events) {
  * The per-card control state: enabled or DISABLED-WITH-REASON (never hidden).
  * Foreign/unowned and ended workers are disabled; an `unavailable` console
  * (a backend without capture) still steers — the mutation surface is
- * independent of console capture.
+ * independent of console capture. A worker with no session id can never have a
+ * console state, so `hasSession:false` gets the honest terminal reason (NOT a
+ * forever-pending "checking ownership…").
  */
 export function controlsView(opts) {
 	const consoleStatus = opts.consoleStatus;
 	const pendingAsk = opts.pendingAsk && typeof opts.pendingAsk === "object" ? opts.pendingAsk : null;
 	if (consoleStatus === "refused") return { disabled: true, reasonCode: "foreign", reason: "disabled: worker is not owned by this session (foreign fleet)", pendingAsk };
 	if (consoleStatus === "ended" || consoleStatus === "ended-with-retained-backlog") return { disabled: true, reasonCode: "ended", reason: "disabled: worker ended", pendingAsk };
+	if (opts.hasSession === false && (consoleStatus === undefined || consoleStatus === null || consoleStatus === "loading")) return { disabled: true, reasonCode: "no-session", reason: "disabled: no session id — cannot steer", pendingAsk };
 	if (consoleStatus === undefined || consoleStatus === null || consoleStatus === "loading") return { disabled: true, reasonCode: "checking", reason: "disabled: checking ownership…", pendingAsk };
 	return { disabled: false, reasonCode: null, reason: "", pendingAsk };
 }

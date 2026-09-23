@@ -204,6 +204,22 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   append a `steer`/`answer` journal row with the additive `via: "http"`
   field (the CLI tool path writes none). The server is advisory — a startup
   failure or a failed write never blocks a session, spawn, or collect.
+- **Worker-console surface (issue #52).** The same session-hosted server
+  streams one worker's console: `GET
+  /api/workers/<nodeId>/console?offset=<n>` returns one frame
+  `{ok, schemaVersion, worker, nodeId, task, state, chunk, nextOffset,
+  oldestOffset, dropped}` and `WS /api/workers/<nodeId>/console/stream?
+  offset=<n>` live-tails the same frames. `<nodeId>` is the SwarmGraph
+  session node id of a worker session; resolution is owner-gated
+  (fail-closed — a foreign or unknown id is `E_CONSOLE_WORKER_REFUSED`).
+  `state` is `live`, `ended-with-retained-backlog`, `ended`, or
+  `unavailable` (a backend with no console capture — e.g. herdr — answers
+  the last one with `E_CONSOLE_UNAVAILABLE`, HTTP 200, never a fabricated
+  stream). The rpc backend serves the real console. `offset` is a character
+  position; feed `nextOffset` back for the continuation — the retained
+  backlog is byte-capped (`DEFAULT_MAX_BYTES`, drop-oldest) and `oldestOffset`
+  /`dropped` tell you when a cursor fell off it. Console text is ephemeral:
+  never journalled, never in the snapshot.
 - **Windows: real-host QA gate.** A real-Windows E2E run (delegate spawn →
   report → wake → mailbox, with herdr for Windows) is NOT part of CI — only
   Windows-shaped path tests (`path.win32` fixtures) run on the POSIX CI. An

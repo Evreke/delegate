@@ -262,6 +262,27 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **The rpc host launches and kills correctly on Windows.** The adapter spawned
+  a bare `pi` — on Windows npm installs the `pi.cmd` shim, so the spawn died
+  before a worker existed — and killed with `child.kill("SIGKILL")`, which maps
+  to TerminateProcess of the DIRECT child: behind the OS launch wrapper that
+  kills the wrapper and leaves `pi` (and its children) running, at the
+  failed-start rollback and at teardown alike. Both launch and kill now go
+  through `src/spawn-policy.ts`: the shell-wrapper launch with per-argument
+  quoting, and the `/T /F` tree-kill. POSIX is byte-identical to the previous
+  shape (bare `pi`, signal escalation untouched). The policy target is
+  injectable (constructor `platform`), so both branches are pinned on any host.
+  A field proof on a real Windows host (the live `rpc-host-e2e` leg) exposed one
+  more Windows-only consequence: the tree-kill lands asynchronously and the
+  worker's cwd IS its worktree placement, which teardown removes immediately
+  after — a live process locks its cwd there, so `git worktree remove --force`
+  failed `EPERM` and left the worktree behind. The win32 teardown now waits
+  (bounded) for the child's real exit; POSIX still resolves right after SIGKILL.
+  The header's "POSIX-only for now" gap is closed. Regression:
+  `test/rpc-win-launch-check.ts` (P/L/K/R/W — policy units, launch shape,
+  teardown kill, rollback kill, teardown ORDERING — no real pi process, no LLM
+  traffic).
+
 - **Adaptive sqlite driver — the extension must load under node too.** The
   journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
   (node ≥ 22.13); a statically chosen driver crashed the extension import

@@ -742,11 +742,52 @@ runtime) and bun (the check runtime).
 #### 4.2.3 Loopback trust model
 
 The server binds `127.0.0.1` ONLY — a constant in code, not an operator
-knob (fail-closed: there is no config spelling that widens the bind). There
-is NO auth in v1 beyond the loopback bind: every process on the machine can
-read the read API. That is the documented boundary: single-operator
+knob (fail-closed: there is no config spelling that widens the bind). The
+read API carries NO auth beyond the loopback bind: every process on the
+machine can READ it. That is the documented boundary: single-operator
 authority (§0) covers the operator's own processes; multi-user hosts and
 off-machine access are OUT OF SCOPE for this surface. Non-goals (issue #50):
-no frontend, no console streaming (#52), no mutation endpoints (#51), no
-multi-session aggregation, no daemon mode, no TLS, no auth — each joins by
-addition under its own issue.
+no frontend, no console streaming (#52), no multi-session aggregation, no
+daemon mode, no TLS — each joins by addition under its own issue. The
+mutation endpoints and their operator token joined in §4.2.4 (#51).
+
+#### 4.2.4 Mutation surface + operator token (issue #51)
+
+The server's TWO write routes are operator-only and additive to the read
+surface:
+
+- `POST /api/workers/<id>/steer` `{text}` — post a steering envelope to a
+  worker this session owns.
+- `POST /api/asks/<id>/answer` `{text}` — answer a pending question of an
+  owned worker (the pending q-file is archived).
+
+Both require `Authorization: Bearer <operator token>`; GET and the WS stream
+stay open. The token is generated fresh per mount (`crypto.randomBytes(32)`)
+and surfaced ONLY on the session's stderr as one structured `operator-token`
+line — never the journal, a response body or a log file (Law 11). Missing,
+malformed and wrong tokens yield the SAME uniform `401 E_SWARM_AUTH` refusal,
+compared in constant time.
+
+Ownership is fail-closed (Law 8): the `<id>` resolves through the canonical
+`workerAudienceMatch` (src/watch-role.ts) over the read-model's manifest
+rows; only a proven `"mine"` verdict mutates. A foreign or unknown id refuses
+with the SAME `403 E_SWARM_FORBIDDEN` body — the gate never leaks whether an
+id exists in another fleet.
+
+The write itself is NOT reimplemented: `src/swarm/mailbox-verbs.ts` (the
+shared orchestrator verb core) calls the SAME `postSteerAndNudge` /
+`writeAnswer` / `archiveQuestion` path the `delegate_mailbox` tool uses, so
+an HTTP-issued `a-<name>.json` is byte-identical to a tool-issued one. The
+additive difference is journaling: every successful mutation appends its
+`steer` / `answer` journal row (`{text}` plus the additive `via: "http"`;
+no schema-version bump) AFTER the envelope is published — the `report` kind
+precedent — through the verb plumbing (`appendSwarmEvent`). In `files`
+storage mode no row is written (the existing verb behavior); the static pin
+`T1.16` proves no `src/swarm-server/**` file makes a direct mailbox write,
+so the mutation path cannot bypass the journal (#51 acceptance 6).
+
+Every mutation envelope — success and error — carries `schemaVersion: 1` and
+the structured `E_*` codes (`E_SWARM_AUTH`, `E_SWARM_FORBIDDEN` join by
+addition; `E_SWARM_USAGE` on a malformed body/id). The mutation routes are
+advisory by contract (Law 8): a failed write or nudge degrades to a
+structured error and never destabilizes the session, watcher, or collect.

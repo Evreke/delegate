@@ -40,11 +40,12 @@
 
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync } from "node:fs";
-import { rm, stat, writeFile } from "node:fs/promises";
+import { rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import {
 	answerPathFor as buildAnswerPath,
 	nudgeFailedPathFor as buildNudgeFailedPath,
+	questionArchivePathFor as buildQuestionArchivePath,
 	questionPathFor as buildQuestionPath,
 	releasePathFor as buildReleasePath,
 } from "./expaths.ts";
@@ -252,6 +253,38 @@ export function writeAnswer(path: string, answer: string): Promise<void> {
 	});
 }
 
+/**
+ * Archive a worker's pending question after its answer has landed
+ * (q-<name>.json → q-<name>.answered-<ts>.json): the frozen Phase A consume
+ * discipline — a surviving q-file would re-fire AWAITING_ANSWER with a stale
+ * question on a later run. THE one implementation, shared by the
+ * delegate_mailbox tool and the #51 orchestrator verb core (Law 9).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: dir — the exchange task dir; name — the canonical worker name
+ * Output: { archived, note } — archived true when the rename landed; note a
+ *   human-readable outcome (empty on the normal path)
+ * Guarantees: best-effort and total — a missing q-file is normal for a steer
+ *   (archived false, empty note); any other rename failure is noted, never
+ *   thrown (the answer file is already posted)
+ * Raises: never
+ */
+export async function archiveQuestion(
+	dir: string,
+	name: string,
+): Promise<{ archived: boolean; note: string }> {
+	try {
+		await rename(questionPathFor(dir, name), buildQuestionArchivePath(dir, name, Date.now()));
+		return { archived: true, note: " Pending question archived." };
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { archived: false, note: "" };
+		return {
+			archived: false,
+			note: ` Question archive failed (${errText(err)}) — delete q-${name}.json manually, otherwise a later run may re-fire AWAITING_ANSWER with the stale question.`,
+		};
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The ONE steer-posting core (fix-report-heal, 2026-09-12): envelope build +
 // post + console nudge with retries — shared by the delegate_mailbox tool
@@ -274,6 +307,11 @@ export const MAILBOX_NUDGE_RETRY_DELAY_MS = 500;
 /** Nudge text — points the worker at the answer file. */
 export const mailboxNudgeText = (name: string): string =>
 	`Mailbox update posted: read a-${name}.json next to your brief and continue accordingly.`;
+
+/** The transport surface postSteerAndNudge actually consumes — narrowed so
+ *  the #51 HTTP mutation core can accept a session transport that carries
+ *  only the status/nudge half (a read-only fake degrades to no nudge). */
+export type SteerTransport = Pick<Transport, "getStatus" | "submitPrompt">;
 
 /** Outcome of postSteerAndNudge — everything the callers render or log. */
 export interface SteerPostResult {
@@ -321,7 +359,7 @@ export interface SteerPostResult {
  *   and nudge-failed-<name>.json); herdr pane IPC via the injected transport.
  */
 export async function postSteerAndNudge(
-	transport: Transport,
+	transport: SteerTransport,
 	name: string,
 	dir: string,
 	text: string,

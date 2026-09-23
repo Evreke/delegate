@@ -32,6 +32,28 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   (`journal-read.ts` now re-exports `journalDbPath` for it). Checks:
   `test/swarm-server-{endpoints,ws,lifecycle,fault}-check.ts`.
 
+- **Steering endpoints + operator token (#51, swarm-core-v1, ARCHITECTURE
+  §4.2.4).** The session-hosted server gains TWO operator-only write routes:
+  `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
+  `{"text":"..."}`). Both require `Authorization: Bearer <operator token>`;
+  the token is generated fresh per mount (`crypto.randomBytes(32)`) and
+  surfaced ONLY on the session's stderr as one structured `operator-token`
+  line — never the journal, a response body or a log file (Law 11).
+  Missing/malformed/wrong tokens yield the SAME uniform `401 E_SWARM_AUTH`
+  refusal (constant-time compare); GET and the WS stream stay open. Ownership
+  is fail-closed via the canonical `workerAudienceMatch` (`src/watch-role.ts`)
+  over the read-model's manifest rows: a foreign or unknown id refuses with
+  the same `403 E_SWARM_FORBIDDEN` body. The write is NOT reimplemented —
+  the shared `src/swarm/mailbox-verbs.ts` calls the SAME `postSteerAndNudge` /
+  `writeAnswer` / `archiveQuestion` core the `delegate_mailbox` tool uses, so
+  an HTTP-issued `a-<name>.json` is byte-identical; every successful mutation
+  then appends its `steer`/`answer` journal row (`{text}` + additive
+  `via: "http"`; no schema bump) through the verb plumbing. New static pin
+  T1.16: the mutation core journals every write and no `src/swarm-server/**`
+  file makes a direct mailbox write. The HTTP/1.1 core now accepts small
+  bounded JSON bodies on those two routes only. Checks:
+  `test/swarm-server-mutation-check.ts` (+ T1.16 in `test/static-check.ts`).
+
 - **Static pins for the new seams (#31, swarm-core-v1, Law 6).** Three
   shape pins in `test/static-check.ts` make §4.1.2/§4.1.3 fail CI, not
   reviews: **sqlite confinement** (T1.12 — no src/ module outside the

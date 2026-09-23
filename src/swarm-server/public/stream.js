@@ -10,7 +10,17 @@
  * cursor-resume: no duplicated and no lost updates, by construction.
  *
  * No framework, plain ES module.
+ *
+ * VERSION NEGOTIATION (issue #55, Law 7): the server stamps every frame with
+ * `schemaVersion: 1` and only ever ADDS fields. This client therefore
+ * (a) ignores unknown fields and (b) checks `schemaVersion` — a frame whose
+ * version this build does not support is ignored (a no-op), never applied or
+ * half-read; a missing `schemaVersion` is legacy v1 and stays accepted (the
+ * repo's on-disk tolerance convention).
  */
+
+/** The stream frame contract version this client supports (Law 7). */
+export const SUPPORTED_STREAM_SCHEMA_VERSION = 1;
 
 /** The initial state for a stream resuming after `after` (default 0). */
 export function initialStreamState(after = 0) {
@@ -43,6 +53,7 @@ function parseFrame(data) {
  */
 export function reduceFrame(state, frame) {
 	if (!frame || typeof frame !== "object" || frame.ok !== true) return state;
+	if (frame.schemaVersion !== undefined && frame.schemaVersion !== SUPPORTED_STREAM_SCHEMA_VERSION) return state; // unsupported version: ignore (never half-read)
 	if (frame.type === "snapshot") {
 		return { ...state, snapshot: frame.snapshot, state: "open" };
 	}

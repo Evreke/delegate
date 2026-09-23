@@ -10,6 +10,11 @@
  * REFUSED — logged, the FIRST instance's handle returned, never a silent
  * replace (a double module load cannot run two servers for one session).
  *
+ * Since #51 (§4.2.4) the mount ALSO generates the operator token (surfaced
+ * on stderr ONLY, Law 11) and wires the mutation seam (the shared swarm
+ * mailbox core over the read-model's manifestSource), so the server's POST
+ * routes reach the SAME journaling writer path the delegate_mailbox tool uses.
+ *
  * ADVISORY BY CONTRACT (Law 8, §4.2): every failure path — disabled config,
  * bind failure, journal-reader failure — is logged as one structured JSON
  * stderr line and returns null (or a degraded-but-live handle); mountSwarmServer
@@ -39,10 +44,13 @@ import { resolveSwarmServerConfig } from "./config.ts";
 import { createRouteTable, defaultUsageSource, type SwarmServerDeps } from "./server.ts";
 import { startHttp1Server, type Http1ServerHandle } from "./http1.ts";
 import { openSessionJournal } from "./journal-session.ts";
+import { generateOperatorToken } from "./auth.ts";
 import { type JournalReader } from "../swarm/journal-read.ts";
 import { resolveSwarmStorage, type SwarmStorageConfig } from "../swarm/storage.ts";
-import { activeBackendName } from "../swarm/snapshot.ts";
-import type { SwarmUsageSource } from "../swarm/graph.ts";
+import { activeBackendName, manifestSource } from "../swarm/snapshot.ts";
+import { runOrchestratorVerb } from "../swarm/mailbox-verbs.ts";
+import type { SwarmManifestStore, SwarmUsageSource } from "../swarm/graph.ts";
+import type { SteerTransport } from "../mailbox-store.ts";
 
 /** globalThis slot of the per-session server mount registry (Law 3). */
 const SWARM_SERVER_MOUNT_REGISTRY_KEY = "__piDelegateSwarmServerMounts";
@@ -53,9 +61,18 @@ export interface SwarmServerHandle extends Omit<Http1ServerHandle, "close"> {
 	stop(): void;
 }
 
-export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage"> {
+export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "transport"> {
 	/** This session's file identity (the registry key; the Law-3 owner). */
 	sessionFile?: string;
+	/** The session's live transport (live status folds into the snapshot; its
+	 *  getStatus/submitPrompt half drives the #51 console nudge). */
+	transport?: SwarmServerDeps["transport"] & Partial<SteerTransport>;
+	/** Manifest source override (the mutation ownership gate's input seam;
+	 *  default the read-model's manifestSource — Law 13). */
+	manifests?: SwarmManifestStore;
+	/** Operator-token override (tests); default a fresh random token surfaced
+	 *  on stderr. */
+	operatorToken?: string;
 	/** The process environment (config + test tiers). */
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
@@ -76,6 +93,16 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage"> {
 function logAdvisory(event: string, fields: Record<string, unknown>): void {
 	try {
 		process.stderr.write(`${JSON.stringify({ level: "warn", component: "swarm-server", event, ...fields })}\n`);
+	} catch {
+		// stderr itself is advisory
+	}
+}
+
+/** Surface the operator token on stderr — the session UI is its ONLY channel
+ *  (Law 11: never the journal, a response body or a log FILE). One line. */
+function logOperatorToken(token: string): void {
+	try {
+		process.stderr.write(`${JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token })}\n`);
 	} catch {
 		// stderr itself is advisory
 	}
@@ -133,6 +160,11 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		return existing;
 	}
 
+	// #51 operator token: fresh per mount. Generated here so the route table
+	// can gate on it; SURFACED on stderr only once the bind succeeds below
+	// (an unusable token for a failed mount is never announced).
+	const operatorToken = deps.operatorToken ?? generateOperatorToken();
+
 	const listen =
 		deps.listen ??
 		((port: number) =>
@@ -160,14 +192,37 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		logAdvisory("journal-reader-failed", { error: String((err as Error).message ?? err) });
 		journal = undefined;
 	}
+	const backendName = deps.transport?.backendName?.() ?? activeBackendName();
 	const serverDeps: SwarmServerDeps = {
 		transport: deps.transport,
 		journal,
 		usage: deps.usage === false ? undefined : (deps.usage ?? defaultUsageSource),
 		storage,
-		backendName: deps.transport?.backendName?.() ?? activeBackendName(),
+		backendName,
 	};
-	const routes = createRouteTable({ ...serverDeps, pollMs: deps.pollMs });
+	// #51 mutation seam: ownership scan (the read-model's manifestSource) +
+	// the shared swarm mailbox core. The scan is bounded by the backend filter
+	// and total (a read failure degrades to an empty row set → fail-closed).
+	const manifestReader = deps.manifests ?? manifestSource(journal, storage, backendName);
+	const mutate: NonNullable<SwarmServerDeps["mutate"]> = async (kind, id, text) => {
+		let manifests: ReadonlyArray<unknown> = [];
+		try {
+			manifests = manifestReader.scan(backendName);
+		} catch {
+			manifests = [];
+		}
+		return runOrchestratorVerb(
+			{
+				manifests: manifests as ReadonlyArray<import("../swarm/mailbox-verbs.ts").OrchestratorVerbManifest>,
+				self: { sessionFile: deps.sessionFile },
+				transport: deps.transport,
+				env,
+				via: "http",
+			},
+			{ kind, worker: id, text },
+		);
+	};
+	const routes = createRouteTable({ ...serverDeps, pollMs: deps.pollMs, operatorToken, mutate });
 
 	let bound: Http1ServerHandle;
 	try {
@@ -186,6 +241,10 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 			return null;
 		}
 	}
+
+	// Bind succeeded — now (and only now) surface the token on the session's
+	// stderr. This is its ONLY channel (Law 11).
+	logOperatorToken(operatorToken);
 
 	const handle: SwarmServerHandle = {
 		port: bound.port,

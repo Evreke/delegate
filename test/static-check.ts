@@ -51,6 +51,12 @@
  *      ../swarm/{graph,events,snapshot,result,storage}.ts (the read API),
  *      ../host.ts (the Transport TYPE seam, Law 4) and ../usage.ts (the
  *      read-model's declared usage input seam).
+ *  11. T1.16 (#51, Law 6/8/11): the mutation surface's write path never
+ *      bypasses the journal. The shared core src/swarm/mailbox-verbs.ts must
+ *      call appendSwarmEvent for steer/answer (the verb journal plumbing);
+ *      no src/swarm-server/** file may make a direct mailbox write (the
+ *      server delegates to the core — it cannot publish an envelope without
+ *      the journal row); and the mount wires the core (runOrchestratorVerb).
  *
  * Exit 0 only if all checks pass.
  */
@@ -1372,7 +1378,8 @@ const PROJECTION_WRITER_ALLOWLIST: ReadonlyArray<{ file: string; klass: string; 
 	{ file: "src/swarm/write-report.ts", klass: "verb", reason: "swarm write-report — publishes report-<name>.json (writeFileSync validate-temp + renameSync publish, §4.1.3 Phase B ordering)" },
 	{ file: "src/swarm/ask.ts", klass: "verb", reason: "swarm ask — posts q-<name>.json atomically after the journal append" },
 	{ file: "src/swarm/write-progress.ts", klass: "verb", reason: "swarm write-progress — appends p-<name>.jsonl after the journal append" },
-	{ file: "src/mailbox-store.ts", klass: "legacy-phase-a", reason: "Phase A tool path — the a-file writer (writeAnswer via postSteerAndNudge) + release-marker writer, driven by the delegate_mailbox tool; §4.1.1 keeps orchestrator verbs tool-wrapped this milestone; shrinks when the tool path migrates to swarm verbs" },
+	{ file: "src/mailbox-store.ts", klass: "legacy-phase-a", reason: "Phase A tool path — the a-file writer (writeAnswer via postSteerAndNudge) + release-marker writer + the shared question archive, driven by the delegate_mailbox tool and the #51 HTTP verb core; §4.1.1 keeps orchestrator verbs tool-wrapped this milestone; shrinks when the tool path migrates to swarm verbs" },
+	{ file: "src/swarm/mailbox-verbs.ts", klass: "orchestrator-verb", reason: "#51 HTTP mutation core — routes steer/answer through the SAME writeAnswer/postSteerAndNudge the tool uses, then appends the journal row; the sanctioned orchestrator-verb writer (§4.2.4)" },
 	{ file: "src/mailbox-tool.ts", klass: "legacy-phase-a", reason: "Phase A tool path — the delegate_mailbox tool: q→answered archive rename + drives the a-file write; same retirement as mailbox-store" },
 	{ file: "src/spawn.ts", klass: "legacy-phase-a-adjacent", reason: "co-occurrence row, NOT a projection writer: builder refs are read-only (report-witness/question/progress reads); its exchange-dir writes are the teardown.log append and nudge-marker cleanup only — the pin's file-level predicate is co-occurrence, not dataflow, so the row exists with this reason; retiring Phase A must shrink this set" },
 ];
@@ -1428,12 +1435,14 @@ export function scanCodeForProjectionWriteCombos(
 	return out;
 }
 
-/** Named waiver for the ONE sanctioned direct combo on HEAD: the delegate_mailbox
- *  answer flow archives the pending question immediately after the answer
- *  lands (q-<name>.json → q-<name>.answered-<ts>.json) — the frozen Phase A
- *  consume discipline (a surviving q-file would re-fire AWAITING_ANSWER). */
+/** Named waiver for the ONE sanctioned direct combo on HEAD: the shared
+ *  question archive (mailbox-store.ts archiveQuestion, used by the
+ *  delegate_mailbox tool AND the #51 HTTP verb core) renames the pending
+ *  question immediately after the answer lands (q-<name>.json →
+ *  q-<name>.answered-<ts>.json) — the frozen Phase A consume discipline (a
+ *  surviving q-file would re-fire AWAITING_ANSWER). */
 const PROJECTION_COMBO_WAIVERS: ReadonlyArray<{ file: string; api: string; reason: string }> = [
-	{ file: "src/mailbox-tool.ts", api: "rename", reason: "q→answered archive rename right after the answer lands — the frozen Phase A consume discipline; retires with the mailbox-tool legacy row" },
+	{ file: "src/mailbox-store.ts", api: "rename", reason: "q→answered archive rename right after the answer lands — the frozen consume discipline; the ONE shared implementation (tool + #51 HTTP core)" },
 ];
 
 {
@@ -1451,10 +1460,10 @@ const PROJECTION_COMBO_WAIVERS: ReadonlyArray<{ file: string; api: string; reaso
 		offenders.join(" | "),
 	);
 	// The waiver must stay LIVE (T1.9d): the waived shape really occurs.
-	const mtCombos = scanCodeForProjectionWriteCombos(readFileSync(resolve(ROOT, "src", "mailbox-tool.ts"), "utf8"))
+	const mtCombos = scanCodeForProjectionWriteCombos(readFileSync(resolve(ROOT, "src", "mailbox-store.ts"), "utf8"))
 		.filter((o) => o.text.includes("questionPathFor"));
 	check(
-		"T1.14c the combo waiver is LIVE: mailbox-tool.ts still carries the waived q→answered rename (stale waiver fails the audit)",
+		"T1.14c the combo waiver is LIVE: mailbox-store.ts archiveQuestion still carries the waived q→answered rename (stale waiver fails the audit)",
 		mtCombos.length > 0,
 	);
 }
@@ -1637,6 +1646,87 @@ check(
 	check(
 		"T1.15f seeded-file probe: a family module importing a durable store goes red; the reader-door sibling stays clean",
 		seeded.length === 1 && seeded[0].includes("evil.ts") && seeded[0].includes("src/manifest-store.ts"),
+		seeded.join(" | "),
+	);
+	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 11. T1.16 — #51 mutation surface: the write path never bypasses the journal
+//     (Law 6/8). The shared core journals every mutation; the server family
+//     owns no direct mailbox write, so it cannot append without a journal row.
+// ---------------------------------------------------------------------------
+
+/** Direct mailbox/projection write-shaped APIs the SERVER family must not
+ *  call — the mutation core owns the write AND the journal append. */
+const SERVER_DIRECT_MAILBOX_WRITE_APIS = [
+	"writeAnswer",
+	"postSteerAndNudge",
+	"atomicWriteFileSync",
+	"writeFileSync",
+	"appendFileSync",
+	"answerPathFor",
+] as const;
+
+/** Pure per-source scan (T1.9 convention: unit-callable for canaries). */
+export function scanCodeForServerDirectMailboxWrite(code: string): string[] {
+	const stripped = stripComments(code);
+	return SERVER_DIRECT_MAILBOX_WRITE_APIS.filter((api) =>
+		new RegExp(`(?<![\\w$.])${api}\\s*\\(`).test(stripped),
+	);
+}
+
+{
+	const coreSrc = readFileSync(resolve(ROOT, "src", "swarm", "mailbox-verbs.ts"), "utf8");
+	check(
+		"T1.16a the #51 mutation core journals every mutation: src/swarm/mailbox-verbs.ts calls appendSwarmEvent (the verb journal plumbing)",
+		existsSync(resolve(ROOT, "src", "swarm", "mailbox-verbs.ts")) && /appendSwarmEvent\s*\(/.test(stripComments(coreSrc)),
+	);
+
+	const offenders: string[] = [];
+	for (const f of listTsFiles(resolve(ROOT, "src", "swarm-server"))) {
+		const rel = relative(ROOT, f).replaceAll("\\", "/");
+		const hits = scanCodeForServerDirectMailboxWrite(readFileSync(f, "utf8"));
+		if (hits.length > 0) offenders.push(`${rel} → ${hits.join(", ")}`);
+	}
+	check(
+		"T1.16b no src/swarm-server/** file makes a direct mailbox write — the mutation path delegates to the journaling core, so it cannot bypass the journal (#51 acceptance 6)",
+		offenders.length === 0,
+		offenders.join(" | "),
+	);
+
+	const mountSrc = readFileSync(resolve(ROOT, "src", "swarm-server", "mount.ts"), "utf8");
+	check(
+		"T1.16c the mutation core is really wired: mount.ts imports runOrchestratorVerb and passes it as the route table's mutate seam",
+		/runOrchestratorVerb/.test(stripComments(mountSrc)) && /mutate/.test(stripComments(mountSrc)),
+	);
+
+	const canaries: ReadonlyArray<[boolean, string]> = [
+		[true, 'import { writeAnswer } from "../mailbox-store.ts";\nwriteAnswer(p, t);'],
+		[true, 'import { postSteerAndNudge } from "../mailbox-store.ts";\nawait postSteerAndNudge(tr, n, d, t);'],
+		[true, 'import { writeFileSync } from "node:fs";\nwriteFileSync(p, x);'],
+		[false, 'import { runOrchestratorVerb } from "../swarm/mailbox-verbs.ts";\nconst r = await runOrchestratorVerb(deps, req);'],
+		[false, 'export type T = { answerPath?: string };'],
+	];
+	const missed = canaries
+		.filter(([shouldFire, code]) => (scanCodeForServerDirectMailboxWrite(code).length > 0) !== shouldFire)
+		.map(([shouldFire, code]) => `expected ${shouldFire ? "FIRE" : "clean"}: ${code.replaceAll("\n", " ")}`);
+	check(
+		"T1.16d the pin BITES and is PRECISE: direct mailbox writes fire; the core-delegation shape stays clean",
+		missed.length === 0,
+		missed.join(" | "),
+	);
+
+	const seed = mkdtempSync(resolve(tmpdir(), "swarm-server-journal-pin-"));
+	mkdirSync(resolve(seed, "src", "swarm-server"), { recursive: true });
+	writeFileSync(resolve(seed, "src", "swarm-server", "bad.ts"), 'import { writeAnswer } from "../mailbox-store.ts";\nexport const x = (p: string, t: string) => writeAnswer(p, t);\n');
+	writeFileSync(resolve(seed, "src", "swarm-server", "good.ts"), 'import { runOrchestratorVerb } from "../swarm/mailbox-verbs.ts";\nexport const y = 2;\n');
+	const seeded = listTsFiles(resolve(seed, "src", "swarm-server"))
+		.map((f) => relative(seed, f).replaceAll("\\", "/"))
+		.filter((rel) => scanCodeForServerDirectMailboxWrite(readFileSync(resolve(seed, rel), "utf8")).length > 0);
+	check(
+		"T1.16e seeded-file probe: a family module writing the mailbox directly goes red; the core-delegating sibling stays clean",
+		seeded.length === 1 && seeded[0].includes("bad.ts"),
 		seeded.join(" | "),
 	);
 	rmSync(seed, { recursive: true, force: true });

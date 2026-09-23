@@ -33,15 +33,15 @@
  * Law 4 — the Transport instance is injected from index.ts).
  */
 
-import { rename, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { exchangeRoot } from "./exchange.ts";
-import { questionArchivePathFor } from "./expaths.ts";
 import { manifestStore } from "./manifest-store.ts";
 import {
 	answerPathFor,
+	archiveQuestion,
 	postSteerAndNudge,
 	questionPathFor,
 	readQuestion,
@@ -304,18 +304,7 @@ export function registerMailboxTool(pi: import("@earendil-works/pi-coding-agent"
 					// any other rename failure is noted but does not fail the action —
 					// the answer file is already posted.
 					afterPost: async () => {
-						try {
-							await rename(
-								questionPathFor(dir, params.name),
-								questionArchivePathFor(dir, params.name, Date.now()),
-							);
-							archiveNote = " Pending question archived.";
-						} catch (err) {
-							if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-								archiveNote =
-									` Question archive failed (${errText(err)}) — delete q-${params.name}.json manually, otherwise a later run may re-fire AWAITING_ANSWER with the stale question.`;
-							}
-						}
+						archiveNote = (await archiveQuestion(dir, params.name)).note;
 					},
 				});
 			} catch (err) {

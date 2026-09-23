@@ -747,9 +747,10 @@ read API carries NO auth beyond the loopback bind: every process on the
 machine can READ it. That is the documented boundary: single-operator
 authority (§0) covers the operator's own processes; multi-user hosts and
 off-machine access are OUT OF SCOPE for this surface. Non-goals (issue #50):
-no frontend, no console streaming (#52), no multi-session aggregation, no
-daemon mode, no TLS — each joins by addition under its own issue. The
-mutation endpoints and their operator token joined in §4.2.4 (#51).
+no frontend, no multi-session aggregation, no daemon mode, no TLS — each
+joins by addition under its own issue. The mutation endpoints and their
+operator token joined in §4.2.4 (#51); worker console streaming, once a #50
+non-goal, joins by addition in §4.2.4 (#52).
 
 #### 4.2.4 Mutation surface + operator token (issue #51)
 
@@ -791,3 +792,52 @@ the structured `E_*` codes (`E_SWARM_AUTH`, `E_SWARM_FORBIDDEN` join by
 addition; `E_SWARM_USAGE` on a malformed body/id). The mutation routes are
 advisory by contract (Law 8): a failed write or nudge degrades to a
 structured error and never destabilizes the session, watcher, or collect.
+
+#### 4.2.4 Worker console surface (issue #52)
+
+Status: this record section lands with #52's implementation. It binds the
+console half of the session-hosted read endpoint under §4.2 and the laws.
+
+Two routes, ONE envelope (v1, additive-only, Law 7):
+
+```
+GET /api/workers/:id/console?offset=<n>        → one console frame
+WS  /api/workers/:id/console/stream?offset=<n> → live-tail console frames
+{ok, schemaVersion, worker, nodeId, task?, state, chunk, nextOffset,
+ oldestOffset, dropped, error?}
+```
+
+**Identity and ownership (fail-closed, Law 8).** `:id` is the SwarmGraph
+SESSION node id of a worker session — never a raw path. Resolution walks the
+read-model graph (Law 13: fleet state enters only through the read-model),
+and the gate is the canonical `src/watch-role.ts` ownership verdict
+(`workerAudienceMatch` over the worker's `spawned_by` parent path, with the
+task-level fleet owner as the fallback). ONLY the `mine` verdict passes; an
+unknown id, a task node id, a foreign owner, a missing owner edge and a
+degraded self-id are refused IDENTICALLY with `E_CONSOLE_WORKER_REFUSED`
+(404) — no existence oracle, no fail-open edge. A non-integer or negative
+`offset` is `E_CONSOLE_USAGE` (400).
+
+**States are transport-derived, never fabricated.** `live` while the
+transport still reports the worker alive; on end, the endpoint probes the
+backend for retention — `ended-with-retained-backlog` when the backend still
+answers a console read, `ended` when it does not. A backend that exposes no
+console stream (no `streamConsole` seam method — e.g. the herdr adapter)
+answers HTTP 200 with `state: "unavailable"` and an additive
+`error: {code: "E_CONSOLE_UNAVAILABLE", …, hint}`: a valid degraded answer,
+not an HTTP error, and never a fabricated stream.
+
+**Bounded backlog and offsets.** Each server holds a per-worker transcript
+bounded by pi's `DEFAULT_MAX_BYTES` (Law 1 constant), evicted oldest-first by
+whole retained event and served by character offset (`src/swarm-server/
+console-buffer.ts` owns the cap and the offset model). `oldestOffset` is the
+frontier; `dropped` flags a read below it. Feeding `nextOffset` back yields
+exactly the later bytes — no duplication, no loss, inside the retained
+window. Console text is EPHEMERAL display data: it is never written to the
+journal and never enters the swarm snapshot, and the whole surface is
+advisory by contract (a capture or frame failure degrades to a structured
+frame, structurally incapable of failing spawn/collect).
+
+Checks: `test/swarm-console-rest-check.ts`, `test/swarm-console-ws-check.ts`.
+The `T1.15` family pin covers the new modules unchanged (no durable store,
+journal writer or backend adapter import).

@@ -199,6 +199,8 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		usage: deps.usage === false ? undefined : (deps.usage ?? defaultUsageSource),
 		storage,
 		backendName,
+		sessionFile: deps.sessionFile,
+		graph: deps.graph,
 	};
 	// #51 mutation seam: ownership scan (the read-model's manifestSource) +
 	// the shared swarm mailbox core. The scan is bounded by the backend filter

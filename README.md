@@ -198,8 +198,9 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   local process can read); WRITES are operator-only and land under **#51**:
   `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
   `{"text":"..."}`) require `Authorization: Bearer <operator token>`. The
-  token is generated per mount and printed ONLY on the session's stderr as a
-  structured `operator-token` line — copy it from the session UI. Writes only
+  token is generated per mount and surfaced ONLY through the session UI: a
+  structured `operator-token` line on stderr (headless) or a ui notification
+  (TUI) — copy it from there. Writes only
   reach workers the session itself spawned (foreign/unknown ids refuse) and
   append a `steer`/`answer` journal row with the additive `via: "http"`
   field (the CLI tool path writes none). The server is advisory — a startup
@@ -513,8 +514,9 @@ done/idle.
   (читать может любой локальный процесс); ЗАПИСЬ — только для оператора и
   появилась в **#51**: `POST /api/workers/<id>/steer` и `POST /api/asks/<id>/answer`
   (тело `{"text":"..."}`) требуют `Authorization: Bearer <operator token>`.
-  Токен генерируется при монтировании и печатается ТОЛЬКО в stderr сессии
-  структурированной строкой `operator-token` — скопируйте его из UI сессии.
+  Токен генерируется при монтировании и попадает ТОЛЬКО в UI сессии:
+  структурированная строка `operator-token` в stderr (headless) или
+  уведомление (TUI) — скопируйте его оттуда.
   Запись доходит только до воркеров, которых породила эта сессия (чужие/
   неизвестные id отклоняются) и добавляет строку журнала `steer`/`answer`
   с аддитивным полем `via: "http"` (CLI tool-путь не пишет ни одной). Сервер

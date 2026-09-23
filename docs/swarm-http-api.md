@@ -140,9 +140,10 @@ text is ephemeral — never journaled, never in the snapshot. The WS form
 body `{"text":"<non-empty>"}`.
 
 - **Token**: `Authorization: Bearer <operator token>`. The token is generated
-  fresh per mount (`crypto.randomBytes(32)`) and surfaced ONLY on the
-  session's stderr as one `operator-token` line — never the journal, a
-  response body or a log file. Missing, malformed and wrong tokens yield the
+  fresh per mount (`crypto.randomBytes(32)`) and surfaced ONLY through the
+  session UI — one `operator-token` line on stderr (headless) or one ui
+  notification (TUI) — never the journal, a response body or a log file.
+  Missing, malformed and wrong tokens yield the
   SAME `401 E_SWARM_AUTH` refusal, compared in constant time.
 - **Ownership**: only workers this session provably spawned; a foreign or
   unknown id refuses with the SAME `403 E_SWARM_FORBIDDEN` body.

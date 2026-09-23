@@ -768,8 +768,9 @@ surface:
 
 Both require `Authorization: Bearer <operator token>`; GET and the WS stream
 stay open. The token is generated fresh per mount (`crypto.randomBytes(32)`)
-and surfaced ONLY on the session's stderr as one structured `operator-token`
-line — never the journal, a response body or a log file (Law 11). Missing,
+and surfaced ONLY through the session UI — one structured `operator-token`
+line on stderr (headless) or one ui notification (TUI) — never the journal,
+a response body or a log file (Law 11). Missing,
 malformed and wrong tokens yield the SAME uniform `401 E_SWARM_AUTH` refusal,
 compared in constant time.
 

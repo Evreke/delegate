@@ -201,9 +201,9 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   token is generated per mount and printed ONLY on the session's stderr as a
   structured `operator-token` line — copy it from the session UI. Writes only
   reach workers the session itself spawned (foreign/unknown ids refuse) and
-  append the same `steer`/`answer` journal rows the tool path writes, with an
-  additive `via: "http"`. The server is advisory — a startup failure or a
-  failed write never blocks a session, spawn, or collect.
+  append a `steer`/`answer` journal row with the additive `via: "http"`
+  field (the CLI tool path writes none). The server is advisory — a startup
+  failure or a failed write never blocks a session, spawn, or collect.
 - **Windows: real-host QA gate.** A real-Windows E2E run (delegate spawn →
   report → wake → mailbox, with herdr for Windows) is NOT part of CI — only
   Windows-shaped path tests (`path.win32` fixtures) run on the POSIX CI. An
@@ -493,9 +493,10 @@ done/idle.
   Токен генерируется при монтировании и печатается ТОЛЬКО в stderr сессии
   структурированной строкой `operator-token` — скопируйте его из UI сессии.
   Запись доходит только до воркеров, которых породила эта сессия (чужие/
-  неизвестные id отклоняются) и добавляет те же строки журнала `steer`/`answer`,
-  что и tool-путь, с аддитивным `via: "http"`. Сервер advisory — сбой старта или
-  неудачная запись никогда не блокируют сессию, spawn или collect.
+  неизвестные id отклоняются) и добавляет строку журнала `steer`/`answer`
+  с аддитивным полем `via: "http"` (CLI tool-путь не пишет ни одной). Сервер
+  advisory — сбой старта или неудачная запись никогда не блокируют сессию,
+  spawn или collect.
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

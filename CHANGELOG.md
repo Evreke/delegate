@@ -10,6 +10,28 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Session-hosted swarm read server (#50, swarm-core-v1, ARCHITECTURE
+  §4.2).** A loopback HTTP/WS endpoint mounted per session (`src/swarm-server/`):
+  `GET /api/version`, `GET /api/swarm/snapshot` and `GET /api/swarm/events?after=<seq>`
+  (the `swarm snapshot` / `swarm events` CLI envelopes verbatim — protocol
+  identity — with the session's live Transport statuses and usage summaries
+  folded in), and `WS /api/swarm/stream?after=<seq>` (one snapshot frame, then
+  seq-ordered journal events off a shared cursor poll; cursor-resume on
+  reconnect). Config: `swarm.server.enabled` (default **OFF**) and
+  `swarm.server.port` (default 7331; `0` = OS-assigned; on `EADDRINUSE` the
+  session binds an OS-assigned port and logs the substitution — parallel
+  sessions get independent servers). Loopback-only bind (a code constant, not
+  a knob), no auth in v1 beyond the loopback. Advisory by contract: a startup
+  failure (bad port, bound port, failing journal reader) is logged and never
+  blocks session start, spawn, or collect. Zero new runtime dependencies — a
+  hand-rolled HTTP/1.1 + RFC 6455 core on `node:net` (the platform has no
+  server-side WebSocket; `node:http` upgrade sockets drop writes under bun
+  1.3.x). New static pin T1.15: the family is a Law-13 client — no direct
+  imports of durable stores, observation surfaces, backend adapters or the
+  journal writer half; the journal enters only through the reader surface
+  (`journal-read.ts` now re-exports `journalDbPath` for it). Checks:
+  `test/swarm-server-{endpoints,ws,lifecycle,fault}-check.ts`.
+
 - **Static pins for the new seams (#31, swarm-core-v1, Law 6).** Three
   shape pins in `test/static-check.ts` make §4.1.2/§4.1.3 fail CI, not
   reviews: **sqlite confinement** (T1.12 — no src/ module outside the

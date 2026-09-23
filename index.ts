@@ -31,6 +31,10 @@ import { registerMailboxTool } from "./src/mailbox-tool.ts";
 // Resume reconciliation (#27, ARCHITECTURE §4.1.4): journal scan + dead-reboot
 // marking on session_start. Advisory by contract — never blocks session start.
 import { reconcileSessionStart } from "./src/swarm/reconcile.ts";
+// Session-hosted read server (#50, ARCHITECTURE §4.2): the loopback HTTP/WS
+// read-model surface, mounted per session (Law 3) and OFF by default
+// (swarm.server.enabled). Advisory by contract — never blocks session start.
+import { mountSwarmServer, type SwarmServerHandle } from "./src/swarm-server/mount.ts";
 
 // ===========================================================================
 // Host binding (workerhost inversion, design §5/§6 migration steps 5–6):
@@ -144,6 +148,9 @@ interface SessionLifecycle {
 	/** Watcher stop handle — undefined when the composer did not mount (a
 	 *  pure worker session mounts no watcher, F6 two-tier contract). */
 	watcherStop?: () => void;
+	/** Swarm read server handle (§4.2) — undefined when the server is
+	 *  disabled (default) or failed to bind (advisory, Law 8). */
+	swarmServer?: SwarmServerHandle;
 }
 
 /** The current session's lifecycle context (see the contract above). */
@@ -254,7 +261,13 @@ export default function (pi: ExtensionAPI) {
 		// session-start path entirely.
 		void reconcileSessionStart(transport, self).catch(() => {});
 
-		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop };
+		// Session-hosted read server (#50, §4.2): ONE binding — the mount owns
+		// its own gating (config tier, second-mount refusal, port fallback) and
+		// is TOTAL (a failure is a logged null; Law 8 — never blocks the
+		// session). The handle joins this session's context (Law 3).
+		const swarmServer = (await mountSwarmServer({ sessionFile, transport })) ?? undefined;
+
+		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop, swarmServer };
 	});
 
 	// Session-end cleanup (quality fix A7 + Wave 2 Law 3): the fleet widget's
@@ -275,6 +288,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		try {
 			session.watcherStop?.();
+		} catch {
+			// advisory — never throw past session_shutdown
+		}
+		try {
+			session.swarmServer?.stop();
 		} catch {
 			// advisory — never throw past session_shutdown
 		}

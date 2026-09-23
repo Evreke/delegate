@@ -183,6 +183,20 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   lookback). The retired `delivered-*.json` files are inert leftovers — safe to delete.
   On a shared machine, updated and not-yet-updated sessions behave differently until all
   are updated.
+- **Swarm read server (session-hosted, OFF by default).** Set
+  `"swarm": { "server": { "enabled": true } }` in
+  `~/.pi/agent/pi-delegate.config.json` (or export `SWARM_SERVER_ENABLED=1`)
+  to mount a loopback read endpoint in every session:
+  `http://127.0.0.1:7331/api/version` — plus `/api/swarm/snapshot`,
+  `/api/swarm/events?after=<seq>` (the `swarm snapshot` / `swarm events`
+  envelopes, verbatim, with live worker statuses folded in) and
+  `ws://127.0.0.1:7331/api/swarm/stream?after=<seq>` (one snapshot frame,
+  then journal events as they happen; reconnect with your last consumed
+  `seq`). `swarm.server.port` (default 7331; `0` = OS-assigned) is a hint —
+  if the port is taken, the session binds an OS-assigned port and logs the
+  substitution. The server binds 127.0.0.1 only, no auth in v1: every
+  process on the machine can read it. It is advisory — a startup failure
+  never blocks a session, spawn, or collect.
 - **Windows: real-host QA gate.** A real-Windows E2E run (delegate spawn →
   report → wake → mailbox, with herdr for Windows) is NOT part of CI — only
   Windows-shaped path tests (`path.win32` fixtures) run on the POSIX CI. An
@@ -454,6 +468,20 @@ done/idle.
   Устаревшие файлы `delivered-*.json` — инертные остатки, их можно безопасно удалить.
   На общей машине обновлённые и ещё не обновлённые сессии ведут себя по-разному, пока
   не обновлены все.
+- **Swarm read-сервер (в каждой сессии, по умолчанию ВЫКЛЮЧЕН).** Добавьте
+  `"swarm": { "server": { "enabled": true } }` в
+  `~/.pi/agent/pi-delegate.config.json` (или экспортируйте `SWARM_SERVER_ENABLED=1`),
+  чтобы каждая сессия поднимала loopback read-endpoint:
+  `http://127.0.0.1:7331/api/version` — плюс `/api/swarm/snapshot` и
+  `/api/swarm/events?after=<seq>` (конверты `swarm snapshot` / `swarm events`
+  байт-в-байт, со вживлёнными живыми статусами воркеров) и
+  `ws://127.0.0.1:7331/api/swarm/stream?after=<seq>` (один snapshot-кадр,
+  затем события журнала по мере появления; переподключайтесь с последним
+  потреблённым `seq`). `swarm.server.port` (по умолчанию 7331; `0` = назначается
+  ОС) — это подсказка: если порт занят, сессия возьмёт назначенный ОС порт и
+  залогирует подмену. Сервер слушает только 127.0.0.1, без аутентификации в v1:
+  читать может любой процесс на машине. Он advisory — сбой старта никогда не
+  блокирует сессию, spawn или collect.
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

@@ -62,7 +62,10 @@ import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from 
 /**
  * The active-backend name for the manifest scan's foreign-backend filter
  * (migration stage 3: no module scans with an implicit backend). Tolerant
- * mirror of index.ts resolveConfiguredHost — see MODULE_CONTRACT.
+ * mirror of index.ts resolveConfiguredHost — see MODULE_CONTRACT. Exported
+ * for the session-hosted read server (src/swarm-server/), which needs the
+ * same tolerant spelling when no live Transport is bound (protocol identity
+ * with this verb — Law 9, one spelling).
  * <p>
  * FUNCTION_CONTRACT:
  * Input: none (reads the merged config — EXTERNAL_DEPENDENCY: profile.ts)
@@ -70,7 +73,7 @@ import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from 
  * Guarantees: missing/corrupt/unknown config → "herdr"; never throws
  * Raises: never
  */
-function activeBackendName(): string {
+export function activeBackendName(): string {
 	try {
 		const host = (loadDelegateConfig() as { host?: unknown }).host;
 		if (host === "herdr" || host === "rpc") return host;
@@ -85,9 +88,26 @@ function activeBackendName(): string {
  * READ: files mode binds the production file store (scan is read-only);
  * journal mode replays through the read-only journal scan (never the store
  * constructor, whose writer open would create/migrate the database).
+ * Exported as the ONE input-factory spelling for read-API clients (the
+ * session-hosted read server builds its snapshot route on it — the read
+ * model's inputs enter through this verb module, never a raw store import
+ * at the client, Law 13).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: journal — the caller's read-only journal reader (undefined → the
+ *   files-mode store regardless of mode, the degraded best effort);
+ *   cfg — the resolved storage config; backendName — the scan's filter
+ * Output: the SwarmManifestStore the projection scans
+ * Guarantees: never throws; the CLI path (journal always present) is
+ *   byte-identical to the previous private spelling
+ * Raises: never
  */
-function manifestSource(journal: JournalReader, cfg: SwarmStorageConfig, backendName: string): SwarmManifestStore {
-	if (cfg.storage !== "journal") return createFileManifestStore();
+export function manifestSource(
+	journal: JournalReader | undefined,
+	cfg: SwarmStorageConfig,
+	backendName: string,
+): SwarmManifestStore {
+	if (!journal || cfg.storage !== "journal") return createFileManifestStore();
 	return {
 		scan: (backend: string) =>
 			scanManifestsViaJournalReader(journal, (dir) => swarmSessionIdFor(dir, cfg), backend),

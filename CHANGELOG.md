@@ -181,6 +181,21 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   JSON is a versioned contract (`schemaVersion`, Law 7) pinned by a golden
   check. Law 13's read path now has its projection layer; the read API
   (#30) is the next client surface.
+
+- **HTTP API contract hardening (#55, ARCHITECTURE §4.2, Law 7).** The
+  session-hosted HTTP/WS surface gained a golden envelope suite
+  (`test/swarm-http-api-check.ts` + `test/swarm-http-goldens.ts`): every
+  endpoint's success and structured-error shape is byte-pinned over fixture
+  fleets covering the empty journal, a multi-fleet, all four degraded flags,
+  the herdr-unavailable console, foreign-fleet refusals and absent/wrong
+  operator tokens. An additive-only schema-diff check
+  (`test/swarm-http-schema-diff-check.ts`) fails CI when a shipped envelope
+  loses or renames a field relative to its golden (additions pass); a
+  version-negotiation check (`test/swarm-http-version-check.ts`) pins
+  `/api/version` and proves unknown-field tolerance; an end-to-end check
+  (`test/swarm-http-e2e-check.ts`) drives snapshot → stream → steer
+  (journal-confirmed) → console against a real mounted server. Protocol
+  reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
 - **Watcher consumes the journal cursor; the delivered-facts store is
@@ -222,6 +237,13 @@ Regression: `test/report-contract-check.ts` (fallback/verb phrasing),
 `test/rpc-host-unit-check.ts` (R9 env delivery), `test/profile-check.ts` (P12
 resolver) and the opt-in `test/swarm-verbs-e2e-check.ts` (`RPC_E2E=1`: a live rpc
 worker writes its report through `swarm write-report`).
+
+- **The dashboard stream client checks `schemaVersion` (#55, Law 7).**
+  `src/swarm-server/public/stream.js` now ignores a stream frame whose
+  `schemaVersion` this build does not support (`SUPPORTED_STREAM_SCHEMA_VERSION
+  = 1`) instead of applying it; a missing `schemaVersion` stays legacy v1, so
+  the additive-only tolerance contract is unchanged. Documented in
+  `docs/swarm-http-api.md` §3 and proven by `test/swarm-http-version-check.ts`.
 
 ### Fixed
 

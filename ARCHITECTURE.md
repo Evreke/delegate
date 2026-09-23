@@ -723,9 +723,12 @@ runs in `test/swarm-server-endpoints-check.ts`); the server's addition is
 LIVE in-process sources the separate-process CLI structurally lacks — the
 session's Transport statuses and usage summaries fold into the snapshot, so
 `no-live-status` / `usage-unavailable` appear only when genuinely
-unavailable. Every envelope, success and error, carries `schemaVersion: 1`
-(Law 7) and structured E_* errors (Law 8); `E_SWARM_NOT_FOUND` joins the
-taxonomy by addition. A future standalone daemon must speak these same
+unavailable. Every error envelope carries top-level `schemaVersion: 1` and so
+does every success envelope, EXCEPT the verbatim CLI snapshot envelope, whose
+version lives inside its body (`snapshot.schemaVersion`) — protocol identity
+wins over the uniform top-level field (Law 7); structured E_* errors (Law 8),
+and `E_SWARM_NOT_FOUND` joins the taxonomy by addition. A future standalone
+daemon must speak these same
 envelopes over the same paths — the identity constraint is what keeps the
 session-hosted server and a daemon swappable for clients.
 

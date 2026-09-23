@@ -178,6 +178,12 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 			const sep = headBuf.indexOf("\r\n\r\n");
 			if (sep === -1) {
 				if (headBuf.length > MAX_HEAD_BYTES) {
+					// Cap exceeded: answer 431 and STOP reading — detach the data
+					// listener and pause before writing, so a peer that never sends
+					// CRLFCRLF cannot keep growing headBuf (the cap must be a real
+					// "431 + close, never a buffer risk" bound, not just a reply).
+					socket.removeAllListeners("data");
+					socket.pause();
 					writeResponse(socket, { status: 431, body: badRequestBody("request head too large", "The read API accepts small GET request heads only.") });
 				}
 				return;

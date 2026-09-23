@@ -22,7 +22,8 @@
  *   W3  cursor-resume: reconnect with ?after=<last consumed seq> → snapshot
  *       frame, then ONLY rows with seq > cursor (no replay); ordering kept.
  *   W4  cold start: server mounted over an ABSENT journal still streams —
- *       the snapshot degrades (sources.journal false, available true), and
+ *       the snapshot degrades (available true; sources.journal true — an
+ *       absent db is an available EMPTY source), and
  *       once the database is created + written, events frames flow (the
  *       session reader reopens on the absence→presence transition); the
  *       plain events endpoint sees the rows through the SAME reader.

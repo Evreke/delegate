@@ -26,12 +26,14 @@
  * Fail-fast: top-level watchdog; every fetch is bounded.
  */
 
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXTENSION_VERSION } from "../src/version.ts";
 import type { AgentStatusName } from "../src/host.ts";
-import { additiveViolations, fixtureAnswerPath, fixtureConsoleGraph, fixtureConsoleWorkerId, fixtureForeignWorkerId, HTTP_GOLDENS, render } from "./swarm-http-goldens.ts";
+import { additiveViolations, fixtureAnswerPath, fixtureConsoleGraph, fixtureConsoleWorkerId, fixtureForeignWorkerId, HTTP_GOLDENS, HTTP_STREAM_GOLDENS, render } from "./swarm-http-goldens.ts";
 
 const watchdog = setTimeout(() => {
 	console.error("swarm-http-api-check WATCHDOG TIMEOUT");
@@ -130,6 +132,162 @@ function consoleTransport(chunks: string[], status: AgentStatusName = "working")
 	};
 }
 
+// ---------------------------------------------------------------------------
+// A compact raw-TCP WebSocket client + a raw upgrade probe (the
+// swarm-console-ws-check pattern): the WS goldens are pinned against REAL
+// frames from the mounted server, never reconstructed from the source.
+// ---------------------------------------------------------------------------
+
+const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/** Server frames are unmasked text frames; a non-101 answer rejects (the
+ *  upgrade-refusal leg uses rawUpgrade instead to read the full body). */
+class WsClient {
+	private buf = Buffer.alloc(0);
+	readonly frames: string[] = [];
+	private waiters: Array<() => void> = [];
+	private closed = false;
+
+	private constructor(private readonly sock: net.Socket) {
+		sock.on("data", (d: Buffer) => {
+			this.buf = Buffer.concat([this.buf, d]);
+			this.drain();
+		});
+		sock.on("close", () => {
+			this.closed = true;
+			this.wake();
+		});
+		sock.on("error", () => {
+			this.closed = true;
+			this.wake();
+		});
+	}
+
+	static connect(port: number, path: string): Promise<WsClient> {
+		return new Promise((resolve, reject) => {
+			const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+			const sock = net.connect(port, "127.0.0.1");
+			const timer = setTimeout(() => {
+				sock.destroy();
+				reject(new Error("ws connect timeout"));
+			}, 5_000);
+			sock.on("connect", () =>
+				sock.write(
+					`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+				),
+			);
+			let head = Buffer.alloc(0);
+			const onData = (d: Buffer) => {
+				head = Buffer.concat([head, d]);
+				const idx = head.indexOf("\r\n\r\n");
+				if (idx === -1) return;
+				sock.off("data", onData);
+				clearTimeout(timer);
+				const text = head.subarray(0, idx).toString();
+				const accept = createHash("sha1")
+					.update(key + WS_GUID)
+					.digest("base64");
+				if (!text.includes("101") || !text.includes(accept)) {
+					sock.destroy();
+					reject(new Error(`ws handshake refused: ${text.split("\r\n")[0]}`));
+					return;
+				}
+				const client = new WsClient(sock);
+				client.buf = Buffer.from(head.subarray(idx + 4));
+				client.drain();
+				resolve(client);
+			};
+			sock.on("data", onData);
+			sock.on("error", (e) => {
+				clearTimeout(timer);
+				reject(e);
+			});
+		});
+	}
+
+	private drain(): void {
+		for (;;) {
+			if (this.buf.length < 2) return;
+			const opcode = this.buf[0]! & 0x0f;
+			let len = this.buf[1]! & 0x7f;
+			let off = 2;
+			if (len === 126) {
+				if (this.buf.length < 4) return;
+				len = this.buf.readUInt16BE(2);
+				off = 4;
+			} else if (len === 127) {
+				if (this.buf.length < 10) return;
+				len = Number(this.buf.readBigUInt64BE(2));
+				off = 10;
+			}
+			if (this.buf.length < off + len) return;
+			const payload = this.buf.subarray(off, off + len);
+			this.buf = this.buf.subarray(off + len);
+			if (opcode === 0x1) {
+				this.frames.push(payload.toString("utf8"));
+				this.wake();
+			} else if (opcode === 0x8) {
+				this.closed = true;
+				this.sock.end();
+				return;
+			}
+		}
+	}
+
+	private wake(): void {
+		for (const w of this.waiters) w();
+		this.waiters = [];
+	}
+
+	async waitFrames(n: number, timeoutMs = 5_000): Promise<string[]> {
+		const deadline = Date.now() + timeoutMs;
+		while (this.frames.length < n && !this.closed && Date.now() < deadline) {
+			await new Promise<void>((r) => {
+				this.waiters.push(r);
+				setTimeout(r, 25);
+			});
+		}
+		return this.frames.slice();
+	}
+
+	close(): void {
+		if (this.closed) return;
+		const mask = crypto.getRandomValues(new Uint8Array(4));
+		this.sock.write(Buffer.concat([Buffer.from([0x88, 0x80]), Buffer.from(mask)]));
+		this.sock.end();
+	}
+}
+
+/** Send a WS upgrade request and read the FULL plain-HTTP answer (the refusal
+ *  leg: no 101, the socket just ends after the error envelope). */
+function rawUpgrade(port: number, path: string): Promise<{ status: number; body: string }> {
+	return new Promise((resolve, reject) => {
+		const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+		const sock = net.connect(port, "127.0.0.1");
+		const timer = setTimeout(() => {
+			sock.destroy();
+			reject(new Error("upgrade probe timeout"));
+		}, 5_000);
+		const chunks: Buffer[] = [];
+		sock.on("connect", () =>
+			sock.write(
+				`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+			),
+		);
+		sock.on("data", (d: Buffer) => chunks.push(d));
+		sock.on("close", () => {
+			clearTimeout(timer);
+			const text = Buffer.concat(chunks).toString("utf8");
+			const idx = text.indexOf("\r\n\r\n");
+			resolve({ status: Number(text.slice(9, 12)), body: idx === -1 ? "" : text.slice(idx + 4) });
+		});
+		sock.on("error", (e) => {
+			clearTimeout(timer);
+			reject(e);
+		});
+	});
+}
+
 async function main(): Promise<void> {
 	const { createJournalWriter } = await import("../src/swarm/journal.ts");
 	const { mountSwarmServer } = await import("../src/swarm-server/mount.ts");
@@ -177,10 +335,15 @@ async function main(): Promise<void> {
 		check(name, byteOk && addOk, `status ${actual.status} (want ${expected.status}); body=${actual.body.slice(0, 200)}`);
 	}
 
+	/** Byte-exact pin for a WS frame body (the handshake has no HTTP status). */
+	function goldenFrame(name: string, actualBody: string, expectedBody: string) {
+		check(name, actualBody === expectedBody, actualBody === expectedBody ? "" : `got=${actualBody.slice(0, 200)}`);
+	}
+
 	// -----------------------------------------------------------------------
 	// Mount A — read + mutation (files mode, no transport)
 	// -----------------------------------------------------------------------
-	const h = await mountSwarmServer({ sessionFile: SELF, env: env(), operatorToken: TOKEN, usage: usageResolver });
+	const h = await mountSwarmServer({ sessionFile: SELF, env: env(), operatorToken: TOKEN, usage: usageResolver, pollMs: 40 });
 	check("A0 main mount returns a handle", h !== null);
 	if (!h) throw new Error("cannot continue without a mounted server");
 
@@ -198,6 +361,10 @@ async function main(): Promise<void> {
 	golden("V4 events bad cursor → 400 E_SWARM_USAGE", await get(h.port, "/api/swarm/events?after=abc"), {
 		status: 400,
 		body: render(HTTP_GOLDENS.invalidAfter, { VALUE: "abc" }),
+	});
+	golden("V5 static-asset path with no file → 404 E_SWARM_NOT_FOUND (the generic 404 envelope)", await get(h.port, "/missing-widget.js"), {
+		status: 404,
+		body: render(HTTP_GOLDENS.staticNotFound, { PATH: "/missing-widget.js" }),
 	});
 
 	// --- E: events over the seeded journal --------------------------------
@@ -237,6 +404,20 @@ async function main(): Promise<void> {
 		);
 	}
 
+	// --- W: WS /api/swarm/stream frames + the upgrade-refusal envelope -----
+	{
+		const wc = await WsClient.connect(h.port, "/api/swarm/stream?after=0");
+		const frames = await wc.waitFrames(2);
+		check("W1 WS stream connected (snapshot + events frames)", frames.length >= 2, `frames=${frames.length}`);
+		goldenFrame("W1.1 WS snapshot frame → byte-exact golden (the S1 graph, stream wrapping)", frames[0] ?? "", HTTP_STREAM_GOLDENS.streamSnapshot({ EXPATH: EX }));
+		goldenFrame("W1.2 WS events frame → byte-exact golden (after=0, the E1 rows)", frames[1] ?? "", render(HTTP_STREAM_GOLDENS.streamEvents, { AFTER: "0" }));
+		wc.close();
+	}
+	{
+		const refused = await rawUpgrade(h.port, "/api/nope");
+		golden("W2 WS upgrade on a non-stream path → 400 refusal envelope, no 101 (http1.ts:288)", refused, { status: 400, body: HTTP_GOLDENS.upgradeRefused });
+	}
+
 	// --- C: console (separate mounts with injected fixture graphs) --------
 	const consoleSelf = "/sessions/console-rpc.jsonl";
 	const graph = fixtureConsoleGraph(consoleSelf);
@@ -249,6 +430,12 @@ async function main(): Promise<void> {
 				status: 200,
 				body: render(HTTP_GOLDENS.consoleLive, { NODEID: nodeId }),
 			});
+			{
+				const wsc = await WsClient.connect(hc.port, `/api/workers/${nodeId}/console/stream?offset=0`);
+				const cframes = await wsc.waitFrames(1);
+				goldenFrame("C1.1 console WS frame → byte-exact (the SAME consoleFrame as REST)", cframes[0] ?? "", render(HTTP_GOLDENS.consoleLive, { NODEID: nodeId }));
+				wsc.close();
+			}
 			golden("C2 console bad offset → 400 E_CONSOLE_USAGE", await get(hc.port, `/api/workers/${nodeId}/console?offset=abc`), {
 				status: 400,
 				body: HTTP_GOLDENS.consoleUsage,
@@ -270,6 +457,12 @@ async function main(): Promise<void> {
 				status: 200,
 				body: render(HTTP_GOLDENS.consoleUnavailable, { NODEID: nodeId }),
 			});
+			{
+				const wsc = await WsClient.connect(hHerdr.port, `/api/workers/${nodeId}/console/stream?offset=0`);
+				const cframes = await wsc.waitFrames(1);
+				goldenFrame("C3.2 console WS captureless → byte-exact unavailable frame (the SAME consoleFrame as REST)", cframes[0] ?? "", render(HTTP_GOLDENS.consoleUnavailable, { NODEID: nodeId }));
+				wsc.close();
+			}
 			hHerdr.stop();
 		}
 	}

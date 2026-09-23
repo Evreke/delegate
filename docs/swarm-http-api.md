@@ -22,7 +22,13 @@ a golden disagree, the golden wins.
 
 ## 2. Envelope invariants (Law 7, Law 8)
 
-- Every JSON envelope — **success and error** — carries `"schemaVersion": 1`.
+- Every JSON **error** envelope carries top-level `"schemaVersion": 1` — and
+  so does every success envelope, with ONE exception: the snapshot success
+  envelope is the `swarm snapshot` CLI envelope **verbatim** (protocol
+  identity, §4.2.2), so it has no top-level `schemaVersion`; its version lives
+  inside the body (`snapshot.schemaVersion`, currently 1). `/api/version`, the
+  `events` envelope, the console frames, the mutation envelopes and every WS
+  frame carry the top-level field.
 - Errors are structured: `{"ok":false,"schemaVersion":1,"error":{"code","message","hint"}}`.
   `code` is an `E_*` token; `hint` is always a non-empty recovery string.
 - Envelopes are **additive-only**: a new field may be added; a field may
@@ -39,7 +45,8 @@ a golden disagree, the golden wins.
 1. A client MUST tolerate unknown fields anywhere in an envelope.
 2. A client MUST check `schemaVersion` and ignore an envelope whose version it
    does not support — never half-read it. A **missing** `schemaVersion` is
-   treated as legacy v1 and accepted (the repo's tolerance convention).
+   treated as legacy v1 and accepted (the repo's tolerance convention). For the
+   snapshot success envelope, read `snapshot.schemaVersion` (§2).
 3. The shipped dashboard client implements this in
    `src/swarm-server/public/stream.js` (`SUPPORTED_STREAM_SCHEMA_VERSION`,
    `reduceFrame`); `test/swarm-http-version-check.ts` proves both the
@@ -50,7 +57,7 @@ a golden disagree, the golden wins.
 | Method | Path | Success | Errors |
 | --- | --- | --- | --- |
 | GET | `/api/version` | frozen identity envelope (§2) | 405 |
-| GET | `/api/swarm/snapshot` | `{ok,verb:"snapshot",snapshot}` | 405 |
+| GET | `/api/swarm/snapshot` | `{ok,verb:"snapshot",snapshot}` ‡ | 405 |
 | GET | `/api/swarm/events?after=<seq>` | `{ok,verb:"events",schemaVersion,after,events,journal}` | 400, 405 |
 | GET | `/api/workers/:id/console?offset=<n>` | one console frame (§6) | 400, 404 |
 | POST | `/api/workers/:id/steer` | mutation envelope (§7) | 400, 401, 403, 404, 500 |
@@ -59,6 +66,10 @@ a golden disagree, the golden wins.
 
 Anything else: `404 E_SWARM_NOT_FOUND`; a served path with the wrong method:
 `405 E_SWARM_USAGE`. Requests are one-per-connection (`Connection: close`).
+
+‡ No top-level `schemaVersion` on this one success envelope — the snapshot
+body's own `schemaVersion` is the version (§2). Every other success
+envelope/frame carries it top-level.
 
 ### 4.1 `/api/swarm/snapshot`
 
@@ -166,7 +177,9 @@ Success envelope:
 - `test/swarm-http-api-check.ts` — golden envelope suite: every endpoint's
   success and error shapes, fixture fleets (empty journal, multi-fleet, all
   four degraded flags, herdr-unavailable console, foreign-fleet refusal,
-  wrong/absent token).
+  wrong/absent token), the WS `/api/swarm/stream` snapshot + events frames,
+  the WS console frames, the WS upgrade-refusal envelope and the static-asset
+  404.
 - `test/swarm-http-schema-diff-check.ts` — additive-only discipline: field
   removal/rename fails, addition passes.
 - `test/swarm-http-version-check.ts` — `/api/version` pin, unknown-field

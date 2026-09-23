@@ -96,12 +96,34 @@ export function withKey(golden: unknown, key: string, value: unknown): unknown {
 // test/swarm-http-api-check.ts for the fixtures that produce them).
 // ---------------------------------------------------------------------------
 
+/** The ONE generic 404 body (unknown API path AND a servable-shaped path that
+ *  resolves to no file — `serveStaticFile` is total and falls through to the
+ *  router's 404, so there is no separate static error shape). */
+const NOT_FOUND_ENVELOPE =
+	'{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_NOT_FOUND","message":"no such path \\"{{PATH}}\\"","hint":"The server serves /api/version, /api/swarm/snapshot, /api/swarm/events, the WS /api/swarm/stream, and the token-gated POST /api/workers/<id>/steer and /api/asks/<id>/answer — check the path."}}';
+
+/** The seeded two-row journal rows (the events endpoint AND the WS events
+ *  frame carry byte-identical rows — ONE spelling). */
+const SEEDED_EVENTS_ROWS =
+	'[{"seq":1,"ts":"2026-06-01T00:00:00.000Z","kind":"spawn","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"backend":"herdr","placementRef":"herdr:pane:1","briefPath":"/b.md","briefText":"# b"}},{"seq":2,"ts":"2026-06-01T00:00:00.000Z","kind":"progress","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"phase":"build","pct":50}}]';
+
 export const HTTP_GOLDENS = {
 	/** GET /api/version — fully static except the extension version. */
 	version: '{"ok":true,"schemaVersion":1,"serverVersion":"{{VERSION}}","protocol":"swarm-http/1"}',
 
 	/** 404 unknown path — canned hint, message embeds the path. */
-	notFound: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_NOT_FOUND","message":"no such path \\"{{PATH}}\\"","hint":"The server serves /api/version, /api/swarm/snapshot, /api/swarm/events, the WS /api/swarm/stream, and the token-gated POST /api/workers/<id>/steer and /api/asks/<id>/answer — check the path."}}',
+	notFound: NOT_FOUND_ENVELOPE,
+
+	/** Static-asset path that resolves to no file — the SAME generic 404
+	 *  envelope as an unknown API path (there is no separate static error
+	 *  shape; the asset resolver falls through to this router 404). */
+	staticNotFound: NOT_FOUND_ENVELOPE,
+
+	/** WS upgrade refused on a non-stream path / bad cursor / missing key
+	 *  (src/swarm-server/http1.ts:288 + ./stream.ts refusals): a PLAIN
+	 *  HTTP 400 E_SWARM_USAGE envelope, never a 101 handshake. */
+	upgradeRefused:
+		'{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"websocket upgrade refused","hint":"Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests."}}',
 
 	/** 405 method on a GET path. */
 	methodNotAllowed: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"method POST is not served on \\"{{PATH}}\\"; it is a GET path","hint":"Use GET with the documented query flags, or POST {text} to a mutation path with a canonical worker id."}}',
@@ -110,7 +132,7 @@ export const HTTP_GOLDENS = {
 	invalidAfter: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"--after must be an integer journal seq cursor, got \\"{{VALUE}}\\"","hint":"Run the swarm CLI with a known verb and the flags that verb requires."}}',
 
 	/** GET /api/swarm/events over the seeded two-row journal. */
-	events: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[{"seq":1,"ts":"2026-06-01T00:00:00.000Z","kind":"spawn","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"backend":"herdr","placementRef":"herdr:pane:1","briefPath":"/b.md","briefText":"# b"}},{"seq":2,"ts":"2026-06-01T00:00:00.000Z","kind":"progress","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"phase":"build","pct":50}}],"journal":{"count":2,"dbSizeBytes":{{DBSIZE}}}}',
+	events: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}}}}`,
 
 	/** GET /api/swarm/events over an ABSENT journal (empty-but-valid). */
 	eventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0}}',
@@ -147,6 +169,34 @@ export const HTTP_GOLDENS = {
 
 	/** Mutation body/id usage error (400). */
 	mutationUsage: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"{{MESSAGE}}","hint":"Use GET with the documented query flags, or POST {text} to a mutation path with a canonical worker id."}}',
+} as const;
+
+/**
+ * The WS-stream frame goldens (issue #55 review F2). The stream hub and the
+ * HTTP routes call the SAME builders (`buildSnapshotGraph`, the journal
+ * reader), so the frames wrap the HTTP envelopes' OWN bytes — ONE spelling of
+ * the snapshot graph and of the events rows. Key order matches the server's
+ * frame objects (src/swarm-server/stream.ts): `ok, schemaVersion, type,
+ * snapshot` and `ok, schemaVersion, type, after, events`.
+ *
+ * The console WS frames are the REST console frame byte-for-byte (ONE
+ * `consoleFrame` spelling, ./console.ts): the api-check pins them against
+ * `HTTP_GOLDENS.consoleLive` / `consoleUnavailable`.
+ */
+export const HTTP_STREAM_GOLDENS = {
+	/** WS /api/swarm/stream FIRST frame: the snapshot graph the HTTP snapshot
+	 *  envelope carries, in the stream frame's own wrapping. */
+	streamSnapshot(tokens: Record<string, string>): string {
+		const http = render(HTTP_GOLDENS.snapshot, tokens);
+		const marker = '"snapshot":';
+		const at = http.indexOf(marker);
+		if (at === -1) throw new Error("swarm-http-goldens: snapshot envelope has no snapshot key");
+		const graph = http.slice(at + marker.length, -1); // strip the envelope's closing brace
+		return `{"ok":true,"schemaVersion":1,"type":"snapshot","snapshot":${graph}}`;
+	},
+
+	/** WS /api/swarm/stream event frame — the events envelope's rows. */
+	streamEvents: `{"ok":true,"schemaVersion":1,"type":"events","after":{{AFTER}},"events":${SEEDED_EVENTS_ROWS}}`,
 } as const;
 
 /** The worker-console fixture graph: worker w1 owned by the `self` session,

@@ -262,24 +262,22 @@ export function writeAnswer(path: string, answer: string): Promise<void> {
  * <p>
  * FUNCTION_CONTRACT:
  * Input: dir — the exchange task dir; name — the canonical worker name
- * Output: { archived, note } — archived true when the rename landed; note a
- *   human-readable outcome (empty on the normal path)
+ * Output: { note } — a human-readable outcome (empty on the normal path)
  * Guarantees: best-effort and total — a missing q-file is normal for a steer
- *   (archived false, empty note); any other rename failure is noted, never
+ *   (empty note); any other rename failure is noted, never
  *   thrown (the answer file is already posted)
  * Raises: never
  */
 export async function archiveQuestion(
 	dir: string,
 	name: string,
-): Promise<{ archived: boolean; note: string }> {
+): Promise<{ note: string }> {
 	try {
 		await rename(questionPathFor(dir, name), buildQuestionArchivePath(dir, name, Date.now()));
-		return { archived: true, note: " Pending question archived." };
+		return { note: " Pending question archived." };
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { archived: false, note: "" };
+		if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { note: "" };
 		return {
-			archived: false,
 			note: ` Question archive failed (${errText(err)}) — delete q-${name}.json manually, otherwise a later run may re-fire AWAITING_ANSWER with the stale question.`,
 		};
 	}

@@ -43,7 +43,8 @@
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { EXTENSION_VERSION } from "../src/version.ts";
 
 // Top-level watchdog (a hanging check is a bug in the check).
@@ -153,6 +154,101 @@ async function main(): Promise<void> {
 				idempotent = false;
 			}
 			check("S1.7b stop() is idempotent", idempotent);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// S2 — GET /api/swarm/events (envelope identity with the CLI verb)
+	// -----------------------------------------------------------------------
+	{
+		// Seed a fixed-clock journal (the swarm-api-check seeding pattern).
+		const FIXED_MS = Date.parse("2026-06-01T00:00:00.000Z");
+		const { createJournalWriter } = await import("../src/swarm/journal.ts");
+		const w = createJournalWriter({ dbPath: DB, clock: { now: () => FIXED_MS, delay: () => Promise.resolve() } });
+		const ROWS = [
+			{ kind: "spawn", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { backend: "fake", placementRef: "fake:w1", briefPath: "/b.md", briefText: "# b" } },
+			{ kind: "progress", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { phase: "build", pct: 50 } },
+			{ kind: "ask", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { text: "which color?" } },
+			{ kind: "reconcile-summary", sessionId: "sess-a", task: "alpha-fleet", worker: null, payload: { lost: ["w2"], collectedBeforeLoss: 0 } },
+		] as const;
+		for (const r of ROWS) {
+			const res = await w.append(r);
+			if (!res.ok) throw new Error(`seed append failed: ${res.code}`);
+		}
+		w.close();
+
+		function runCli(args: string[], extra: Record<string, string> = {}): { status: number | null; stdout: string } {
+			const cli = join(resolve(dirname(process.argv[1] ?? "."), ".."), "src", "swarm", "cli.ts");
+			const res = spawnSync("bun", [cli, ...args], {
+				env: { ...process.env, ...extra },
+				encoding: "utf8",
+				timeout: 15_000,
+			});
+			return { status: res.status, stdout: (res.stdout ?? "").trim() };
+		}
+
+		const h = await mountSwarmServer({ sessionFile: "/sessions/srv-ev.jsonl", transport: fakeTransport(), env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+		check("S2.0 mount with a seeded journal returns a handle", h !== null);
+		if (h) {
+			const http = await get(h.port, "/api/swarm/events?after=1");
+			const cli = runCli(["events", "--after", "1"]);
+			check(
+				"S2.1 HTTP events envelope byte-identical to the CLI verb output (after=1) — protocol identity",
+				http.status === 200 && cli.status === 0 && http.body === cli.stdout,
+				`http=${http.body.slice(0, 120)} cli=${cli.stdout.slice(0, 120)}`,
+			);
+
+			const negHttp = await get(h.port, "/api/swarm/events?after=-3");
+			const negCli = runCli(["events", "--after", "-3"]);
+			check(
+				"S2.2a negative after clamps to 0 (all rows) — identical to the CLI clamp",
+				negHttp.status === 200 && negHttp.body === negCli.stdout && negHttp.body.includes('"after":0'),
+				negHttp.body.slice(0, 80),
+			);
+
+			const maxHttp = await get(h.port, "/api/swarm/events?after=4");
+			check(
+				"S2.2b cursor strictly greater: after=4 (last seq) → no rows, count still 4",
+				maxHttp.status === 200 && maxHttp.body.includes('"events":[]') && maxHttp.body.includes('"count":4'),
+				maxHttp.body,
+			);
+
+			for (const bad of ["abc", "", "1.5"]) {
+				const r = await get(h.port, `/api/swarm/events?after=${encodeURIComponent(bad)}`);
+				let j: Record<string, unknown> | null = null;
+				try {
+					j = JSON.parse(r.body) as Record<string, unknown>;
+				} catch {
+					/* detail below */
+				}
+				check(
+					`S2.3 invalid after=${JSON.stringify(bad)} → 400 E_SWARM_USAGE with schemaVersion (Law 8)`,
+					r.status === 400 && j?.schemaVersion === 1 && (j?.error as { code?: string } | undefined)?.code === "E_SWARM_USAGE",
+					`${r.status} ${r.body}`,
+				);
+			}
+			const missing = await get(h.port, "/api/swarm/events");
+			check(
+				"S2.3b missing after → 400 E_SWARM_USAGE (the cursor is required, same as the CLI)",
+					missing.status === 400 && missing.body.includes('"E_SWARM_USAGE"'),
+					missing.body,
+				);
+
+			// Absent journal: the CLI's empty-but-valid envelope, byte-identical.
+			const absentDb = join(SANDBOX, "absent", "events.db");
+			const h2 = await mountSwarmServer({ sessionFile: "/sessions/srv-ev2.jsonl", transport: fakeTransport(), env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0", SWARM_JOURNAL_DB: absentDb }) });
+			check("S2.4a mount over an absent journal still returns a handle (never a crash)", h2 !== null);
+			if (h2) {
+				const http2 = await get(h2.port, "/api/swarm/events?after=0");
+				const cli2 = runCli(["events", "--after", "0"], { SWARM_JOURNAL_DB: absentDb });
+				check(
+					"S2.4b absent journal → the CLI's empty-but-valid envelope, byte-identical",
+						http2.status === 200 && http2.body === cli2.stdout && http2.body.includes('"count":0'),
+					http2.body,
+				);
+				h2.stop();
+			}
+			h.stop();
 		}
 	}
 

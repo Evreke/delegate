@@ -1,0 +1,420 @@
+/**
+ * swarm-server-endpoints-check — issue #50 acceptance 1 + 5 (ARCHITECTURE
+ * §4.2, Law 13): the session-hosted read-model HTTP server's THREE REST
+ * endpoints — `/api/version`, `/api/swarm/snapshot`,
+ * `/api/swarm/events?after=<seq>` — as observed by an HTTP client.
+ *
+ * Run with: bun test/swarm-server-endpoints-check.ts   (from repo root)
+ *
+ * The WebSocket endpoint (`/api/swarm/stream`) has its own check file
+ * (test/swarm-server-ws-check.ts); the lifecycle boundary (mount/teardown/
+ * double-mount/two parallel sessions) lives in test/swarm-server-lifecycle-
+ * check.ts; fault injection in test/swarm-server-fault-check.ts.
+ *
+ * Covers:
+ *   S1  mount + version surface:
+ *       S1.1 enabled via env → mount returns a handle on a LOOPBACK port
+ *           (127.0.0.1; never 0.0.0.0), port > 0 when port 0 (OS-assigned)
+ *       S1.2 GET /api/version → 200, byte-exact frozen envelope
+ *           {ok,schemaVersion,serverVersion,protocol:"swarm-http/1"}
+ *       S1.3 unknown path → 404 structured error envelope (E_SWARM_NOT_FOUND,
+ *           schemaVersion present — Law 7/Law 8)
+ *       S1.4 non-GET method → 405 E_SWARM_USAGE with schemaVersion
+ *       S1.5 DEFAULT OFF: no config key, no env → mount returns null (the
+ *           server is opt-in this release)
+ *       S1.6 config-file enable: swarm.server.enabled=true in the sandbox
+ *           config file mounts (the documented enable path)
+ *       S1.7 stop() closes the listener (connection refused after) and is
+ *           idempotent
+ *   S2  GET /api/swarm/events: envelope identity with the `swarm events`
+ *       CLI verb (byte-equal bodies on the same seeded journal — protocol
+ *       identity, acceptance 5); cursor semantics strictly seq > after;
+ *       negative clamp; invalid after → 400 E_SWARM_USAGE + schemaVersion;
+ *       absent journal → the CLI's empty-but-valid envelope, never a crash.
+ *   S3  GET /api/swarm/snapshot: no-transport body byte-equal to the
+ *       `swarm snapshot` CLI verb output (protocol identity); with a live
+ *       fake Transport the statuses fold in — sources.liveStatus true and
+ *       NO no-live-status flag on the matched worker (acceptance 1);
+ *       usage folded the same way.
+ *
+ * Fail-fast (AGENTS.md command discipline): top-level watchdog; every fetch
+ * is loopback and bounded by it. Exit 0 only if all checks pass.
+ */
+
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { EXTENSION_VERSION } from "../src/version.ts";
+import type { AgentStatusName } from "../src/host.ts";
+
+// Top-level watchdog (a hanging check is a bug in the check).
+const watchdog = setTimeout(() => {
+	console.error("swarm-server-endpoints-check WATCHDOG TIMEOUT");
+	process.exit(1);
+}, 25_000);
+watchdog.unref();
+
+let failures = 0;
+function check(name: string, ok: boolean, detail = "") {
+	if (ok) console.log(`PASS  ${name}`);
+	else {
+		failures++;
+		console.error(`FAIL  ${name}${detail ? ` — ${detail}` : ""}`);
+	}
+}
+
+// --- sandbox: hermetic agent dir (config tier) + exchange root -------------
+// Set BEFORE the dynamic import of the server module: profile.ts resolves the
+// config path at module load (getAgentDir()), so the sandbox must be in the
+// environment by then.
+const SANDBOX = mkdtempSync(join(tmpdir(), "swarm-server-check-"));
+const AGENT = join(SANDBOX, "agent");
+const EX = join(SANDBOX, "ex");
+const DB = join(SANDBOX, "journal", "events.db");
+mkdirSync(AGENT, { recursive: true });
+process.env.PI_CODING_AGENT_DIR = AGENT;
+process.env.PI_DELEGATE_EXCHANGE_ROOT = EX;
+process.env.SWARM_JOURNAL_DB = DB;
+
+type Handle = { stop(): void; port: number; address: string };
+
+async function main(): Promise<void> {
+	const { mountSwarmServer } = await import("../src/swarm-server/mount.ts");
+
+	const fakeTransport = () => ({
+		backendName: () => "fake",
+		listStatuses: async () => [] as Array<{ name: string; status: AgentStatusName; placementRef?: string }>,
+	});
+
+	function env(extra: Record<string, string>): NodeJS.ProcessEnv {
+		const e: NodeJS.ProcessEnv = { ...process.env };
+		// Strip the server's env tier unless a scenario sets it: default/config
+		// legs must not see an ambient override from the host environment.
+		delete e.SWARM_SERVER_ENABLED;
+		delete e.SWARM_SERVER_PORT;
+		return { ...e, ...extra };
+	}
+
+	async function get(port: number, path: string, init?: RequestInit): Promise<{ status: number; body: string }> {
+		const res = await fetch(`http://127.0.0.1:${port}${path}`, init);
+		return { status: res.status, body: await res.text() };
+	}
+
+	function runCli(args: string[], extra: Record<string, string> = {}): { status: number | null; stdout: string } {
+		const cli = join(resolve(dirname(process.argv[1] ?? "."), ".."), "src", "swarm", "cli.ts");
+		const res = spawnSync("bun", [cli, ...args], {
+			env: { ...process.env, ...extra },
+			encoding: "utf8",
+			timeout: 15_000,
+		});
+		return { status: res.status, stdout: (res.stdout ?? "").trim() };
+	}
+
+	// -----------------------------------------------------------------------
+	// S1 — mount + version surface
+	// -----------------------------------------------------------------------
+	{
+		const h = await mountSwarmServer({ sessionFile: "/sessions/srv-a.jsonl", transport: fakeTransport(), env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+		check("S1.1 enabled mount: handle, loopback 127.0.0.1, port > 0 (OS-assigned when 0)", h !== null && h.address === "127.0.0.1" && h.port > 0, JSON.stringify(h && { port: h.port, address: h.address }));
+
+		if (h) {
+			const golden = `{"ok":true,"schemaVersion":1,"serverVersion":"${EXTENSION_VERSION}","protocol":"swarm-http/1"}`;
+			const v = await get(h.port, "/api/version");
+			check("S1.2 GET /api/version → 200 + byte-exact frozen envelope", v.status === 200 && v.body === golden, `${v.status} ${v.body}`);
+
+			const nf = await get(h.port, "/api/nope");
+			let nfJson: Record<string, unknown> | null = null;
+			try {
+				nfJson = JSON.parse(nf.body) as Record<string, unknown>;
+			} catch {
+				/* detail below */
+			}
+			const nfErr = nfJson?.error as { code?: string; hint?: string } | undefined;
+			check(
+				"S1.3 unknown path → 404 structured error (E_SWARM_NOT_FOUND, schemaVersion 1, non-empty hint)",
+				nf.status === 404 && nfJson?.ok === false && nfJson?.schemaVersion === 1 && nfErr?.code === "E_SWARM_NOT_FOUND" && typeof nfErr?.hint === "string" && nfErr.hint.length > 0,
+				`${nf.status} ${nf.body}`,
+			);
+
+			const m = await get(h.port, "/api/version", { method: "POST" });
+			let mJson: Record<string, unknown> | null = null;
+			try {
+				mJson = JSON.parse(m.body) as Record<string, unknown>;
+			} catch {
+				/* detail below */
+			}
+			check(
+				"S1.4 non-GET → 405 E_SWARM_USAGE with schemaVersion",
+				m.status === 405 && mJson?.schemaVersion === 1 && (mJson?.error as { code?: string } | undefined)?.code === "E_SWARM_USAGE",
+				`${m.status} ${m.body}`,
+			);
+
+			h.stop();
+			let refused = false;
+			try {
+				await get(h.port, "/api/version");
+			} catch {
+				refused = true;
+			}
+			check("S1.7a stop() closes the listener (connection refused after)", refused);
+			let idempotent = true;
+			try {
+				h.stop();
+			} catch {
+				idempotent = false;
+			}
+			check("S1.7b stop() is idempotent", idempotent);
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// S2 — GET /api/swarm/events (envelope identity with the CLI verb)
+	// -----------------------------------------------------------------------
+	{
+		// Seed a fixed-clock journal (the swarm-api-check seeding pattern).
+		const FIXED_MS = Date.parse("2026-06-01T00:00:00.000Z");
+		const { createJournalWriter } = await import("../src/swarm/journal.ts");
+		const w = createJournalWriter({ dbPath: DB, clock: { now: () => FIXED_MS, delay: () => Promise.resolve() } });
+		const ROWS = [
+			{ kind: "spawn", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { backend: "fake", placementRef: "fake:w1", briefPath: "/b.md", briefText: "# b" } },
+			{ kind: "progress", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { phase: "build", pct: 50 } },
+			{ kind: "ask", sessionId: "sess-a", task: "alpha-fleet", worker: "w1", payload: { text: "which color?" } },
+			{ kind: "reconcile-summary", sessionId: "sess-a", task: "alpha-fleet", worker: null, payload: { lost: ["w2"], collectedBeforeLoss: 0 } },
+		] as const;
+		for (const r of ROWS) {
+			const res = await w.append(r);
+			if (!res.ok) throw new Error(`seed append failed: ${res.code}`);
+		}
+		w.close();
+
+
+		const h = await mountSwarmServer({ sessionFile: "/sessions/srv-ev.jsonl", transport: fakeTransport(), env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+		check("S2.0 mount with a seeded journal returns a handle", h !== null);
+		if (h) {
+			const http = await get(h.port, "/api/swarm/events?after=1");
+			const cli = runCli(["events", "--after", "1"]);
+			check(
+				"S2.1 HTTP events envelope byte-identical to the CLI verb output (after=1) — protocol identity",
+				http.status === 200 && cli.status === 0 && http.body === cli.stdout,
+				`http=${http.body.slice(0, 120)} cli=${cli.stdout.slice(0, 120)}`,
+			);
+
+			const negHttp = await get(h.port, "/api/swarm/events?after=-3");
+			const negCli = runCli(["events", "--after", "-3"]);
+			check(
+				"S2.2a negative after clamps to 0 (all rows) — identical to the CLI clamp",
+				negHttp.status === 200 && negHttp.body === negCli.stdout && negHttp.body.includes('"after":0'),
+				negHttp.body.slice(0, 80),
+			);
+
+			const maxHttp = await get(h.port, "/api/swarm/events?after=4");
+			check(
+				"S2.2b cursor strictly greater: after=4 (last seq) → no rows, count still 4",
+				maxHttp.status === 200 && maxHttp.body.includes('"events":[]') && maxHttp.body.includes('"count":4'),
+				maxHttp.body,
+			);
+
+			for (const bad of ["abc", "", "1.5"]) {
+				const r = await get(h.port, `/api/swarm/events?after=${encodeURIComponent(bad)}`);
+				let j: Record<string, unknown> | null = null;
+				try {
+					j = JSON.parse(r.body) as Record<string, unknown>;
+				} catch {
+					/* detail below */
+				}
+				check(
+					`S2.3 invalid after=${JSON.stringify(bad)} → 400 E_SWARM_USAGE with schemaVersion (Law 8)`,
+					r.status === 400 && j?.schemaVersion === 1 && (j?.error as { code?: string } | undefined)?.code === "E_SWARM_USAGE",
+					`${r.status} ${r.body}`,
+				);
+			}
+			const missing = await get(h.port, "/api/swarm/events");
+			check(
+				"S2.3b missing after → 400 E_SWARM_USAGE (the cursor is required, same as the CLI)",
+					missing.status === 400 && missing.body.includes('"E_SWARM_USAGE"'),
+					missing.body,
+				);
+
+			// Absent journal: the CLI's empty-but-valid envelope, byte-identical.
+			const absentDb = join(SANDBOX, "absent", "events.db");
+			const h2 = await mountSwarmServer({ sessionFile: "/sessions/srv-ev2.jsonl", transport: fakeTransport(), env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0", SWARM_JOURNAL_DB: absentDb }) });
+			check("S2.4a mount over an absent journal still returns a handle (never a crash)", h2 !== null);
+			if (h2) {
+				const http2 = await get(h2.port, "/api/swarm/events?after=0");
+				const cli2 = runCli(["events", "--after", "0"], { SWARM_JOURNAL_DB: absentDb });
+				check(
+					"S2.4b absent journal → the CLI's empty-but-valid envelope, byte-identical",
+						http2.status === 200 && http2.body === cli2.stdout && http2.body.includes('"count":0'),
+					http2.body,
+				);
+				h2.stop();
+			}
+			h.stop();
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// S3 — GET /api/swarm/snapshot (identity + live folding)
+	// -----------------------------------------------------------------------
+	{
+		// The manifest fixture: workers w1/w2, session paths deliberately ABSENT
+		// files (the CLI's usage-degraded shape; backend "herdr" like the
+		// swarm-api-check golden).
+		const dir = join(EX, "snap-fleet");
+		mkdirSync(dir, { recursive: true });
+		const manifest = {
+			task: "snap-fleet",
+			dir,
+			masterSessionPath: "/sessions/orch.jsonl",
+			description: "snapshot fleet",
+			workers: [
+				{
+					name: "w1",
+					placement: { kind: "tab", checkoutPath: "/repo", backend: "herdr", placementRef: "herdr:pane:1" },
+					briefPath: join(dir, "brief-w1.md"),
+					reportPath: join(dir, "report-w1.json"),
+					provider: "p",
+					model: "m",
+					thinking: "low",
+					startedAt: "2026-06-01T00:10:00.000Z",
+					sessionPath: "/sessions/absent-w1.jsonl",
+					orchestratorSessionPath: "/sessions/orch.jsonl",
+					depth: 0,
+				},
+				{
+					name: "w2",
+					placement: { kind: "tab", checkoutPath: "/repo", backend: "herdr", placementRef: "herdr:pane:2" },
+					briefPath: join(dir, "brief-w2.md"),
+					reportPath: join(dir, "report-w2.json"),
+					provider: "p",
+					model: "m",
+					thinking: "low",
+					startedAt: "2026-06-01T00:11:00.000Z",
+					sessionPath: "/sessions/absent-w2.jsonl",
+					orchestratorSessionPath: "/sessions/orch.jsonl",
+					depth: 0,
+				},
+			],
+		};
+		writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(manifest, null, "\t")}\n`, "utf8");
+
+		// S3.1 — protocol identity: equally-sourced mounts (no transport, usage
+		// explicitly off) must be BYTE-equal to the CLI verb's output.
+		const hId = await mountSwarmServer({ sessionFile: "/sessions/srv-snap-id.jsonl", env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }), usage: false });
+		check("S3.1a identity mount returns a handle", hId !== null);
+		if (hId) {
+			const http = await get(hId.port, "/api/swarm/snapshot");
+			const cli = runCli(["snapshot"]);
+			check(
+				"S3.1b HTTP snapshot envelope byte-identical to the CLI verb output (equally-sourced mount) — protocol identity",
+				http.status === 200 && cli.status === 0 && http.body === cli.stdout,
+				`http=${http.body.slice(0, 160)} cli=${cli.stdout.slice(0, 160)}`,
+			);
+			hId.stop();
+		}
+
+		// S3.2 — live transport folding: statuses appear, no no-live-status for w1.
+		const liveTransport = {
+			backendName: () => "herdr",
+			listStatuses: async () => [{ name: "w1", status: "working" as AgentStatusName, placementRef: "herdr:pane:1" }],
+		};
+		const h = await mountSwarmServer({ sessionFile: "/sessions/srv-snap.jsonl", transport: liveTransport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+		check("S3.2a live mount returns a handle", h !== null);
+		if (h) {
+			const snap = await get(h.port, "/api/swarm/snapshot");
+			let g: Record<string, unknown> | null = null;
+			try {
+				g = (JSON.parse(snap.body) as { snapshot?: Record<string, unknown> }).snapshot ?? null;
+			} catch {
+				/* detail below */
+			}
+			const sources = g?.sources as Record<string, unknown> | undefined;
+			check(
+				"S3.2b live statuses fold in: sources.liveStatus true (acceptance 1)",
+				snap.status === 200 && sources?.liveStatus === true,
+				snap.body.slice(0, 200),
+			);
+			const nodes = (g?.nodes ?? []) as Array<Record<string, unknown>>;
+			const task = nodes.find((n) => n.kind === "task" && n.id === "snap-fleet") as { workers?: Array<Record<string, unknown>> } | undefined;
+			const w1 = task?.workers?.find((x) => x.name === "w1");
+			const w2 = task?.workers?.find((x) => x.name === "w2");
+			check(
+				"S3.2c worker w1 has liveStatus \"working\" and NO no-live-status flag; w2 keeps the flag",
+				w1?.liveStatus === "working" && !JSON.stringify(w1?.degraded).includes("no-live-status") && JSON.stringify(w2?.degraded).includes("no-live-status"),
+				JSON.stringify({ w1: w1?.degraded, w2: w2?.degraded }),
+			);
+
+			// S3.4 — a throwing transport degrades, never fails (Law 8).
+			const hThrow = await mountSwarmServer({ sessionFile: "/sessions/srv-snap-t.jsonl", transport: { backendName: () => "herdr", listStatuses: async () => { throw new Error("boom"); } }, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+			if (hThrow) {
+				const t = await get(hThrow.port, "/api/swarm/snapshot");
+				let gt: Record<string, unknown> | null = null;
+				try {
+					gt = (JSON.parse(t.body) as { snapshot?: Record<string, unknown> }).snapshot ?? null;
+				} catch {
+					/* detail below */
+				}
+				check(
+					"S3.4 a THROWING transport degrades: valid graph, available true, liveStatus false (never a 500)",
+						t.status === 200 && gt?.available === true && (gt?.sources as Record<string, unknown> | undefined)?.liveStatus === false,
+						t.body.slice(0, 200),
+				);
+				hThrow.stop();
+			}
+			h.stop();
+		}
+
+		// S3.3 — usage folding: a real session JSONL yields a usage summary for
+		// the matched session node and no usage-unavailable flag there.
+		const sessionFile = join(SANDBOX, "w1-session.jsonl");
+		const line = (usage: Record<string, number>) => JSON.stringify({ message: { role: "assistant", usage } });
+		writeFileSync(sessionFile, `${line({ input: 100, output: 42, totalTokens: 200 })}\n`, "utf8");
+		const manifest2 = JSON.parse(JSON.stringify(manifest).replaceAll("/sessions/absent-w1.jsonl", sessionFile.replaceAll("\\", "\\\\"))) as typeof manifest;
+		writeFileSync(join(dir, "manifest.json"), `${JSON.stringify(manifest2, null, "\t")}\n`, "utf8");
+		const hU = await mountSwarmServer({ sessionFile: "/sessions/srv-snap-u.jsonl", transport: liveTransport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }) });
+		check("S3.3a usage mount returns a handle", hU !== null);
+		if (hU) {
+			const snap = await get(hU.port, "/api/swarm/snapshot");
+			let g: Record<string, unknown> | null = null;
+			try {
+				g = (JSON.parse(snap.body) as { snapshot?: Record<string, unknown> }).snapshot ?? null;
+			} catch {
+				/* detail below */
+			}
+			const nodes = (g?.nodes ?? []) as Array<Record<string, unknown>>;
+			const sources = g?.sources as Record<string, unknown> | undefined;
+			const w1Session = nodes.find((n) => n.kind === "session" && n.sessionPath === sessionFile) as { usage?: Record<string, unknown>; degraded?: Array<Record<string, unknown>> } | undefined;
+			check(
+				"S3.3b usage folds in: sources.usage true, session node carries outputTokens, no usage-unavailable flag",
+				sources?.usage === true && w1Session?.usage?.outputTokens === 42 && !JSON.stringify(w1Session?.degraded).includes("usage-unavailable"),
+				JSON.stringify({ sources, w1Session }),
+			);
+			hU.stop();
+		}
+	}
+
+	{
+		const off = await mountSwarmServer({ sessionFile: "/sessions/srv-off.jsonl", transport: fakeTransport(), env: env({}) });
+		check("S1.5 DEFAULT OFF: no config file key, no env → mount returns null", off === null);
+	}
+
+	{
+		writeFileSync(join(AGENT, "pi-delegate.config.json"), JSON.stringify({ swarm: { server: { enabled: true, port: 0 } } }), "utf8");
+		const h = await mountSwarmServer({ sessionFile: "/sessions/srv-cfg.jsonl", transport: fakeTransport(), env: env({}) });
+		check("S1.6 config-file enable (swarm.server.enabled=true) mounts the server", h !== null && h.port > 0);
+		h?.stop();
+	}
+}
+
+await main().catch((err) => {
+	console.error("UNEXPECTED CHECK ERROR:", err);
+	process.exit(1);
+});
+
+if (failures > 0) {
+	console.error(`\nswarm-server-endpoints-check: ${failures} FAILURE(S)`);
+	process.exit(1);
+}
+console.log("\nswarm-server-endpoints-check: all checks passed");
+process.exit(0);

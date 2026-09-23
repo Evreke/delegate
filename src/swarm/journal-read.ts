@@ -24,6 +24,12 @@ import { openJournalDatabase, type JournalDb } from "./journal-driver.ts";
 import { existsSync, statSync } from "node:fs";
 import { isJournalKind, journalDbPath, JOURNAL_DB_VERSION, type JournalKind } from "./journal.ts";
 
+// Re-export the ONE location resolver through the READER surface (Law 13/
+// §4.2, pinned by T1.15): read-API clients (src/swarm-server/) may import
+// the journal ONLY through this module — the writer half (./journal.ts) is
+// not a door. Pure name, zero behavior.
+export { journalDbPath };
+
 /** One journal row with its payload JSON-parsed. `payload` is `null` when the
  *  stored text is not valid JSON (tolerant read — never a throw). */
 export interface JournalEvent {

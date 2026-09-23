@@ -35,7 +35,9 @@
  * store), ./journal-manifest-store.ts (scanManifestsViaJournalReader),
  * ./journal-read.ts, ./graph.ts, ./storage.ts, ./result.ts. No herdr import
  * (Law 4); no sqlite driver import (the journal family owns that seam); no
- * write path anywhere under the verb.
+ * write path anywhere under the verb. The storage-mode wiring
+ * (`activeBackendName`, `manifestSource`) is EXPORTED — ./verify.ts reuses
+ * it so the files/journal mode choice has ONE writer.
  *
  * Critical invariants:
  *   - never fails on data: buildSwarmGraph never throws, so any degraded

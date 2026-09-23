@@ -780,7 +780,7 @@ export const GUIDANCE: Record<DelegateErrorCode, string> = {
 	E_TIER:
 		"Add tiers/defaults to ~/.pi/agent/pi-delegate.config.json or pass provider/model/thinking explicitly on the delegate call.",
 	E_PLACE:
-		"Placement failed; backend stderr is attached. Reconcile via /delegate-teardown (or the host workspace listing) before retrying.",
+		"Placement failed; backend stderr is attached. Reconcile via /delegate-teardown (or the host workspace listing) before retrying. If this session's cwd is inside a worktree (sub-orchestrator), worktree placement is rejected by the authority model — retry with mode: \"shared\" (tab placement in the orchestrator's own checkout).",
 	E_START: "Check console readiness (the console must sit at an interactive shell prompt); retry is a new delegate call.",
 	E_PROMPT_STALLED: "Worker console not at prompt; inspect via delegate_status.",
 	E_TIMEOUT: "Worker still running; poll delegate_status.",

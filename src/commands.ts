@@ -10,7 +10,8 @@
  * transport), pre-logging every planned op to <exchange dir>/teardown.log
  * before it runs. Never runs on its own — user-invoked command only.
  * Dependencies: worker-view.ts (the shared read-model), expaths.ts +
- * exchange.ts (the shared teardown-audit trail helpers), host.ts (the
+ * exchange.ts (the shared teardown-audit trail helpers), manifest-store.ts
+ * (issue #15 — the partial-report manifest stamp), host.ts (the
  * Transport seam + DelegateError), watcher.ts (errText — one spelling until
  * step 4 moves it to tool-result.ts). The teardown state this command drives
  * lives in watcher.ts (mount registry). The /delegate-fleet overlay command
@@ -20,7 +21,8 @@
 
 import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TEARDOWN_LOG_NAME } from "./expaths.ts";
+import { partialReportPathFor, TEARDOWN_LOG_NAME } from "./expaths.ts";
+import { stampPartialReportPath } from "./manifest-store.ts";
 import { teardownLogLine } from "./exchange.ts";
 import { buildWorkerView } from "./worker-view.ts";
 // Wave 3 decomposition (step 4): errText lives in src/tool-result.ts — the
@@ -112,14 +114,42 @@ export function registerCommands(pi: import("@earendil-works/pi-coding-agent").E
 					// Migration stage 1 (extensibility-defect 1): the "already gone"
 					// case is the structured alreadyGone field on the RESULT (before
 					// this: a thrown error matched by the isAlreadyGone message regex).
-					const res = await transport.teardown({ name: v.name, placement: v.placement, force: true });
+					// Issue #15: give the still-live worker one bounded chance to hand
+					// off a partial report before the kill; the destination is the
+					// caller's (the adapter knows nothing about the exchange layout).
+					const partialReportPath = partialReportPathFor(v.dir, v.name);
+					const res = await transport.teardown({
+						name: v.name,
+						placement: v.placement,
+						force: true,
+						partialReportPath,
+					});
 					if (res?.alreadyGone) {
 						await logTo(v.dir, `done: teardown worker=${v.name} no-op (already gone)`);
 						outcomes.push(`✓ ${v.name} (${v.kind}) — already closed, no-op`);
 						continue;
 					}
 					await logTo(v.dir, `done: teardown worker=${v.name} ok`);
-					outcomes.push(`✓ ${v.name} (${v.kind}) torn down`);
+					// Issue #15: the captured partial report is referenced from the
+					// worker's manifest entry (best-effort — a stamp failure is
+					// advisory and never fails the teardown).
+					if (res?.partialReportPath) {
+						let stamped = false;
+						try {
+							await stampPartialReportPath(v.dir, v.name, v.placement.placementRef, res.partialReportPath);
+							stamped = true;
+							await logTo(v.dir, `done: partial report worker=${v.name} → ${res.partialReportPath}`);
+						} catch (stampErr) {
+							await logTo(v.dir, `warn: partial report stamp worker=${v.name} failed: ${errText(stampErr)}`);
+						}
+						outcomes.push(
+							stamped
+								? `✓ ${v.name} (${v.kind}) torn down — partial report: ${res.partialReportPath}`
+								: `✓ ${v.name} (${v.kind}) torn down (partial report captured, manifest stamp failed)`,
+						);
+					} else {
+						outcomes.push(`✓ ${v.name} (${v.kind}) torn down`);
+					}
 				} catch (err) {
 					// A throw is now ALWAYS a genuine failure (not-found shapes resolve
 					// as alreadyGone inside the adapters) — parity with the retire pass.

@@ -235,6 +235,11 @@ export interface TeardownReq {
 	placement: Placement;
 	/** Force worktree removal. */
 	force?: boolean;
+	/** Issue #15 — destination for a captured termination-notice partial
+	 *  report. The CALLER supplies it (the adapter knows nothing about the
+	 *  exchange layout, Law 4); absent → the handoff still runs, the answer is
+	 *  simply not persisted. Additive optional field — no seam break. */
+	partialReportPath?: string;
 }
 
 /** Result of a teardown operation (migration stage 1, audit extensibility
@@ -251,6 +256,12 @@ export interface TeardownResult {
 	 *  session closed it, the user closed the console) — the close was a no-op.
 	 *  False when this call actually closed something. */
 	alreadyGone?: boolean;
+	/** Issue #15 — path of the partial report captured by the bounded
+	 *  termination-notice handoff during THIS teardown. Present only when the
+	 *  caller supplied a destination AND the still-live worker answered inside
+	 *  the window; the caller stamps it onto the worker's manifest entry
+	 *  (adapters never write manifests, Law 4). Additive optional field. */
+	partialReportPath?: string;
 }
 
 export interface TransportCapabilities {

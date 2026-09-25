@@ -1,6 +1,8 @@
-# CI — gates every PR into main (trunk-based development).
-# Checks: full bun check suite of pi-delegate + changelog gate
-# (a version bump requires a matching CHANGELOG section).
+# CI — gates every PR: feature/fix work into develop, release (develop→main)
+# and hotfix merges into main. Checks: full bun check suite of pi-delegate +
+# changelog gate (a version bump requires a matching CHANGELOG section).
+# The guard job enforces the branch model: main accepts PR heads from
+# develop and hotfix/* only (simplified git flow, see AGENTS.md).
 # Note: this repo IS the package — one package.json, no version sync
 # (the old root+extension dual-version law died with the ai-sandbox bundle).
 
@@ -8,9 +10,30 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [develop, main]
 
 jobs:
+  guard:
+    # Branch-source guard for main. Always runs (never conditionally
+    # skipped) so it can serve as a required status check on main; on
+    # develop-PRs it exits 0 immediately.
+    runs-on: ubuntu-latest
+    steps:
+      - name: main accepts only develop and hotfix/* heads
+        run: |
+          base="${{ github.base_ref }}"
+          head="${{ github.head_ref }}"
+          if [ "$base" != "main" ]; then
+            echo "PR targets $base — source guard not applicable"
+            exit 0
+          fi
+          if [ "$head" = "develop" ] || [[ "$head" == hotfix/* ]]; then
+            echo "OK: $head → main"
+          else
+            echo "::error::PRs into main must come from develop or hotfix/* (got: $head)"
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     steps:

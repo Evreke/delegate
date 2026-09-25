@@ -607,11 +607,11 @@ async function main(): Promise<void> {
 			const nodeId = fixtureConsoleWorkerId();
 			golden("N1 mutation by session node id → byte-exact envelope (the #70 node-id spelling resolves to the worker name)", await req(hN.port, "POST", `/api/workers/${nodeId}/steer`, { token: TOKEN, body: { text: "by node id" } }), {
 				status: 200,
-				body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "1" }),
+				body: render(HTTP_GOLDENS.steerOkFiles, { ANSWER_PATH: answerPath }),
 			});
 			golden("N2 name == node id → byte-exact envelope, resolved NAME-FIRST (the #70 ambiguity golden)", await req(hN.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "name first" } }), {
 				status: 200,
-				body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "2" }),
+				body: render(HTTP_GOLDENS.steerOkFiles, { ANSWER_PATH: answerPath }),
 			});
 			golden("N3 foreign worker's session node id → 403 E_SWARM_FORBIDDEN (the #70 foreign node-id refusal golden)", await req(hN.port, "POST", `/api/workers/${fixtureForeignWorkerId()}/steer`, { token: TOKEN, body: { text: "x" } }), {
 				status: 403,

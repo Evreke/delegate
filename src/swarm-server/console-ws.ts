@@ -1,6 +1,6 @@
 /**
  * pi-delegate — src/swarm-server/console-ws.ts — the worker-console WebSocket
- * hub (issue #52, ARCHITECTURE §4.2.4, Law 7/Law 8).
+ * hub (issue #52, ARCHITECTURE §4.2.5, Law 7/Law 8).
  *
  * MODULE_CONTRACT — the push half of the console endpoint
  * (`WS /api/workers/:id/console/stream?offset=<n>`): once per connection it
@@ -113,7 +113,7 @@ export class ConsoleHub {
 		}
 		const key = req.headers["sec-websocket-key"];
 		if (typeof key !== "string" || key.length === 0) {
-			writeHttp1Response(socket, errorEnvelope(400, "E_CONSOLE_USAGE", "missing Sec-WebSocket-Key", CONSOLE_USAGE_HINT));
+			writeHttp1Response(socket, errorEnvelope(400, "E_SWARM_USAGE", "missing Sec-WebSocket-Key", CONSOLE_USAGE_HINT));
 			socket.destroy();
 			return;
 		}
@@ -199,4 +199,3 @@ export class ConsoleHub {
 		}
 	}
 }
-

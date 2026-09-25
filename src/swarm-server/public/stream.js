@@ -2,7 +2,11 @@
  * stream.js — the dashboard's WS client state machine (issue #53).
  *
  * The stream endpoint pushes one `snapshot` frame on connect, then `events`
- * frames. `reduceFrame` is a pure reducer (never mutates): it folds a frame
+ * frames. This module also owns the shared wire helpers the app's HTTP read
+ * doors use: `readEnvelope` (#89 — non-2xx/`ok:false` becomes a structured
+ * error) and the bounded event store `foldEventStore` (#88).
+ *
+ * `reduceFrame` is a pure reducer (never mutates): it folds a frame
  * into { snapshot, events, lastSeq, state }, deduplicating strictly by `seq`
  * so a batch is never applied twice and a gap is never invented. `createSwarmStream`
  * drives a WebSocket over an injectable `connect` seam, exposes the live
@@ -21,6 +25,67 @@
 
 /** The stream frame contract version this client supports (Law 7). */
 export const SUPPORTED_STREAM_SCHEMA_VERSION = 1;
+
+/** The bounded client event store size (issue #88): the fold keeps only the
+ *  last N journal rows instead of growing without bound. */
+export const MAX_EVENT_STORE = 1000;
+
+/** The structural journal kinds (issue #88): a frame carrying one of these
+ *  changes the graph's node set, so the app refreshes the full snapshot; every
+ *  other kind patches the existing model in place. */
+export const STRUCTURAL_EVENT_KINDS = Object.freeze(["spawn", "collect", "retire"]);
+
+/** Does an events frame carry a structural kind? */
+export function isStructuralEventFrame(rows) {
+	return Array.isArray(rows) && rows.some((row) => row && typeof row === "object" && STRUCTURAL_EVENT_KINDS.includes(row.kind));
+}
+
+/**
+ * Fold a batch into a BOUNDED event store (issue #88): append-only, dedup by
+ * `seq` against the store's last row, keep at most `max` rows. Pure; returns a
+ * NEW array (the input is never mutated). Rows are seq-ascending per batch
+ * (the wire orders them), so no full re-sort is needed.
+ * <p>
+ * FUNCTION_CONTRACT: Input — existing (array), rows (array), max (number).
+ * Output — the bounded next store. Guarantees: seq monotone, no duplicates,
+ * never longer than `max`; a malformed row is skipped; never throws.
+ */
+export function foldEventStore(existing, rows, max = MAX_EVENT_STORE) {
+	const out = Array.isArray(existing) ? existing.slice() : [];
+	let last = out.length > 0 && typeof out[out.length - 1].seq === "number" ? out[out.length - 1].seq : -Infinity;
+	for (const row of Array.isArray(rows) ? rows : []) {
+		if (!row || typeof row.seq !== "number" || row.seq <= last) continue;
+		out.push(row);
+		last = row.seq;
+	}
+	return out.length > max ? out.slice(out.length - max) : out;
+}
+
+/**
+ * Read one HTTP read-door response into a validated envelope (issue #89): a
+ * non-2xx status or an `ok:false` body becomes a structured Error carrying the
+ * server envelope's code/message/hint plus the operation label. Total — a
+ * non-JSON body is a structured error too, never a silent blank screen.
+ * <p>
+ * FUNCTION_CONTRACT: Input — res (fetch Response-like), op (operation label).
+ * Output — { body, error } (exactly one of the two is meaningful).
+ */
+export async function readEnvelope(res, op) {
+	let body = null;
+	try {
+		body = await res.json();
+	} catch {
+		body = null;
+	}
+	if (res && res.ok !== false && body && body.ok === true) return { body, error: null };
+	const env = body && typeof body === "object" && body.error && typeof body.error === "object" ? body.error : {};
+	const err = new Error([op, env.code, env.message, env.hint].filter(Boolean).join(" \u2014 ") || `${op || "request"} failed (HTTP ${res && res.status})`);
+	err.op = op || "request";
+	err.code = typeof env.code === "string" ? env.code : null;
+	err.hint = typeof env.hint === "string" ? env.hint : null;
+	err.status = res ? res.status : null;
+	return { body, error: err };
+}
 
 /** The initial state for a stream resuming after `after` (default 0). */
 export function initialStreamState(after = 0) {

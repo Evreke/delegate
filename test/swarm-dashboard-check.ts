@@ -446,9 +446,12 @@ async function main(): Promise<void> {
 		check("S7.1 start() renders the snapshot tree and the journal footer", nodeCount() === 1 && els["journal-count"].textContent === "7" && els["journal-bytes"].textContent === "1234", `nodes=${nodeCount()}`);
 		captured.onFrame({ type: "snapshot", snapshot: makeGraph(1) }, "snapshot");
 		check("S7.2 a snapshot frame re-renders in place", nodeCount() === 1);
-		captured.onFrame({ type: "events", after: 0, events: [{ seq: 1 }] }, "events");
+		captured.onFrame({ type: "events", after: 0, events: [{ seq: 1, kind: "progress", worker: "w1", payload: { phase: "build" } }] }, "events");
 		await new Promise((r) => setTimeout(r, 150));
-		check("S7.3 an event batch refreshes the tree without a reload (fresh snapshot, node count grows)", snapshotCalls === 2 && nodeCount() === 2, `calls=${snapshotCalls} nodes=${nodeCount()}`);
+		check("S7.3 an events batch patches in place without a full snapshot re-fetch (#88)", snapshotCalls === 1 && nodeCount() === 1, `calls=${snapshotCalls} nodes=${nodeCount()}`);
+		captured.onFrame({ type: "events", after: 1, events: [{ seq: 2, kind: "spawn", worker: "w9", task: "t2" }] }, "events");
+		await new Promise((r) => setTimeout(r, 150));
+		check("S7.3b a STRUCTURAL event frame does refresh the full snapshot (new node appears, #88)", snapshotCalls === 2 && nodeCount() === 2, `calls=${snapshotCalls} nodes=${nodeCount()}`);
 		captured.onState("open");
 		const pill = els["connection-state"];
 		check(

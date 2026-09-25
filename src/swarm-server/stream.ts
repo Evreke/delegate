@@ -42,6 +42,7 @@ import type { Http1Request } from "./http1.ts";
 import { errorEnvelope, SWARM_FLEET_NOT_FOUND_HINT, SWARM_HTTP_SCHEMA_VERSION, writeHttp1Response } from "./http1.ts";
 import { decodeClientFrame, encodeCloseFrame, encodePongFrame, encodeTextFrame, wsHandshakeResponse } from "./ws.ts";
 import { emptyGraph } from "../swarm/graph.ts";
+import { JOURNAL_EVENTS_PAGE_LIMIT } from "../swarm/journal-read.ts";
 import { parseAfterCursor } from "../swarm/events.ts";
 import { SwarmError } from "../swarm/result.ts";
 
@@ -192,7 +193,9 @@ export class StreamHub {
 		if (!journal) return;
 		for (const conn of this.connections) {
 			try {
-				const raw = journal.eventsAfter(conn.cursor);
+				// #88: one frame never carries the whole journal — page the cursor by
+				// the explicit read limit; the next tick continues from `last`.
+				const raw = journal.eventsAfter(conn.cursor, { limit: JOURNAL_EVENTS_PAGE_LIMIT });
 				if (raw.length === 0) continue;
 				const last = raw[raw.length - 1].seq;
 				// Fleet scope (issue #65 item 3): the cursor advances past EVERY raw

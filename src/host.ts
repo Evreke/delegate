@@ -228,6 +228,18 @@ export interface AgentStatus {
 	 *  record, which stays outside the read model). Backend ids (paneId/
 	 *  tabId/workspaceId) live ONLY in the adapter's own types. */
 	placementRef?: string;
+	/** Advisory zero-output fact (issue #74, additive optional — non-rpc
+	 *  backends omit it). true iff the adapter OBSERVED at least one assistant
+	 *  turn from this worker AND every observed turn carried no non-empty
+	 *  text: the provider was invoked and returned no content. false covers
+	 *  both "some non-empty assistant output was seen" and "no assistant turn
+	 *  was observed at all" (a prompt that was never consumed is NOT an empty
+	 *  provider). Absent when the backend cannot observe assistant output.
+	 *  Readers must treat absent as false (the generic classification). The
+	 *  watcher's worker-dead branch and the spawn settle classification branch
+	 *  on this to emit the distinct E_PROVIDER_EMPTY signal; it never changes
+	 *  the status itself. Advisory sensor data — never a completion criterion. */
+	providerEmpty?: boolean;
 }
 
 export interface TeardownReq {
@@ -436,6 +448,14 @@ export type DelegateErrorCode =
 	| "E_TEARDOWN"
 	| "E_STATUS"
 	| "E_REPORT_MISSING"
+	/** Issue #74: the worker settled with no report AND the adapter observed
+	 *  zero non-empty assistant output (the provider was invoked and returned
+	 *  no content). A DISTINCT, retry-actionable signal — orchestrators may
+	 *  auto-switch provider/model on the diagnosed retry instead of digging
+	 *  through session JSONL. Additive taxonomy entry, never a redefinition of
+	 *  E_REPORT_MISSING, which stays for every other settle-without-report
+	 *  cause. */
+	| "E_PROVIDER_EMPTY"
 	| "E_REPORT_INVALID"
 	| "E_BUDGET"
 	| "E_CONTEXT"
@@ -805,6 +825,8 @@ export const GUIDANCE: Record<DelegateErrorCode, string> = {
 	E_STATUS:
 		"Status read from the backend failed (worker may have exited or the backend is unreachable) — reconcile via the host's status listing before trusting any lifecycle decision.",
 	E_REPORT_MISSING: "Settled but no report file — treat as failed spawn; diagnosed retry is the orchestrator's move.",
+	E_PROVIDER_EMPTY:
+		"The worker settled with no report and produced ZERO non-empty assistant output — the provider returned no content. Diagnosed retry (never verbatim) with a DIFFERENT provider/model; read the console to confirm the empty turns before switching.",
 	E_REPORT_INVALID: "Report exists but fails the JSON schema; attach validator output; treated identically to missing.",
 	E_BUDGET:
 		"Worker over output budget — pick a NEW worker name or pass an explicit higher budgetTokens; budget decline across diagnosed retries is orchestrator policy.",

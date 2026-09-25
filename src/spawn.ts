@@ -458,6 +458,31 @@ import {
 } from "./spawn-phases.ts";
 
 /**
+ * Issue #74 — tolerant read of one worker's advisory zero-output verdict from
+ * the settle observation's transport. The rpc host publishes it on
+ * AgentStatus; every other backend (and an unreachable status read) omits or
+ * throws, which reads as false and keeps the generic E_REPORT_MISSING.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: transport — the injected seam; name — the canonical worker name
+ * Output: true iff the backend explicitly observed zero non-empty assistant
+ *   output (the provider was invoked and returned nothing)
+ * Guarantees:
+ *   - absent method result / absent field → false (backward-identical)
+ *   - a throwing getStatus is swallowed → false (advisory sensor: a sensor
+ *     failure must never mislabel a generic settle-without-report)
+ * Raises: never
+ */
+async function statusProviderEmpty(transport: Transport, name: string): Promise<boolean> {
+	try {
+		const status = await transport.getStatus(name);
+		return status?.providerEmpty === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Register the `delegate` tool on the extension API.
  * <p>
  * FUNCTION_CONTRACT:
@@ -478,8 +503,8 @@ import {
  *     near compaction or over budget
  * Raises:
  *   - structured fail results: E_TIER, E_NAME, E_BRIEF, E_PLACE, E_START,
- *     E_PROMPT_STALLED, E_TIMEOUT, E_REPORT_MISSING, E_REPORT_INVALID,
- *     E_BUDGET, E_CONTEXT (see inline sites)
+ *     E_PROMPT_STALLED, E_TIMEOUT, E_REPORT_MISSING, E_PROVIDER_EMPTY,
+ *     E_REPORT_INVALID, E_BUDGET, E_CONTEXT (see inline sites)
  * EXTERNAL_DEPENDENCY: config file (~/.pi/agent/pi-delegate.config.json via
  *   resolveSpawnDefaults/resolveWatchConfig), schema dirs
  *   (<cwd>/.pi/delegate-schemas then ~/.pi/agent/pi-delegate-schemas),
@@ -1597,7 +1622,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				return textResult(
 					`Worker ${canonical} started and running — orchestrator released early (releaseOn=started, ${Math.round(elapsedMs / 1000)}s). ` +
 						"END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / " +
-						"context-critical / worker-dead. No bash sleep, no repeat delegate call; " +
+						"context-critical / worker-dead / provider-empty. No bash sleep, no repeat delegate call; " +
 						"delegate_status polling stays valid." +
 						`${uniquified ? ` ${uniquified}` : ""}` +
 						`${manifestWarning ? ` Warning: ${manifestWarning}` : ""}` +
@@ -1716,7 +1741,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					"E_TIMEOUT",
 					`E_TIMEOUT — worker ${canonical} did not settle within ${timeoutMs} ms (${statusLine}). Detached; it keeps running.\n` +
 						"END YOUR TURN — the watcher wakes you on this worker's report-ready / mailbox-question / " +
-						"grill-deck / context-critical / worker-dead event. No bash sleep, no repeat delegate call; " +
+						"grill-deck / context-critical / worker-dead / provider-empty event. No bash sleep, no repeat delegate call; " +
 						"delegate_status polling stays valid. Bash sleep is a fallback ONLY when the watcher is " +
 						"unavailable (old extension build)." +
 						`${uniquified ? ` ${uniquified}` : ""}` +
@@ -1828,16 +1853,26 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			// instead of E_REPORT_MISSING. Migration stage 3 (audit step 8): the
 			// outcome is the union KIND from the seam (the flag set is gone).
 			const neverStarted = settle.kind === "never-started";
+			// Issue #74 — the rpc host's settle observation carries the zero-output
+			// provider verdict (≥1 assistant turn, none non-empty). Only a missing
+			// report on a STARTED worker can be provider-empty; never-started keeps
+			// E_PROMPT_STALLED and every backend that cannot observe the fact keeps
+			// E_REPORT_MISSING (backward-identical).
+			const providerEmpty = missing && !neverStarted && (await statusProviderEmpty(transport, canonical));
 			const code = missing
 				? neverStarted
 					? "E_PROMPT_STALLED"
-					: "E_REPORT_MISSING"
+					: providerEmpty
+						? "E_PROVIDER_EMPTY"
+						: "E_REPORT_MISSING"
 				: "E_REPORT_INVALID";
 			const what = neverStarted && missing
 				? "prompt never consumed — worker never started"
-				: missing
-					? `no report file at ${collected.usedPath} after settle (status: ${settle.status})`
-					: `report at ${collected.usedPath} failed schema validation: ${collected.verdict.error}`;
+				: providerEmpty
+					? `no report file at ${collected.usedPath} after settle (status: ${settle.status}) and ZERO non-empty assistant output — the provider returned no content`
+					: missing
+						? `no report file at ${collected.usedPath} after settle (status: ${settle.status})`
+						: `report at ${collected.usedPath} failed schema validation: ${collected.verdict.error}`;
 			// v1.2: distinguish a brief-reportSchema violation — base
 			// schema passes but the declared fragment rejects. The fragment error is
 			// already quoted verbatim in `what`; add dedicated guidance.

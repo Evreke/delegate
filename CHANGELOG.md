@@ -392,6 +392,22 @@ worker writes its report through `swarm write-report`).
   `this.seq` stays the session's monotonic floor. Check:
   `test/rpc-place-probe-check.ts`.
 
+- **Zero-output provider settle was indistinguishable from a generic failed
+  spawn (issue #74).** Under a provider burst the model returned empty
+  assistant turns; a worker looped on them, settled idle, and wrote no report.
+  The orchestrator was told only "settled (idle) with no report", so it had to
+  read raw session JSONL to find the real cause. The rpc stdout pump now keeps
+  a per-worker latch — `assistantTurnSeen` / `assistantOutputSeen` (a
+  whitespace-only turn counts as empty) — and surfaces the additive advisory
+  `providerEmpty` fact on `AgentStatus`; the watcher emits a DISTINCT
+  `provider-empty` wake (new `E_PROVIDER_EMPTY` taxonomy code) with
+  provider-switch retry guidance, and the synchronous settle classification
+  returns `E_PROVIDER_EMPTY` instead of `E_REPORT_MISSING` for the same shape.
+  Every other settle-without-report cause (non-empty output, never-started, a
+  backend that cannot observe assistant output) keeps the generic
+  `worker-dead` / `E_REPORT_MISSING` behavior byte-for-byte. Check:
+  `test/provider-empty-check.ts`.
+
 - **Files-mode steering never settles (issue #69).** The HTTP mutation path
   forced a journal append regardless of `swarm.storage` (#62's ruled-against
   "preferred variant"), contradicting `src/swarm/storage.ts`'s Phase A

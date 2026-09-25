@@ -69,6 +69,8 @@ a golden disagree, the golden wins.
 | GET | `/fleets/<sessionId>/api/swarm/events?after=<seq>` | the events envelope restricted to that fleet's rows | 400, 404 |
 | WS | `/fleets/<sessionId>/api/swarm/stream?after=<seq>` | the stream frames restricted to that fleet's rows | 404 (plain refusal) |
 | GET | `/api/workers/:id/console?offset=<n>` | one console frame (§6) | 400, 404 |
+| GET | `/api/workers/:id/brief` | exchange-file envelope (§7a) | 400, 404, 500 |
+| GET | `/api/workers/:id/report` | exchange-file envelope (§7a) | 400, 404, 500 |
 | POST | `/api/workers/:id/steer` | mutation envelope (§7) | 400, 401, 403, 404, 500 |
 | POST | `/api/asks/:id/answer` | mutation envelope (§7) | 400, 401, 403, 404, 500 |
 | GET | `/` and `/<asset>` | dashboard SPA assets (`src/swarm-server/public/`); `/` redirects to the single fleet view (302), else serves the fleet index | 404 |
@@ -194,6 +196,26 @@ storage mode (no row is written — §4.1.3) and when the advisory journal
 append fails; in `journal` mode a successful HTTP mutation carries `{seq}`
 and `"confirmed"`.)
 
+### 7a. Worker exchange files `/api/workers/:id/brief|report` (#87)
+
+`GET /api/workers/<id>/brief` and `GET /api/workers/<id>/report` serve the
+worker's exchange files (`brief-<name>.md` / `report-<name>.json`) as plain
+text. `<id>` is the SAME SwarmGraph session node id the console route takes
+(§6), resolved through the SAME fail-closed ownership gate — unknown,
+non-worker and foreign ids refuse with `404 E_EXCHANGE_FILE_REFUSED`.
+
+- **Rebuilt, never concatenated.** The served path is assembled from the
+graph's task `dir` and worker `name`: the name must match the canonical
+`[a-z0-9_-]` worker-name token (no `..`, `/`, absolute form or NUL), the dir
+must be an absolute NUL-free path, and the resolved file path must stay
+inside the task dir (containment backstop). Any violation is the same
+`404 E_EXCHANGE_FILE_REFUSED` (no path echoed back).
+- **Absent is honest.** A task with no `dir`, or a file that does not exist,
+returns `200 {"ok":true,...,"absent":true,"text":null}` — never fabricated
+content. A real read failure is `500 E_SWARM_IO`.
+- Success envelope: `{"ok":true,"schemaVersion":1,"kind":"brief"|"report",
+"nodeId","worker","task"?,"absent":false,"text":"..."}`.
+
 ## 8. Dashboard access: link, fragment token, one server per machine (#65)
 
 **The dashboard link.** A successful mount emits exactly ONE structured
@@ -250,6 +272,7 @@ the 101 handshake, so an unknown fleet is a plain `404 E_SWARM_NOT_FOUND`.
 | `E_SWARM_FORBIDDEN` | 403 | Worker not owned by this session. |
 | `E_CONSOLE_USAGE` | 400 | Invalid console `offset`. |
 | `E_CONSOLE_WORKER_REFUSED` | 404 | Unknown/non-worker/foreign console id. |
+| `E_EXCHANGE_FILE_REFUSED` | 404 | Unknown/non-worker/foreign/unsafe-name exchange-file id (fail-closed). |
 | `E_CONSOLE_UNAVAILABLE` | 200 (in-frame) | Backend exposes no console stream. |
 
 ## 10. Checks

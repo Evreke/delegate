@@ -10,6 +10,15 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Dashboard brief/report tabs serve the real exchange files (#87).** The
+  worker-detail panel's brief/report tabs now fetch the worker's `brief-<name>.md`
+  and `report-<name>.json` via two additive read-only routes —
+  `GET /api/workers/:id/brief` and `GET /api/workers/:id/report`. Resolution
+  reuses the console route's fail-closed ownership gate; the served path is
+  rebuilt from the graph's task `dir` + canonical worker name (traversal-safe), an
+  absent file is an honest `absent:true` (200), and unknown/non-worker/foreign/
+  unsafe-name ids refuse with the new `404 E_EXCHANGE_FILE_REFUSED`.
+
 - **Mutation routes accept both id spellings — name-first (#62/#70).**
   `POST /api/workers/:id/steer` and `POST /api/asks/:id/answer` resolve `:id` as a
   canonical worker name when it matches `WORKER_NAME_RE`, otherwise as a SwarmGraph

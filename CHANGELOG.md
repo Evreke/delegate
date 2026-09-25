@@ -380,6 +380,18 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **rpc worktree placement collided with foreign worktrees (#73).** The
+  `src/host/rpc.ts` `place()` allocator derived the worktree path from a
+  per-host monotonic counter without probing the filesystem, so a directory
+  already held by a previous/parallel host session (`delegate-wt-<n>`) made
+  `git worktree add` fail with `fatal: '<dir>' already exists` → `E_PLACE`
+  (and left a dangling `-b` branch per failed attempt). The allocator now
+  probes `existsSync(dir)` and advances the counter PAST occupied paths
+  BEFORE running git; the FINAL chosen `n` still feeds `placementRef`
+  (`rpc:wt:<n>`), `workspaceId` (`rpc-ws-<n>`) and `paneId` (`rpc:p<n>`), and
+  `this.seq` stays the session's monotonic floor. Check:
+  `test/rpc-place-probe-check.ts`.
+
 - **Files-mode steering never settles (issue #69).** The HTTP mutation path
   forced a journal append regardless of `swarm.storage` (#62's ruled-against
   "preferred variant"), contradicting `src/swarm/storage.ts`'s Phase A

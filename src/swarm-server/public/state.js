@@ -146,10 +146,11 @@ function buildTaskNode(node, ctx) {
 		const status = resolveStatus({ node: w, worker: w, journal: ctx.journal, degradedFlags });
 		const startedAt = tsOf(w.startedAt);
 		const elapsedMs = startedAt === null || ctx.nowMs === null ? null : Math.max(0, ctx.nowMs - startedAt);
+		const progress = w.name ? ctx.journal.progress.get(w.name) ?? null : null;
 		return {
-			name: w.name,
-			run: w.run ?? null,
-			sessionId: w.sessionId ?? null,
+			// #85a: a stable id + kind so a worker row is never an anonymous subject.
+			id: `${node.id}/${w.name ?? "worker"}`, kind: "worker", name: w.name, run: w.run ?? null,
+			sessionId: w.sessionId ?? null, task: node.id, role: null, depth: typeof node.depth === "number" ? node.depth : null,
 			liveStatus: w.liveStatus ?? null,
 			status,
 			statusView: statusView(status),
@@ -157,13 +158,17 @@ function buildTaskNode(node, ctx) {
 			degraded: degradeViews(degradedFlags),
 			elapsedMs,
 			elapsedLabel: elapsedMs === null ? null : humanizeDuration(elapsedMs),
-			progress: w.name ? ctx.journal.progress.get(w.name) ?? null : null,
+			progress,
+			progressLabel: progressLabelOf(progress),
 			ask: w.name ? ctx.journal.asks.get(w.name) ?? null : null,
 			usage: {
 				contextPct: null,
 				outputTokens: null,
 				available: false,
 			},
+			foreign: ctx.foreign(node),
+			parentId: node.id,
+			childIds: [],
 		};
 	});
 	const total = workers.length;
@@ -287,7 +292,8 @@ export function buildDashboardState(input = {}) {
 			nodes: sorted,
 			edges: edges.slice(),
 			collapse,
-			expansion: new Set(Array.isArray(input.expansion) ? input.expansion : []),
+			// #92: app.js hands in the UI's Set (an array stays valid for old callers).
+			expansion: new Set(input.expansion instanceof Set ? input.expansion : Array.isArray(input.expansion) ? input.expansion : []),
 		},
 	};
 }

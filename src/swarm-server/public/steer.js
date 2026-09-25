@@ -19,6 +19,8 @@
  * folds the `ask`-without-`answer` event graph into the pending-question list
  * the answer form renders. `controlsView` states honestly why a card's
  * controls are disabled (foreign fleet, ended worker) instead of hiding them.
+ * #93 adds the `aborted` terminal marker: a dismissed/empty token prompt is
+ * "no token — nothing sent", never a silent no-op.
  *
  * No framework, plain ES module.
  */
@@ -140,6 +142,7 @@ export function pendingView(pending) {
 		return { status: "confirmed", label: "confirmed", detail: `confirmed by journal #${pending.confirmedSeq}${via}`, via: pending.via };
 	}
 	if (pending.status === "failed") return { status: "failed", label: "failed", detail: pending.error || "failed", via: null };
+	if (pending.status === "aborted") return { status: "aborted", label: "not sent", detail: pending.error || "no token — nothing sent", via: null };
 	if (pending.status === "unconfirmed") return { status: "unconfirmed", label: "delivered", detail: "delivered — journal confirmation unavailable", via: null };
 	return { status: "pending", label: "pending", detail: "awaiting journal confirmation…", via: null };
 }

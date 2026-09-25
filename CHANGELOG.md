@@ -80,6 +80,20 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   `requestTerminationNotice()` (NOT a Transport seam method); the notice
   window, notice text and kill grace are constructor-bounded.
 
+- **Durable rpc child sessions — persist `sessionPath`, resume via the
+  session-file argument (#16).** The rpc adapter's captured worker session
+  JSONL path (`StartResult.sessionPath`) is stamped into the worker's manifest
+  entry as the additive optional field `sessionPath` (no `schemaVersion`
+  bump — the passport/additive-fields convention), and the new adapter-level
+  `RpcWorkerHost.resumeAgent()` affordance (NOT a Transport seam method)
+  spawns a NEW child for the same worker name that RE-ENTERS that file via the
+  documented `--session <path>` extraArgs argument, so accumulated context
+  survives an orchestrator exit. The caller supplies the persisted path it
+  read from the manifest; an absent/empty path or a vanished session file
+  refuses with the structured `E_START` (no silent fresh start). Full reattach
+  (same child, new stdin) stays out of scope. Checks:
+  `test/rpc-resume-check.ts`.
+
 - **Dashboard access UX — widget link, fragment auth, one server per machine
   (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`
   stderr line carrying the ACTUAL bound port (an `EADDRINUSE` fallback is

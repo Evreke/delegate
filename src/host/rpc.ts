@@ -53,6 +53,16 @@
  *   answerDialog()  — dialog-relay mode ONLY: answers a relayed extension-UI
  *                   dialog via the existing extension_ui_response stdin path
  *                   (adapter-level method — not on the Transport seam).
+ *   resumeAgent() — ADAPTER-LEVEL (not a Transport seam method) durable-session
+ *                   resume affordance (issue #16): spawns a NEW child for the
+ *                   same worker name that RE-ENTERS the prior session file via
+ *                   the documented session-file argument (`--session <path>`
+ *                   appended to StartReq.extraArgs), so the new child sees the
+ *                   accumulated context. The caller supplies the persisted
+ *                   `sessionPath` read from the worker's manifest entry; an
+ *                   absent/empty path or a vanished session file refuses with
+ *                   E_START before any child starts. Full reattach (same
+ *                   child, new stdin) stays out of scope.
  *   teardown()    — abort over the child's stdin, then SIGKILL after a grace
  *                   period if the child has not exited on its own; `git
  *                   worktree remove` for worktree placements; idempotent
@@ -88,8 +98,13 @@
  * children keep RUNNING (they finish their task and write reports/mailbox
  * files to disk — file-based signals still work), but their stdin is
  * unreachable, so a LATER session cannot nudge them (mailbox answers degrade
- * to guidance-only delivery, exactly the existing nudge-failed path). Reattach
- * via a named-pipe shim is future work, not this adapter.
+ * to guidance-only delivery, exactly the existing nudge-failed path). The
+ * WORKER's own session is NOT lost, though: the captured sessionPath is
+ * stamped into the worker's manifest entry (the additive optional field, no
+ * schemaVersion bump) and resumeAgent() spawns a NEW child re-entering that
+ * file (issue #16) — accumulated context survives the orchestrator. Full
+ * reattach (same child, new stdin) via a named-pipe shim is future work, not
+ * this adapter.
  *
  * Platform: POSIX-only for now — the adapter spawns a bare `pi` and carries
  * no Windows shim (unlike the herdr adapter's spawnPolicyCommand).
@@ -100,7 +115,7 @@
  */
 
 import { spawn, execFile, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -762,6 +777,55 @@ export class RpcWorkerHost implements Transport {
 		});
 	}
 
+	// -- resume -----------------------------------------------------------------
+
+	/** ADAPTER-LEVEL durable-session resume affordance (issue #16 — NOT a
+	 *  Transport seam method; only the rpc adapter exposes it).
+	 *  <p>
+	 *  Spawns a NEW child for the same worker name that RE-ENTERS the prior
+	 *  session JSONL file via the documented `--session <path>` argument, so the
+	 *  new child sees the accumulated context. Full reattach (same child, new
+	 *  stdin) is explicitly out of scope.
+	 *  <p>
+	 *  FUNCTION_CONTRACT:
+	 *  Input: req — the worker name, a live placementRef to start in, the
+	 *    persisted `sessionPath` (the worker's manifest entry field), and the
+	 *    tier/start arguments
+	 *  Output: StartResult of the NEW child (name + captured sessionPath)
+	 *  Guarantees:
+	 *    - the spawned child's argv carries `--session <sessionPath>` appended
+	 *      after the caller's extraArgs (resumeExtraArgs is the ONE builder);
+	 *    - the "no stored session" case (absent/empty sessionPath) and a
+	 *      sessionPath whose file no longer exists refuse with the structured
+	 *      E_START (Law 8) BEFORE any child is spawned — a resume never degrades
+	 *      silently into a fresh session;
+	 *    - the child is registered exactly like startAgent's (same name
+	 *      collision rule, same get_state readiness + session capture).
+	 *  Raises: DelegateErrorImpl E_START (no stored session / vanished file) or
+	 *    the startAgent taxonomy (E_NAME / E_START). */
+	async resumeAgent(req: ResumeReq): Promise<StartResult> {
+		const sessionPath = typeof req.sessionPath === "string" ? req.sessionPath : "";
+		// Refuses the no-stored-session case before anything is spawned.
+		const resumeArgs = resumeExtraArgs(sessionPath);
+		if (!existsSync(sessionPath)) {
+			throw delegateErrorWithDetail(
+				"E_START",
+				`rpc host: cannot resume ${req.name} — stored session file ${sessionPath} does not exist`,
+				"the persisted sessionPath was pruned (or never written); start a fresh worker name instead",
+			);
+		}
+		return this.startAgent({
+			name: req.name,
+			placementRef: req.placementRef,
+			provider: req.provider,
+			model: req.model,
+			thinking: req.thinking,
+			extraArgs: [...(req.extraArgs ?? []), ...resumeArgs],
+			...(req.env ? { env: req.env } : {}),
+			timeoutMs: req.timeoutMs,
+		});
+	}
+
 	// -- teardown ---------------------------------------------------------------
 
 	/** Adapter-level method (issue #15 — deliberately NOT a Transport seam
@@ -1172,6 +1236,46 @@ export function isAbortArtifactErrorMessage(message: string): boolean {
 	return /this operation was aborted|request was aborted|operation aborted/i.test(message);
 }
 
+/** Adapter-level durable-session resume request (issue #16). NOT a Transport
+ *  seam type: only the rpc adapter exposes resumeAgent. `sessionPath` is the
+ *  persisted value read from the worker's manifest entry (ManifestWorker); an
+ *  absent/empty value is the "no stored session" refusal case. */
+export interface ResumeReq {
+	name: string;
+	placementRef: string;
+	/** Persisted session JSONL path (the manifest entry's `sessionPath`). */
+	sessionPath?: string;
+	provider: string;
+	model: string;
+	thinking: string;
+	timeoutMs: number;
+	env?: Record<string, string>;
+	extraArgs?: string[];
+}
+
+/** The ONE builder of the documented session-file extraArgs (issue #16): maps
+ *  a persisted session path to `["--session", path]` — the argument pi's CLI
+ *  documents for re-entering an exact session. Pure (no fs access — the
+ *  existence check lives in resumeAgent).
+ *  <p>
+ *  FUNCTION_CONTRACT:
+ *  Input: sessionPath — a persisted session JSONL path (may be absent)
+ *  Output: `["--session", sessionPath]`
+ *  Guarantees:
+ *    - an absent/empty path is the "no stored session" refusal: throws the
+ *      structured E_START (Law 8) with a recovery hint, never returns []
+ *  Raises: DelegateErrorImpl E_START (absent/empty sessionPath) */
+export function resumeExtraArgs(sessionPath: string | undefined | null): string[] {
+	if (typeof sessionPath !== "string" || sessionPath.length === 0) {
+		throw delegateErrorWithDetail(
+			"E_START",
+			"rpc host: cannot resume — no stored session file",
+			"read sessionPath from the worker's manifest entry (resumeAgent's input) or start a fresh worker name",
+		);
+	}
+	return ["--session", sessionPath];
+}
+
 /** Composition-root factory (index.ts binds this for host:"rpc"). */
 export function createRpcTransport(opts?: {
 	worktreeRoot?: string;
@@ -1187,6 +1291,6 @@ export function createRpcTransport(opts?: {
 	killGraceMs?: number;
 	/** Test seam — see the RpcWorkerHost constructor. */
 	spawnProcess?: SpawnProcessFn;
-}): Transport {
+}): Transport & { resumeAgent(req: ResumeReq): Promise<StartResult> } {
 	return new RpcWorkerHost(opts);
 }

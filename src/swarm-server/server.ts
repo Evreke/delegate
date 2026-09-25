@@ -70,7 +70,7 @@
  */
 
 import type { Http1Request, Http1Response } from "./http1.ts";
-import { SWARM_HTTP_SCHEMA_VERSION, SWARM_FLEET_NOT_FOUND_HINT, errorEnvelope } from "./http1.ts";
+import { SWARM_HTTP_SCHEMA_VERSION, SWARM_FLEET_NOT_FOUND_HINT, errorEnvelope, type UpgradeRefusal } from "./http1.ts";
 import { existsSync } from "node:fs";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
@@ -86,7 +86,8 @@ import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts
 import { StreamHub } from "./stream.ts";
 import { ConsoleCapture } from "./console-buffer.ts";
 import type { ConsoleStreamSource } from "./console-buffer.ts";
-import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
+import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRouteDeps, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
+import { upgradeRefusal } from "./ws.ts";
 import { ConsoleHub } from "./console-ws.ts";
 import type { SwarmGraph } from "../swarm/graph.ts";
 import { serveStaticFile } from "./static.ts";
@@ -495,6 +496,19 @@ async function mutationResponse(
 }
 
 /**
+ * The console route's injected deps — the ONE spelling shared by the REST
+ * route and the WS console hub (issue #77). Both MUST carry the
+ * `buildGraph` seam: at mount `deps.graph` is undefined, so without it
+ * `buildGraphFor` falls back to the empty `available:false` graph and every
+ * real worker is refused. The WS hub always had it; the REST route did not —
+ * that asymmetry was the bug. A caller-injected `graph` (composition root /
+ * tests) still wins inside `buildGraphFor`.
+ */
+function consoleDeps(deps: SwarmServerDeps): ConsoleRouteDeps {
+	return { transport: deps.transport, sessionFile: deps.sessionFile, graph: deps.graph, buildGraph: () => buildSnapshotGraph(deps) };
+}
+
+/**
  * The plain-request router.
  * <p>
  * FUNCTION_CONTRACT:
@@ -537,7 +551,7 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 	const fleetIndex = FLEET_INDEX_RE.exec(req.path);
 	if (fleetIndex) return fleetIndexResponse(deps, fleetIndex[1]);
 	const consoleId = matchConsoleRestPath(req.path);
-	if (consoleId !== null) return consoleRoute(deps, consoleId, req.query.get("offset") ?? undefined, runtime);
+	if (consoleId !== null) return consoleRoute(consoleDeps(deps), consoleId, req.query.get("offset") ?? undefined, runtime);
 	if (matchConsoleStreamPath(req.path) !== null) {
 		return httpError(400, "E_SWARM_USAGE", "the console stream is a WebSocket endpoint (/api/workers/:id/console/stream)");
 	}
@@ -551,7 +565,7 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
  *  connection set are server-scoped, not request-scoped). */
 export interface SwarmRouteTable {
 	onRequest: (req: Http1Request) => Http1Response | Promise<Http1Response>;
-	onUpgrade: (req: Http1Request, socket: import("node:net").Socket, head: Buffer) => boolean;
+	onUpgrade: (req: Http1Request, socket: import("node:net").Socket, head: Buffer) => boolean | UpgradeRefusal;
 	/** Stop the stream hub's poll timer (sockets are closed by the core). */
 	close(): void;
 }
@@ -568,13 +582,21 @@ export function createRouteTable(deps: SwarmServerDeps & { pollMs?: number }): S
 		scopeFor: (sessionId: string) => resolveFleetTasks(deps, sessionId),
 	});
 	const consoleHub = new ConsoleHub({
-		deps: { transport: deps.transport, sessionFile: deps.sessionFile, graph: deps.graph, buildGraph: () => buildSnapshotGraph(deps) },
+		deps: consoleDeps(deps),
 		capture: runtime.capture,
 		pollMs: deps.pollMs,
 	});
 	return {
 		onRequest: (req) => routeRequest(deps, req, runtime),
-		onUpgrade: (req, socket, head) => consoleHub.handleUpgrade(req, socket, head) || hub.handleUpgrade(req, socket, head),
+		// issue #94: a fall-through refusal (unknown path / bad ?after / missing
+		// Sec-WebSocket-Key) carries the cause-specific hint instead of the
+		// generic "only /api/swarm/stream speaks WebSocket" (wrong for the two
+		// latter causes at this point — the request WAS on a stream path).
+		onUpgrade: (req, socket, head) => {
+			if (consoleHub.handleUpgrade(req, socket, head)) return true;
+			if (hub.handleUpgrade(req, socket, head)) return true;
+			return upgradeRefusal(req.path, req.query.get("after") ?? undefined, req.headers["sec-websocket-key"]);
+		},
 		close: () => {
 			hub.close();
 			consoleHub.close();

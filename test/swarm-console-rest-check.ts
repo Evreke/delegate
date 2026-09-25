@@ -24,12 +24,16 @@
  *       (drop-oldest) and the endpoint flags a below-frontier offset with
  *       dropped/oldestOffset (acceptance 5).
  *   C6  usage: non-numeric/negative offsets are 400 E_CONSOLE_USAGE.
+ *   C8  issue #77 regression: a mount with NO injected graph (the production
+ *       composition — {sessionFile, transport} only) must still serve the
+ *       REST console of a worker present in its own snapshot; a foreign /
+ *       unknown id must still refuse E_CONSOLE_WORKER_REFUSED.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; every fetch
  * is loopback and bounded by it. Exit 0 only if all checks pass.
  */
 
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MAX_BYTES } from "@earendil-works/pi-coding-agent";
@@ -58,6 +62,10 @@ const AGENT = join(SANDBOX, "agent");
 mkdirSync(AGENT, { recursive: true });
 process.env.PI_CODING_AGENT_DIR = AGENT;
 process.env.SWARM_JOURNAL_DB = join(SANDBOX, "journal", "events.db");
+// C8 scans manifests from a sandboxed exchange root (never the live one).
+const EXCHANGE = join(SANDBOX, "ex");
+process.env.PI_DELEGATE_EXCHANGE_ROOT = EXCHANGE;
+mkdirSync(join(EXCHANGE, "alpha"), { recursive: true });
 
 const ORCH = "/sessions/orch.jsonl";
 const OTHER = "/sessions/other.jsonl";
@@ -110,6 +118,37 @@ function fixtureGraph(): SwarmGraph {
 
 function workerId(path: string): string {
 	return sessionIdFor(path);
+}
+
+/**
+ * The C8 fixture manifest (issue #77): a REAL on-disk manifest so the mount's
+ * default `buildSnapshotGraph` projection (never an injected graph) finds the
+ * worker. w1 is owned by ORCH (the mounting self), w2 by OTHER (foreign).
+ * Placement.backend is "fake" so the FakeConsoleTransport's backend scan keeps
+ * the entries; placementRef matches the live statuses.
+ */
+function seedManifest(): void {
+	const worker = (name: string, sessionPath: string, owner: string) => ({
+		name,
+		placement: { kind: "tab" as const, checkoutPath: "/repo", backend: "fake", placementRef: `fake:${name}` },
+		briefPath: `/b/${name}.md`,
+		reportPath: `/r/${name}.json`,
+		provider: "p",
+		model: "m",
+		thinking: "low",
+		startedAt: "2026-06-01T00:10:00.000Z",
+		sessionPath,
+		orchestratorSessionPath: owner,
+	});
+	const manifest = {
+		schemaVersion: 1,
+		task: "alpha",
+		dir: join(EXCHANGE, "alpha"),
+		description: "console no-graph fixture",
+		masterSessionPath: ORCH,
+		workers: [worker("w1", W1, ORCH), worker("w2", W2, OTHER)],
+	};
+	writeFileSync(join(EXCHANGE, "alpha", "manifest.json"), `${JSON.stringify(manifest, null, "\t")}\n`, "utf8");
 }
 
 /** The rpc-shaped fake: the real FidelityStore behind the seam, like the
@@ -326,6 +365,53 @@ async function main(): Promise<void> {
 				`${r.status} ${r.body}`,
 			);
 		}
+		h.stop();
+	}
+
+	// C8 — issue #77 regression: the REST console route must build the graph
+	// itself when the mount injects NO graph (the production composition at
+	// index.ts: only { sessionFile, transport }). Before the fix the REST
+	// route passed bare deps (no graph, no buildGraph) → the empty
+	// available:false graph → EVERY real worker refused, while the WS twin
+	// worked. This is the coverage the shipped-green suite lacked.
+	{
+		seedManifest();
+		const t = new FakeConsoleTransport();
+		t.add("w1");
+		t.store.append("w1", "raw", "production path");
+		const h = await mountSwarmServer({ sessionFile: ORCH, transport: t as never, env: env() });
+		if (!h) throw new Error("C8 no-graph mount failed");
+
+		const snap = JSON.parse((await get(h.port, "/api/swarm/snapshot")).body) as { snapshot: { available: boolean; nodes: Array<{ id: string; kind: string }> } };
+		check(
+			"C8.1 the no-graph mount's OWN snapshot contains the fixture worker",
+			snap.snapshot.available === true && snap.snapshot.nodes.some((n) => n.id === workerId(W1) && n.kind === "session"),
+			JSON.stringify(snap.snapshot.nodes.map((n) => n.id)),
+		);
+
+		const own = await get(h.port, `/api/workers/${encodeURIComponent(workerId(W1))}/console`);
+		const ownJson = JSON.parse(own.body) as { ok?: boolean; state?: string; chunk?: string; error?: { code?: string } };
+		check(
+			"C8.2 no-graph mount → the worker's own console is NON-refused (200, ok:true, live, real chunk)",
+			own.status === 200 && ownJson.ok === true && ownJson.state === "live" && ownJson.chunk === "production path" && ownJson.error?.code !== "E_CONSOLE_WORKER_REFUSED",
+			own.body,
+		);
+
+		const foreign = await get(h.port, `/api/workers/${encodeURIComponent(workerId(W2))}/console`);
+		const foreignJson = JSON.parse(foreign.body) as { ok?: boolean; error?: { code?: string } };
+		check(
+			"C8.3 no-graph mount → a foreign worker STILL refuses E_CONSOLE_WORKER_REFUSED",
+			foreign.status === 404 && foreignJson.ok === false && foreignJson.error?.code === "E_CONSOLE_WORKER_REFUSED",
+			foreign.body,
+		);
+
+		const unknown = await get(h.port, `/api/workers/${encodeURIComponent("deadbeef")}/console`);
+		const unknownJson = JSON.parse(unknown.body) as { ok?: boolean; error?: { code?: string } };
+		check(
+			"C8.4 no-graph mount → an unknown id STILL refuses E_CONSOLE_WORKER_REFUSED",
+			unknown.status === 404 && unknownJson.ok === false && unknownJson.error?.code === "E_CONSOLE_WORKER_REFUSED",
+			unknown.body,
+		);
 		h.stop();
 	}
 

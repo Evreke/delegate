@@ -120,3 +120,43 @@ export function decodeClientFrame(buf: Buffer): DecodedClientFrame | null | "mal
 	for (let i = 0; i < len; i++) payload[i] = maskedPayload[i] ^ mask[i % 4];
 	return { opcode, payload, consumed: off + 4 + len };
 }
+
+// ---------------------------------------------------------------------------
+// Upgrade refusals (issue #94)
+// ---------------------------------------------------------------------------
+
+/** The plain journal-stream WS paths this classification knows about. The
+ *  console stream (./console-ws.ts) writes its own cause-specific refusals
+ *  and never falls through here. */
+const STREAM_PATH = "/api/swarm/stream";
+const FLEET_STREAM_PATH = /^\/fleets\/[^/]+\/api\/swarm\/stream$/;
+
+/** The unknown-path hint (unchanged from the pre-#94 fallback — the path
+ *  really is not a WebSocket endpoint). */
+export const UPGRADE_UNKNOWN_PATH_HINT = "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests.";
+/** The missing-key hint (the path is right; the RFC 6455 handshake is not). */
+export const UPGRADE_KEY_HINT = "A WebSocket upgrade must carry a Sec-WebSocket-Key header (RFC 6455 handshake); browsers send it automatically.";
+/** The bad-cursor hint (the path is right; ?after is absent or not an integer). */
+export const UPGRADE_CURSOR_HINT = "?after is required and must be an integer journal seq cursor — e.g. /api/swarm/stream?after=0.";
+
+/**
+ * Classify why a WebSocket upgrade fell through to the core's 400 refusal.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: path — the request path; after — the raw ?after value (undefined =
+ *   absent); key — the raw Sec-WebSocket-Key header
+ * Output: the 400 E_SWARM_USAGE refusal {message, hint}, with a hint specific
+ *   to the cause (unknown path / missing key / non-integer ?after)
+ * Guarantees: never throws; the check order mirrors StreamHub.handleUpgrade
+ *   (path → cursor → key), so the reported cause is the FIRST one the hub hit
+ * Raises: never
+ */
+export function upgradeRefusal(path: string, after: string | undefined, key: string | undefined): { message: string; hint: string } {
+	const isStreamPath = path === STREAM_PATH || FLEET_STREAM_PATH.test(path);
+	if (!isStreamPath) return { message: "websocket upgrade refused", hint: UPGRADE_UNKNOWN_PATH_HINT };
+	if (after === undefined || !/^-?\d+$/.test(after.trim())) return { message: "websocket upgrade refused", hint: UPGRADE_CURSOR_HINT };
+	if (typeof key !== "string" || key.length === 0) return { message: "websocket upgrade refused", hint: UPGRADE_KEY_HINT };
+	// The path, cursor and handshake were all well-formed, yet the hub refused
+	// (e.g. the hub is closing) — do not send debugging to a wrong path.
+	return { message: "websocket upgrade refused", hint: "The WebSocket stream is unavailable right now; retry shortly." };
+}

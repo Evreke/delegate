@@ -386,6 +386,18 @@ worker writes its report through `swarm write-report`).
   (Law 7). ARCHITECTURE §4.2.4 and `docs/swarm-http-api.md` now state the
   ruled rule; the mutation and HTTP golden checks encode it.
 
+- **Dashboard per-fleet views consumed every fleet (#66 scope §7).** A page
+  served at `/fleets/<sessionId>/` fetched the unscoped `GET
+  /api/swarm/events` and `WS /api/swarm/stream` and rendered the whole graph —
+  a per-fleet view showed foreign fleets' nodes and attention. The client now
+  detects its serving base (`public/fleet-scope.js`), reads the scoped
+  events/stream under `/fleets/<id>/`, and narrows every graph it folds — the
+  HTTP snapshot and the WS snapshot frame alike — to the fleet's own
+  `spawned_by` subtree; the root view is unchanged. No per-fleet snapshot
+  route is added: the snapshot envelope stays the `swarm snapshot` CLI
+  envelope verbatim (protocol identity, §4.2.2). Check:
+  `test/fleet-view-scope-check.ts`.
+
 - **Adaptive sqlite driver — the extension must load under node too.** The
   journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
   (node ≥ 22.13); a statically chosen driver crashed the extension import

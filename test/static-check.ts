@@ -1807,6 +1807,7 @@ function listDashboardAssets(root: string): string[] {
 			"index.html",
 			"app.js",
 			"auth-bootstrap.js",
+			"fleet-scope.js",
 			"app.css",
 			"status.css",
 			"canvas.css",

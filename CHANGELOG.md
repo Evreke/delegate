@@ -396,6 +396,18 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard ownership, bounded reads and honest errors (#81, #88, #89).**
+  (a) The serving identity is now derived from the `/api/swarm/fleets`
+  envelope's `self` and wired into the read model, so foreign fleets are
+  marked foreign and the own fleet is promoted (the attention strip renders
+  an honest 'scoping…' state until identity resolves). (b) Cursor reads are
+  capped at a 500-row page (events routes + WS tick, paged via `after=`), the
+  client patches from the frame only, and the event store is a bounded ring.
+  (c) Non-2xx/`ok:false` responses become structured errors in a `role=alert`
+  banner (operation label + envelope code/hint + dismiss, auto-cleared on
+  recovery) and a per-region 'cannot read' state replaces the silent blank
+  screen.
+
 - **rpc worktree placement collided with foreign worktrees (#73).** The
   `src/host/rpc.ts` `place()` allocator derived the worktree path from a
   per-host monotonic counter without probing the filesystem, so a directory

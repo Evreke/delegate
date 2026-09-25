@@ -1812,7 +1812,6 @@ function listDashboardAssets(root: string): string[] {
 			"status.css",
 			"canvas.css",
 			"detail.css",
-			"tree.js",
 			"stream.js",
 			"degrade.js",
 			"console.js",
@@ -1924,7 +1923,7 @@ check(
 	// (steer.js, #54) ONLY; localStorage is banned everywhere.
 	const app = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
 	const steerJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "steer.js"), "utf8");
-	const others = ["tree.js", "stream.js", "degrade.js", "console.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
+	const others = ["stream.js", "degrade.js", "console.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
 	const anyLocalStorage = listDashboardAssets(ROOT).some((f) => scanDashboardAsset(readFileSync(f, "utf8")).some((o) => o.rule === "local-storage"));
 	check(
 		"T1.22 sessionStorage is the cursor + operator-token store only (app.js cursor, steer.js token); no localStorage",
@@ -1952,7 +1951,7 @@ check(
 
 	const clean = [
 		'const res = await fetch("/api/swarm/snapshot");',
-		'import { buildTreeView } from "./tree.js";',
+		'import { renderRail } from "./rail.js";',
 		'sessionStorage.setItem("swarm.dashboard.lastSeq", String(seq));',
 		// The createElementNS namespace constant is not a network call (T1.21d).
 		'const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");',

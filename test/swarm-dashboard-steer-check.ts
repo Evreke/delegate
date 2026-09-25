@@ -415,47 +415,6 @@ async function main(): Promise<void> {
 		check("P6.5 a pending ask exposes the answer form", withAsk.pendingAsk !== null && withAsk.pendingAsk.question === "q?");
 	}
 
-	// -- P6b — the panel + controls DOM contract (renderer) -----------------
-	{
-		const treeMod = (await import(publicUrl("tree.js"))) as any;
-		const doc = fakeDoc();
-		const view = {
-			available: true,
-			roots: [{ id: "alpha", kind: "task", workers: [{ name: "w1", run: 1, sessionId: "n1", liveStatus: "working", degraded: [] }], children: [], orphans: [], degraded: [], depth: 0 }],
-			edges: [],
-			nodeCount: 1,
-		};
-		const liveState = consoleMod.reduceConsoleFrame(consoleMod.initialConsoleState(0), { ok: true, state: "live", chunk: "hello", nextOffset: 5, oldestOffset: 0, dropped: false });
-		const extras = {
-			panelOf: (w: any) => ({ ...consoleMod.consoleBanner(w.name === "w1" ? liveState : consoleMod.initialConsoleState(0)), worker: w.name, nodeId: w.sessionId }),
-			controlsOf: (w: any) => ({ ...steer.controlsView({ worker: w.name, consoleStatus: "live" }), pendingAsk: null, draft: "" }),
-		};
-		const root = doc.createElement("section");
-		treeMod.renderTree(view, root, doc, extras);
-		const panel = findEl(root, (e) => e.attributes["data-console-for"] === "w1")[0];
-		const tail = findEl(root, (e) => e.attributes["data-console-tail"] === "1")[0];
-		const controls = findEl(root, (e) => e.attributes["data-steer-worker"] === "w1")[0];
-		check("P6b.1 the worker card renders a live console panel with the tail", panel !== undefined && panel.attributes["data-console-state"] === "live" && tail.textContent === "hello", panel ? panel.textContent : "no panel");
-		check("P6b.2 a live owned worker's controls are enabled", controls.attributes["data-steer-disabled"] === "0");
-
-		const refusedState = consoleMod.reduceConsoleFrame(consoleMod.initialConsoleState(0), { ok: false, error: { code: "E_CONSOLE_WORKER_REFUSED", message: "not owned" } });
-		const root2 = doc.createElement("section");
-		treeMod.renderTree(view, root2, doc, {
-			panelOf: (w: any) => ({ ...consoleMod.consoleBanner(refusedState), worker: w.name, nodeId: w.sessionId }),
-			controlsOf: (w: any) => ({ ...steer.controlsView({ worker: w.name, consoleStatus: "refused" }), pendingAsk: null, draft: "" }),
-		});
-		const controls2 = findEl(root2, (e) => e.attributes["data-steer-worker"] === "w1")[0];
-		const reason = findEl(root2, (e) => e.attributes["data-disabled-reason"])[0];
-		const input2 = findEl(root2, (e) => e.attributes["data-steer-input"] === "1")[0];
-		check("P6b.3 a foreign card is disabled-with-reason (never hidden) and the input carries disabled", controls2.attributes["data-steer-disabled"] === "1" && reason.textContent.length > 0 && input2.getAttribute("disabled") === "disabled", reason ? reason.textContent : "no reason");
-
-		const retainedState = consoleMod.reduceConsoleFrame(consoleMod.initialConsoleState(0), { ok: true, state: "ended-with-retained-backlog", chunk: "history", nextOffset: 7, oldestOffset: 0, dropped: false });
-		const root3 = doc.createElement("section");
-		treeMod.renderTree(view, root3, doc, { panelOf: (w: any) => ({ ...consoleMod.consoleBanner(retainedState), worker: w.name, nodeId: w.sessionId }) });
-		const panel3 = findEl(root3, (e) => e.attributes["data-console-for"] === "w1")[0];
-		check("P6b.4 an ended-with-retained-backlog panel is marked retained and shows the backlog", panel3.attributes["data-console-retained"] === "1" && panel3.textContent.includes("history") && panel3.textContent.includes("retained"));
-	}
-
 	// -- P7 — real mounted-server round trip --------------------------------
 	{
 		const { mountSwarmServer } = await import("../src/swarm-server/mount.ts");

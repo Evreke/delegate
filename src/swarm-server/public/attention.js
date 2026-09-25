@@ -15,6 +15,7 @@
  */
 
 import { el, on, renderSeverityChip } from "./dom.js";
+import { DEGRADED_FLAGS, degradedGloss } from "./degrade.js";
 
 /** The queue items for one chip kind (severity order already folded). */
 export function attentionItemsFor(attention, kind) {
@@ -44,6 +45,8 @@ function renderOverlay(doc, attention, kind, ctx) {
 		class: "attention-overlay",
 		"data-attention-overlay": kind || "all",
 		role: "dialog",
+		"aria-modal": "true",
+		tabindex: "-1",
 		"aria-label": "attention queue",
 	});
 	overlay.appendChild(el(doc, "div", { class: "attention-overlay-title" }, `attention queue \u2014 ${kind || "all"}`));
@@ -70,6 +73,13 @@ function renderOverlay(doc, attention, kind, ctx) {
 		list.appendChild(row);
 	}
 	overlay.appendChild(list);
+	// #90: the flags are jargon — a compact plain-language legend in the footer.
+	const legend = el(doc, "div", { class: "attention-legend", "data-attention-legend": "1" });
+	legend.appendChild(el(doc, "span", { class: "attention-legend-title" }, "flag legend"));
+	for (const flag of DEGRADED_FLAGS) {
+		legend.appendChild(el(doc, "span", { class: `attention-legend-item degraded-flag-${flag}`, "data-legend-flag": flag, title: degradedGloss(flag) }, `${flag} \u2014 ${degradedGloss(flag)}`));
+	}
+	overlay.appendChild(legend);
 	// A click on the backdrop (not an item — items stop propagation) dismisses.
 	on(overlay, "click", () => ctx.dispatch?.({ type: "dismiss-overlay" }));
 	return overlay;
@@ -92,6 +102,9 @@ export function renderAttention(state, root, doc, opts = {}) {
 		class: "attention-strip",
 		"data-attention-strip": "1",
 		"data-clear": attention?.clear ? "1" : "0",
+		role: "status",
+		"aria-live": "polite",
+		"aria-label": "attention summary",
 	});
 	if (!attention || attention.clear) {
 		strip.appendChild(el(doc, "span", { class: "attention-clear", "data-attention-clear": "1" }, "all clear"));

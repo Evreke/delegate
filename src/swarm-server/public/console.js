@@ -49,6 +49,7 @@ export function initialConsoleState(offset = 0) {
 		nextOffset: typeof offset === "number" && offset >= 0 ? offset : 0,
 		oldestOffset: 0,
 		dropped: false,
+		capped: false,
 		retained: false,
 		error: null,
 	};
@@ -81,7 +82,11 @@ export function reduceConsoleFrame(state, frame) {
 	}
 	const chunk = typeof frame.chunk === "string" ? frame.chunk : "";
 	let text = cur.text + chunk;
-	if (text.length > CONSOLE_TAIL_MAX_CHARS) text = text.slice(text.length - CONSOLE_TAIL_MAX_CHARS);
+	let capped = cur.capped === true;
+	if (text.length > CONSOLE_TAIL_MAX_CHARS) {
+		text = text.slice(text.length - CONSOLE_TAIL_MAX_CHARS);
+		capped = true;
+	}
 	const status = typeof frame.state === "string" ? frame.state : cur.status;
 	const error = frame.error && typeof frame.error === "object" ? { code: frame.error.code, message: frame.error.message } : null;
 	return {
@@ -93,22 +98,35 @@ export function reduceConsoleFrame(state, frame) {
 		nextOffset: typeof frame.nextOffset === "number" ? frame.nextOffset : cur.nextOffset,
 		oldestOffset: typeof frame.oldestOffset === "number" ? frame.oldestOffset : cur.oldestOffset,
 		dropped: frame.dropped === true,
+		capped,
 		retained: status === "ended-with-retained-backlog",
 		error,
 	};
 }
 
-/** The honest banner for a console state (label + detail, never a fake terminal). */
+/**
+ * The honest banner for a console state (label + detail, never a fake terminal).
+ * <p>
+ * #93: a truncated tail is MARKED. The panel slices the oldest characters at
+ * CONSOLE_TAIL_MAX_CHARS and a frame may set `dropped`; either way the banner
+ * carries `truncated`/`truncation` (`… truncated (dropped since offset N)`),
+ * so a sliced log is never read as the whole log. A refusal keeps its own
+ * distinct label — `refused — foreign`, never the captureless `unavailable`.
+ */
 export function consoleBanner(state) {
 	const s = state && typeof state === "object" ? state : initialConsoleState(0);
 	const message = s.error && typeof s.error.message === "string" ? s.error.message : "";
-	if (s.status === "live") return { state: s.status, label: "live", detail: "", retained: false, text: s.text || "" };
-	if (s.status === "ended") return { state: s.status, label: "ended", detail: "worker ended; the backend retains no console history", retained: false, text: s.text || "" };
-	if (s.status === "ended-with-retained-backlog") return { state: s.status, label: "ended (backlog retained)", detail: "worker ended; the backend still retains its console history", retained: true, text: s.text || "" };
-	if (s.status === "unavailable") return { state: s.status, label: "unavailable", detail: message || "the backend exposes no console stream", retained: false, text: s.text || "" };
-	if (s.status === "refused") return { state: s.status, label: "unavailable", detail: "not owned by this session (foreign fleet or unknown worker)", retained: false, text: s.text || "" };
-	if (s.status === "error") return { state: s.status, label: "error", detail: message || "console read failed", retained: false, text: s.text || "" };
-	return { state: "loading", label: "loading", detail: "", retained: false, text: s.text || "" };
+	const truncated = s.dropped === true || s.capped === true;
+	const oldest = typeof s.oldestOffset === "number" && s.oldestOffset >= 0 ? s.oldestOffset : 0;
+	const truncation = truncated ? `\u2026 truncated (dropped since offset ${oldest})` : "";
+	const banner = (label, detail, retained) => ({ state: s.status, label, detail, retained, text: s.text || "", truncated, truncation });
+	if (s.status === "live") return banner("live", "", false);
+	if (s.status === "ended") return banner("ended", "worker ended; the backend retains no console history", false);
+	if (s.status === "ended-with-retained-backlog") return banner("ended (backlog retained)", "worker ended; the backend still retains its console history", true);
+	if (s.status === "unavailable") return banner("unavailable", message || "the backend exposes no console stream", false);
+	if (s.status === "refused") return banner("refused \u2014 foreign", "not owned by this session (foreign fleet or unknown worker)", false);
+	if (s.status === "error") return banner("error", message || "console read failed", false);
+	return { state: "loading", label: "loading", detail: "", retained: false, text: s.text || "", truncated, truncation };
 }
 
 /**

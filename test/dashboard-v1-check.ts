@@ -367,6 +367,10 @@ async function main(): Promise<void> {
 		const empty = stateMod.buildDashboardState({ graph: { ...graph, nodes: graph.nodes.filter((n: any) => n.id === sessionIdFor(SELF)), edges: [] }, events: [], ownSessionPath, nowMs: NOW });
 		check("A3.5 an empty queue renders the honest 'all clear' chip (never a zero-count chip row)", empty.attention.clear === true && attentionMod.chipLabels(empty.attention)[0] === "all clear");
 		check("A3.6 foreign fleets render read-only in the rail and after own fleets", model.rail.groups[model.rail.groups.length - 1].foreign === true && model.rail.own.length >= 1);
+		// #66 box 2: the journal is SHARED across fleets — an own-fleet ask count
+		// must not move when a foreign fleet happens to reuse an own worker name.
+		const shadowed = stateMod.buildDashboardState({ graph, events: events.concat([{ seq: 6, kind: "ask", worker: "w4-1", task: "foreign-task", payload: { question: "shadow" } }]), ownSessionPath, nowMs: NOW });
+		check("A3.7 a foreign-fleet ask that reuses an own worker name is NOT counted (attention never crosses fleets)", shadowed.attention.askCount === 2, JSON.stringify({ ask: shadowed.attention.askCount, items: shadowed.attention.items.map((i: any) => i.worker) }));
 	}
 
 	// -- A4 — attention queue overlay + spotlight ---------------------------
@@ -474,6 +478,12 @@ async function main(): Promise<void> {
 		const degradedLayout = layoutMod.computeLayout(degradedModel, { expansion: [] });
 		const degradedAgg = degradedLayout.nodes.find((n: any) => n.kind === "aggregate");
 		check("A7.6 a degraded child raises the aggregate severity to warn (never a green ✓)", degradedAgg.severity === "warn", JSON.stringify(degradedAgg));
+		// #66 §6: `dead-reboot` is one of the three collapse-terminal statuses — a
+		// lead whose workers are all settled but one is dead must still collapse,
+		// and the aggregate must carry the crit severity (never a hidden death).
+		const deadModel = stateMod.buildDashboardState({ graph, events: events.concat([{ seq: 6, kind: "dead-reboot", worker: "w1-1", task: "m1-lead-1", payload: { detectedAt: "2026-09-20T02:00:00.000Z" } }]), ownSessionPath, nowMs: NOW });
+		const deadCollapse = layoutMod.computeLayout(deadModel, { expansion: [] }).nodes.find((n: any) => n.kind === "aggregate");
+		check("A7.7 a lead whose workers are all settled but one is dead-rebooted still collapses, worst severity crit", deadCollapse !== undefined && deadCollapse.leadId === L1 && deadCollapse.severity === "crit", JSON.stringify(layoutMod.computeLayout(deadModel, { expansion: [] }).aggregates));
 	}
 
 	// -- A8 — deterministic layout + in-place stream updates -----------------

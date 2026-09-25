@@ -224,7 +224,6 @@ export function buildDashboardState(input = {}) {
 	const graph = input.graph && typeof input.graph === "object" ? input.graph : {};
 	const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
 	const edges = Array.isArray(graph.edges) ? graph.edges : [];
-	const journal = foldJournal(input.events);
 	const parents = parentIndex(graph);
 	const children = new Map();
 	for (const [from, to] of parents) {
@@ -235,11 +234,11 @@ export function buildDashboardState(input = {}) {
 	const embodiments = embodimentIndex(graph);
 	const byIdRaw = new Map(nodes.map((n) => [n.id, n]));
 	const nowMs = typeof input.nowMs === "number" ? input.nowMs : null;
-	const foreign = (node) => {
-		// A console refusal on the node OR any ancestor makes the whole branch
-		// foreign (the server's ownership verdict is the authority).
+	/** Is this node id outside this session's fleets? (console refusals mark a
+	 *  whole branch foreign; otherwise the root session's path decides.) */
+	const isForeignId = (id) => {
 		if (input.foreignSessionIds && input.foreignSessionIds.size > 0) {
-			let cur = node.id;
+			let cur = id;
 			const seen = new Set([cur]);
 			for (;;) {
 				if (input.foreignSessionIds.has(cur)) return true;
@@ -249,10 +248,23 @@ export function buildDashboardState(input = {}) {
 				cur = next;
 			}
 		}
-		const rootId = rootOf(node.id, parents);
+		const rootId = rootOf(id, parents);
 		const root = byIdRaw.get(rootId);
 		return ownedBy(input, root && root.sessionPath, rootId);
 	};
+	const foreign = (node) => isForeignId(node.id);
+	// The journal is SHARED across fleets: a foreign fleet's `ask` / `dead-reboot`
+	// / `progress` row names a worker that may collide with an own worker name,
+	// so the fold is scoped by each row's own `task` — the same task-set filter
+	// the per-fleet HTTP/stream surface applies server-side (#66 box 2: foreign
+	// fleets never raise attention). A row whose `task` is absent or unknown to
+	// the graph stays: it cannot be attributed, and dropping it would be silent
+	// data loss.
+	const ownEvents = (Array.isArray(input.events) ? input.events : []).filter((e) => {
+		const task = e && typeof e.task === "string" ? e.task : null;
+		return task === null || !byIdRaw.has(task) || !isForeignId(task);
+	});
+	const journal = foldJournal(ownEvents);
 	const ctx = { journal, parents, children, embodiments, foreign, nowMs };
 
 	const enriched = nodes.map((n) => (n.kind === "task" ? buildTaskNode(n, ctx) : buildSessionNode(n, ctx)));

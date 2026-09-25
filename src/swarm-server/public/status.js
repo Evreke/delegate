@@ -46,6 +46,16 @@ export function isTerminalStatus(status) {
 	return status === "collected" || status === "retired";
 }
 
+/** A collapse-terminal status (issue #66 §6): a worker whose history is CLOSED —
+ *  `collected`, `retired`, or `dead-rebooted`. Distinct from
+ *  `isTerminalStatus` (the rail's done-counter, where a dead worker is settled
+ *  but never `done`): the adaptive-collapse rule names dead-reboot among its
+ *  terminal statuses, so a dead child must collapse WITH its crit severity
+ *  surfaced, never disappear. */
+export function isSettledStatus(status) {
+	return status === "collected" || status === "retired" || status === "dead";
+}
+
 /** Map a transport `AgentStatusName` to the status language. */
 export function liveStatusToName(liveStatus) {
 	if (liveStatus === "working") return "running";

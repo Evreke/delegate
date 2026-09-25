@@ -21,6 +21,9 @@
  *      refusal, bad offset.
  *   M  mutation: steer/answer success, absent + wrong token (byte-identical),
  *      foreign-fleet refusal, malformed body.
+ *   N  mutation id spellings (#70): the SESSION NODE ID spelling, the
+ *      name-first ambiguity resolution and the foreign node-id refusal,
+ *      each pinned byte-exact.
  *
  * Run with: bun test/swarm-http-api-check.ts   (from repo root)
  * Fail-fast: top-level watchdog; every fetch is bounded.
@@ -576,6 +579,39 @@ async function main(): Promise<void> {
 		});
 	}
 	h.stop();
+
+	// --- N: mutation id spellings (issue #70, additive to #51) ------------
+	// The mutation routes accept BOTH the v1 worker NAME and the SwarmGraph
+	// SESSION node id; resolution is NAME-FIRST. These three byte-exact
+	// goldens pin the #70 acceptance: node-id spelling, name-first
+	// ambiguity, foreign node-id refusal.
+	{
+		const NODE_DB = join(SANDBOX, "journal-nodeid", "events.db");
+		// The ambiguity fixture: a session node whose id SPELLS the owned
+		// worker name `w1` (node ids are hex and can look like names, #70).
+		// Name-first must win — a node-first resolver would find no worker
+		// embodiment behind the shadow node and answer 400 instead.
+		const ambGraph = fixtureConsoleGraph(SELF);
+		ambGraph.nodes.push({ kind: "session", id: "w1", sessionPath: "/sessions/shadow-w1.jsonl", role: "worker", isWorker: true, ownsChildren: false, tasks: ["beta"], degraded: [] });
+		const hN = await mountSwarmServer({ sessionFile: SELF, graph: ambGraph, operatorToken: TOKEN, env: env({ SWARM_JOURNAL_DB: NODE_DB }) });
+		check("N0 id-spelling mount returns a handle", hN !== null);
+		if (hN) {
+			const nodeId = fixtureConsoleWorkerId();
+			golden("N1 mutation by session node id → byte-exact envelope (the #70 node-id spelling resolves to the worker name)", await req(hN.port, "POST", `/api/workers/${nodeId}/steer`, { token: TOKEN, body: { text: "by node id" } }), {
+				status: 200,
+				body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "1" }),
+			});
+			golden("N2 name == node id → byte-exact envelope, resolved NAME-FIRST (the #70 ambiguity golden)", await req(hN.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "name first" } }), {
+				status: 200,
+				body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "2" }),
+			});
+			golden("N3 foreign worker's session node id → 403 E_SWARM_FORBIDDEN (the #70 foreign node-id refusal golden)", await req(hN.port, "POST", `/api/workers/${fixtureForeignWorkerId()}/steer`, { token: TOKEN, body: { text: "x" } }), {
+				status: 403,
+				body: HTTP_GOLDENS.forbidden,
+			});
+			hN.stop();
+		}
+	}
 
 	// -----------------------------------------------------------------------
 	// Mount C — empty-journal events envelope

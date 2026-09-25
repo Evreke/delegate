@@ -70,8 +70,11 @@ async function herdrJson(args: string[]): Promise<unknown> {
 await (async () => {
 	try {
 		await execFileP("herdr", ["--version"], { encoding: "utf8", timeout: 10_000 });
+		// A RUNNING server is required too: the binary alone leaves the LIVE
+		// mutating legs below failing with server_not_running instead of skipping.
+		await execFileP("herdr", ["workspace", "list"], { encoding: "utf8", timeout: 10_000 });
 	} catch {
-		console.log("SKIP transport-contract — herdr binary not available on this host");
+		console.log("SKIP transport-contract — herdr binary/server not available on this host");
 		process.exit(0);
 	}
 })();

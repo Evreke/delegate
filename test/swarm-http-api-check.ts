@@ -306,7 +306,7 @@ async function main(): Promise<void> {
 		const e: NodeJS.ProcessEnv = { ...process.env };
 		delete e.SWARM_SERVER_ENABLED;
 		delete e.SWARM_SERVER_PORT;
-		return { ...e, SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0", ...extra };
+		return { ...e, SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0", SWARM_STORAGE: "files", ...extra };
 	};
 
 	async function req(port: number, method: string, path: string, opts: { token?: string; body?: unknown; rawBody?: string } = {}): Promise<{ status: number; body: string }> {
@@ -483,11 +483,14 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// --- M: mutation surface ----------------------------------------------
+	// --- M: mutation surface (files storage: #62 item 1 forces the audit
+	//        append, so the envelope still carries the journal seq) ----------
 	const answerPath = fixtureAnswerPath(EX, "alpha-fleet", "w1");
-	golden("M1 steer success → byte-exact mutation envelope (files mode: journal null)", await req(h.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "carry on" } }), {
+	// The journal is seeded with two rows above (seq 1, 2), so this first
+	// HTTP mutation is seq 3 and the answer below is seq 4.
+	golden("M1 steer success → byte-exact mutation envelope (files mode journals the audit row, #62 item 1)", await req(h.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "carry on" } }), {
 		status: 200,
-		body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath }),
+		body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "3" }),
 	});
 	const noToken = await req(h.port, "POST", "/api/workers/w1/steer", { body: { text: "x" } });
 	const wrongToken = await req(h.port, "POST", "/api/workers/w1/steer", { token: "wrong", body: { text: "x" } });
@@ -505,7 +508,7 @@ async function main(): Promise<void> {
 		writeFileSync(join(EX, "alpha-fleet", "q-w1.json"), `${JSON.stringify({ worker: "w1", ts: "2026-06-01T00:00:00.000Z", question: "which color?" })}\n`, "utf8");
 		golden("M6 answer success → byte-exact envelope, verb answer", await req(h.port, "POST", "/api/asks/w1/answer", { token: TOKEN, body: { text: "42" } }), {
 			status: 200,
-			body: render(HTTP_GOLDENS.answerOk, { ANSWER_PATH: answerPath }),
+			body: render(HTTP_GOLDENS.answerOk, { ANSWER_PATH: answerPath, SEQ: "4" }),
 		});
 	}
 	h.stop();

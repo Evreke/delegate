@@ -1,5 +1,5 @@
 /**
- * swarm-console-ws-check — issue #52 acceptance 1/2/3/4 (ARCHITECTURE §4.2.4,
+ * swarm-console-ws-check — issue #52 acceptance 1/2/3/4 (ARCHITECTURE §4.2.5,
  * Law 7/Law 8): the worker-console WebSocket live tail
  * `WS /api/workers/:id/console/stream?offset=<n>` as observed by a raw-TCP
  * RFC 6455 client (the same hand-rolled client pattern as

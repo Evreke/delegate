@@ -755,8 +755,8 @@ off-machine access are OUT OF SCOPE for this surface. Non-goals (issue #50):
 no multi-session aggregation, no daemon mode, no TLS — each
 joins by addition under its own issue. The mutation endpoints and their
 operator token joined in §4.2.4 (#51); worker console streaming, once a #50
-non-goal, joins by addition in §4.2.4 (#52); the read-only dashboard
-frontend joins by addition in §4.2.4 (#53).
+non-goal, joins by addition in §4.2.5 (#52); the read-only dashboard
+frontend joins by addition in §4.2.6 (#53).
 
 #### 4.2.4 Mutation surface + operator token (issue #51)
 
@@ -788,10 +788,15 @@ an HTTP-issued `a-<name>.json` is byte-identical to a tool-issued one. The
 additive difference is journaling: every successful mutation appends its
 `steer` / `answer` journal row (`{text}` plus the additive `via: "http"`;
 no schema-version bump) AFTER the envelope is published — the `report` kind
-precedent — through the verb plumbing (`appendSwarmEvent`). In `files`
-storage mode no row is written (the existing verb behavior); the static pin
-`T1.16` proves no `src/swarm-server/**` file makes a direct mailbox write,
-so the mutation path cannot bypass the journal (#51 acceptance 6).
+precedent — through the verb plumbing (`appendSwarmEvent`). The HTTP
+mutation path appends that audit row REGARDLESS of `swarm.storage` (#62
+item 1): the append-only journal is audit infrastructure, not the Phase A/B
+truth switch — the flag gates which store is TRUTH (§4.1.3), not whether
+audit rows exist — so a `files`-mode HTTP `steer` still emits the journal
+event the dashboard confirms on. ONLY this surface forces the append; every
+other verb keeps the Phase A behavior. The static pin `T1.16` proves no `src/swarm-server/**` file makes a direct
+mailbox write, so the mutation path cannot bypass the journal (#51
+acceptance 6).
 
 Every mutation envelope — success and error — carries `schemaVersion: 1` and
 the structured `E_*` codes (`E_SWARM_AUTH`, `E_SWARM_FORBIDDEN` join by
@@ -799,7 +804,7 @@ addition; `E_SWARM_USAGE` on a malformed body/id). The mutation routes are
 advisory by contract (Law 8): a failed write or nudge degrades to a
 structured error and never destabilizes the session, watcher, or collect.
 
-#### 4.2.4 Worker console surface (issue #52)
+#### 4.2.5 Worker console surface (issue #52)
 
 Status: this record section lands with #52's implementation. It binds the
 console half of the session-hosted read endpoint under §4.2 and the laws.
@@ -848,7 +853,7 @@ Checks: `test/swarm-console-rest-check.ts`, `test/swarm-console-ws-check.ts`.
 The `T1.15` family pin covers the new modules unchanged (no durable store,
 journal writer or backend adapter import).
 
-#### 4.2.4 The fleet dashboard (issue #53)
+#### 4.2.6 The fleet dashboard (issue #53)
 
 `GET /` serves a read-only dashboard SPA from `src/swarm-server/public/`
 (`./static.ts`): vanilla ES modules + CSS, **no build step** and no
@@ -867,7 +872,7 @@ nodes are shown, never hidden or faked healthy. `sessionStorage` holds ONLY
 the reconnect cursor. The dashboard is the first frontend of the milestone;
 steering UI (#54) joins by addition.
 
-#### 4.2.4 Dashboard console panel + steering controls (issue #54)
+#### 4.2.7 Dashboard console panel + steering controls (issue #54)
 
 Issue #54 completes the dashboard's browser scope: worker-console streaming
 and operator steering, both additive to the read-only SPA.

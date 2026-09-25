@@ -10,7 +10,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
-- **Dashboard console panel + steering controls (#54, ARCHITECTURE §4.2.4).**
+- **Dashboard console panel + steering controls (#54, ARCHITECTURE §4.2.7).**
   The fleet dashboard SPA now streams each worker's console and steers it from
   the page. Per worker card: a monospace console panel preloads the backlog via
   `GET /api/workers/:id/console?offset=0` and live-tails it over
@@ -31,7 +31,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   (T1.20/T1.22 asset set + token store) and gain T1.24 (the mutation surface
   lives only in `steer.js`). Check: `test/swarm-dashboard-steer-check.ts`.
 
-- **Read-only fleet dashboard (#53, ARCHITECTURE §4.2.4).** `GET /` on the
+- **Read-only fleet dashboard (#53, ARCHITECTURE §4.2.6).** `GET /` on the
   session-hosted read server now serves a static dashboard SPA from
   `src/swarm-server/public/` (vanilla ES modules + CSS — **no build step**, no
   framework, no bundler in the runtime path). It is a pure Law-13 client:
@@ -96,7 +96,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   `test/swarm-server-mutation-check.ts` (+ T1.16 in `test/static-check.ts`).
 
 - **Worker console stream endpoint (#52, swarm-core-v1, ARCHITECTURE
-  §4.2.4).** The session-hosted read server gains the console half:
+  §4.2.5).** The session-hosted read server gains the console half:
   `GET /api/workers/:id/console?offset=<n>` and `WS
   /api/workers/:id/console/stream?offset=<n>` serve one worker's console as
   frames `{ok, schemaVersion, worker, nodeId, task, state, chunk,

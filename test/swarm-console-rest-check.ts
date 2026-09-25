@@ -1,6 +1,6 @@
 /**
  * swarm-console-rest-check — issue #52 acceptance 1/3/4/5/6/7 (ARCHITECTURE
- * §4.2.4, Law 1/Law 8/Law 13): the worker-console REST endpoint
+ * §4.2.5, Law 1/Law 8/Law 13): the worker-console REST endpoint
  * `GET /api/workers/:id/console?offset=<n>` as observed by an HTTP client.
  *
  * Run with: bun test/swarm-console-rest-check.ts   (from repo root)

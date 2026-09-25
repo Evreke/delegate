@@ -46,6 +46,9 @@ function check(name: string, ok: boolean, detail = "") {
 let herdrAvailable = false;
 try {
 	await execFileP("herdr", ["--version"], { timeout: 10_000 });
+	// A RUNNING server is required too: the binary alone leaves the herdr leg
+	// below failing with server_not_running instead of skipping.
+	await execFileP("herdr", ["workspace", "list"], { timeout: 10_000 });
 	herdrAvailable = true;
 } catch {
 	herdrAvailable = false;
@@ -303,7 +306,7 @@ check(
 // Leg 2 — real herdr (skip-guarded)
 // ---------------------------------------------------------------------------
 if (!herdrAvailable) {
-	console.log("SKIP  herdr leg — no herdr binary on PATH (skip guard, transport-contract shape)");
+	console.log("SKIP  herdr leg — no herdr binary/server on PATH (skip guard, transport-contract shape)");
 } else {
 	// Authority model (design §4.3): worktree placement is ROOT-only — the
 	// authority derives from process.cwd() vs the herdr worktree root. This

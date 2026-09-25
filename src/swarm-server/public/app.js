@@ -299,6 +299,26 @@ export function createFleetApp(env = {}) {
 			}
 			pendingList = pendingList.map((p) => (p === pending ? failPending(p, errorText(res)) : p));
 			scheduleRender();
+		} else {
+			// #62 item 1 — settle the marker by the envelope's confirmation
+			// state instead of always waiting for a journal event:
+			//   "confirmed" (journal mode): the row is already durable — the
+			//     matching WS event would only repeat the fact;
+			//   "unavailable" (files mode, §4.1.3): no journal row will ever
+			//     arrive — show the honest "delivered" state (steer.js
+			//     pendingView), never a forever-pending spinner;
+			//   absent (a pre-#62 server): keep waiting for the journal event
+			//     (reducePending) — old servers stay fully supported.
+			const confirmation = res.envelope && res.envelope.confirmation;
+			if (confirmation === "confirmed" || confirmation === "unavailable") {
+				pendingList = pendingList.map((p) => {
+					if (p !== pending) return p;
+					if (confirmation === "unavailable") return { ...p, status: "unconfirmed" };
+					const seq = res.envelope.journal && typeof res.envelope.journal.seq === "number" ? res.envelope.journal.seq : null;
+					return { ...p, status: "confirmed", confirmedSeq: seq, via: typeof res.envelope.via === "string" ? res.envelope.via : null };
+				});
+				scheduleRender();
+			}
 		}
 		return res;
 	};

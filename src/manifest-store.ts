@@ -184,6 +184,13 @@ export interface ManifestWorker {
 	 *  children. Written by spawn at the ONE manifest-append site; absent on
 	 *  legacy entries → readers must treat it as unknown depth, never misparse. */
 	depth?: number;
+	/** Issue #15 — additive optional field, same convention as the passport
+	 *  fields: NO schemaVersion bump. Path of the partial report captured by
+	 *  the bounded termination-notice handoff when this worker was torn down
+	 *  while still live (the adapter writes the file; the teardown CALLER
+	 *  stamps this reference — adapters never write manifests, Law 4). Absent
+	 *  on every worker that was never handed a notice, and on legacy entries. */
+	partialReportPath?: string;
 }
 
 /** The depth stamped on a worker's manifest entry at append time.
@@ -324,6 +331,53 @@ export function updateManifest(
 		atomicWriteFileSync(path, JSON.stringify(next, null, "\t") + "\n");
 		return next;
 	});
+}
+
+/**
+ * Issue #15 — stamp the path of a termination-notice partial report onto the
+ * worker's manifest entry (additive optional field; same convention as the
+ * passport stamps: no schemaVersion bump). The teardown CALLER owns this
+ * write (the adapter that captured the file knows nothing about the exchange
+ * layer — Law 4), so the reference is a plain metadata stamp, not a lifecycle
+ * reducer transition: capturing a partial report never changes a worker's
+ * lifecycle state.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input:
+ *   - dir: the task's exchange dir; name: canonical worker name
+ *   - placementRef: the embodiment identity (manifest entry's
+ *     embodiment.placementRef) when known — a same-name retry must never
+ *     receive its predecessor's partial report; undefined → name-only match
+ *     (the legacy fail-open behavior)
+ *   - partialReportPath: the on-disk artifact to reference
+ * Output: true when an entry was matched and stamped; false when no entry
+ *   matches (nothing written)
+ * Guarantees:
+ *   - serialized + atomic via updateManifest; existing fields are preserved
+ *   - best-effort by contract: a filesystem failure propagates to the caller,
+ *     which treats the stamp as advisory and never fails teardown on it
+ * Raises: propagates filesystem errors (see above)
+ */
+export async function stampPartialReportPath(
+	dir: string,
+	name: string,
+	placementRef: string | undefined,
+	partialReportPath: string,
+): Promise<boolean> {
+	let stamped = false;
+	await updateManifest(dir, (m) => ({
+		...m,
+		workers: m.workers.map((w) => {
+			if (w.name !== name) return w;
+			if (placementRef !== undefined) {
+				const entryRef = w.embodiment?.placementRef ?? w.placement?.placementRef;
+				if (entryRef !== undefined && entryRef !== placementRef) return w;
+			}
+			stamped = true;
+			return { ...w, partialReportPath };
+		}),
+	}));
+	return stamped;
 }
 
 // ---------------------------------------------------------------------------

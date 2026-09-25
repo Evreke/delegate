@@ -112,6 +112,14 @@ export function scheduleStorePathFor(root: string, watcherKey: string, p: PathPl
 	return p.join(root, `schedules-${watcherKey}.json`);
 }
 
+/** Conventional termination-notice partial-report path: partial-<name>.json
+ *  (issue #15). A SEPARATE artifact from report-<name>.json on purpose: the
+ *  captured answer is unstructured prose, never a schema-valid WorkerReport,
+ *  so it must not be mistaken for one by collect/retire readers. */
+export function partialReportPathFor(dir: string, name: string, p: PathPlatform = nodePath): string {
+	return p.join(dir, `partial-${name}.json`);
+}
+
 /** Archived pending-question path: q-<name>.answered-<ts>.json (the rename
  *  target when a posted answer consumes the question — spawn.ts mailbox
  *  answer/steer flow). */

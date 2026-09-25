@@ -57,6 +57,15 @@
  *                   period if the child has not exited on its own; `git
  *                   worktree remove` for worktree placements; idempotent
  *                   (alreadyGone); releases the worker's console ring.
+ *                   Issue #15 GRACEFUL HANDOFF: before the abort/kill, a
+ *                   still-live child receives a short bounded
+ *                   termination-notice prompt ("state what is done, what
+ *                   remains, and the last check status — answer without
+ *                   tools") over the same stdin; an answer inside the
+ *                   configured window is captured as a partial report at the
+ *                   caller-supplied path and referenced from the teardown
+ *                   result. Advisory by contract — a closed stdin, a silent
+ *                   child or an unwritable path never fails the teardown.
  *
  * RPC protocol notes (verified empirically against pi 0.85.1):
  *   - JSONL framing: records split on LF only, optional trailing CR stripped
@@ -91,8 +100,8 @@
  */
 
 import { spawn, execFile, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { mkdirSync } from "node:fs";
-import { basename, join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
@@ -132,6 +141,31 @@ const STARTED: readonly AgentStatusName[] = ["working", "blocked", "done"];
 const POLL_MS = 250;
 /** Grace between SIGTERM and SIGKILL on teardown (ms). */
 const KILL_GRACE_MS = 3000;
+
+/** Issue #15 — default bounded answer window (ms) for the termination-notice
+ *  handoff: after the notice is written, the adapter waits at most this long
+ *  for the dying child's answer before the abort/SIGKILL path resumes. A
+ *  silent child costs this much and no more; constructor-configurable so
+ *  checks drive the real teardown path with a test-short window. */
+const TERMINATION_NOTICE_MS = 2000;
+
+/** Issue #15 — the default notice prompt text (config-bounded via the
+ *  constructor; the wording is the issue's required ask). */
+const TERMINATION_NOTICE_TEXT =
+	"Termination notice: you are about to be stopped. State what is done, what remains, and the last check status — answer without tools.";
+
+/** Issue #15 — the artifact written when a dying child answers the notice.
+ *  Deliberately NOT a WorkerReport: the answer is unstructured prose, so it
+ *  lands at partial-<name>.json and is never read by the collect/retire
+ *  report validators. */
+export interface PartialReport {
+	worker: string;
+	/** ISO 8601 — adapter clock at capture. */
+	capturedAt: string;
+	reason: "termination-notice";
+	/** Verbatim assistant text observed after the notice was written. */
+	text: string;
+}
 /** Ring-buffer cap for the readConsole activity log (lines). */
 const CONSOLE_LOG_MAX_LINES = 200;
 
@@ -294,6 +328,14 @@ export class RpcWorkerHost implements Transport {
 	 *  auto-cancelled; the consumer answers via answerDialog(). */
 	private readonly dialogRelay: boolean;
 
+	/** Issue #15 — the bounded termination-notice answer window (ms). */
+	private readonly terminationNoticeMs: number;
+	/** Issue #15 — the notice prompt text (config-bounded). */
+	private readonly terminationNoticeText: string;
+	/** Grace (ms) between the abort write and the SIGKILL — configurable so
+	 *  checks keep the real teardown path with a test-short window. */
+	private readonly killGraceMs: number;
+
 	/** The per-host console fidelity store behind streamConsole() — one
 	 *  drop-oldest ring per worker, capped at STREAM_RING_CAP events. The
 	 *  stdout pump is its single writer; teardown() forgets the worker's ring. */
@@ -305,12 +347,24 @@ export class RpcWorkerHost implements Transport {
 		/** Relay extension-UI dialogs onto the console stream instead of
 		 *  auto-cancelling them. Default false — legacy behavior, byte-identical. */
 		dialogRelay?: boolean;
+		/** Issue #15 — bounded answer window (ms) for the termination notice
+		 *  (default TERMINATION_NOTICE_MS). */
+		terminationNoticeMs?: number;
+		/** Issue #15 — termination-notice prompt text (default
+		 *  TERMINATION_NOTICE_TEXT). */
+		terminationNoticeText?: string;
+		/** Grace (ms) between the abort write and the SIGKILL (default
+		 *  KILL_GRACE_MS). */
+		killGraceMs?: number;
 		/** Test seam: child-process factory (default: the real node spawn).
 		 *  createRpcTransport() with no args keeps the real behavior. */
 		spawnProcess?: SpawnProcessFn;
 	}) {
 		this.spawnProcess = opts?.spawnProcess ?? spawn;
 		this.dialogRelay = opts?.dialogRelay ?? false;
+		this.terminationNoticeMs = opts?.terminationNoticeMs ?? TERMINATION_NOTICE_MS;
+		this.terminationNoticeText = opts?.terminationNoticeText ?? TERMINATION_NOTICE_TEXT;
+		this.killGraceMs = opts?.killGraceMs ?? KILL_GRACE_MS;
 		this.worktreeRoot = opts?.worktreeRoot ?? join(getAgentDir(), "worktrees");
 		// Authority model (mirrors the herdr adapter's isSubOrchestratorCwd):
 		// a session cwd INSIDE this backend's worktree root is a
@@ -710,6 +764,82 @@ export class RpcWorkerHost implements Transport {
 
 	// -- teardown ---------------------------------------------------------------
 
+	/** Adapter-level method (issue #15 — deliberately NOT a Transport seam
+	 *  method): the bounded termination-notice handoff. Before the teardown
+	 *  kill, write a short notice prompt over the child's stdin asking for a
+	 *  partial status ("what is done / what remains / the last check status —
+	 *  answer without tools"), wait at most the configured window for the
+	 *  child's answer (the next assistant message observed by the stdout
+	 *  pump), and persist that answer as a PartialReport at the
+	 *  caller-supplied path.
+	 *  <p>
+	 *  Advisory by contract: never throws — no live child, a closed stdin, an
+	 *  unwritable destination and a silent child all degrade to
+	 *  captured:false, and the teardown kill path is never affected.
+	 *  <p>
+	 *  FUNCTION_CONTRACT:
+	 *  Input: name — a tracked worker; partialReportPath — destination file
+	 *    (optional; absent → the answer is returned but not persisted);
+	 *    windowMs — bounded answer window override (tests)
+	 *  Output: captured=true + text (+ partialReportPath when written) when
+	 *    the child answered inside the window; captured=false otherwise
+	 *  Guarantees:
+	 *    - bounded: at most windowMs (+ one poll slice) is spent waiting
+	 *    - the child is never killed here — teardown owns the kill
+	 *    - the captured text is the verbatim assistant text, never paraphrased
+	 *  Raises: never
+	 */
+	async requestTerminationNotice(req: {
+		name: string;
+		partialReportPath?: string;
+		windowMs?: number;
+	}): Promise<{ captured: boolean; text?: string; partialReportPath?: string }> {
+		const state = this.agents.get(req.name);
+		if (!state || state.exited) return { captured: false };
+		const windowMs = Math.max(0, req.windowMs ?? this.terminationNoticeMs);
+		const baseline = state.lastAssistantText;
+		if (!this.writeTerminationNotice(state)) return { captured: false };
+		const deadline = Date.now() + windowMs;
+		while (!state.exited && state.lastAssistantText === baseline && Date.now() < deadline) {
+			await sleepMs(Math.max(1, Math.min(POLL_MS, deadline - Date.now())));
+		}
+		const text = state.lastAssistantText;
+		if (!text || text === baseline) return { captured: false };
+		let partialReportPath: string | undefined;
+		if (req.partialReportPath) {
+			try {
+				mkdirSync(dirname(req.partialReportPath), { recursive: true });
+				const partial: PartialReport = {
+					worker: state.name,
+					capturedAt: new Date().toISOString(),
+					reason: "termination-notice",
+					text,
+				};
+				writeFileSync(req.partialReportPath, JSON.stringify(partial, null, "\t") + "\n");
+				partialReportPath = req.partialReportPath;
+			} catch {
+				// advisory: the captured answer is still returned in-memory
+				partialReportPath = undefined;
+			}
+		}
+		return { captured: true, text, ...(partialReportPath ? { partialReportPath } : {}) };
+	}
+
+	/** Write the termination notice over the child's stdin as one raw prompt
+	 *  (the answer rides the normal stdout pump — no command correlation is
+	 *  awaited). A mid-stream worker gets the steer form so the notice is not
+	 *  rejected as a streaming violation. Returns false when the write fails
+	 *  (closed stdin) — advisory. */
+	private writeTerminationNotice(state: RpcAgentState): boolean {
+		try {
+			const cmd: Record<string, unknown> = { type: "prompt", message: this.terminationNoticeText };
+			if (state.running) cmd.streamingBehavior = "steer";
+			return state.child.stdin?.write(`${JSON.stringify(cmd)}\n`) !== undefined;
+		} catch {
+			return false;
+		}
+	}
+
 	async teardown(req: TeardownReq): Promise<TeardownResult> {
 		// placementRef ONLY — this adapter is unreleased, so every placement it
 		// ever wrote carries the ref; there is no legacy cohort to fall back for
@@ -721,10 +851,24 @@ export class RpcWorkerHost implements Transport {
 		// "the placement was already gone" must surface as alreadyGone:true
 		// (the seam's idempotent-teardown semantics).
 		let matched = false;
+		let partialReportPath: string | undefined;
 
 		if (state) {
 			if (!state.exited) {
 				matched = true;
+				// Issue #15 — bounded termination handoff BEFORE the kill: give the
+				// still-live child one bounded chance to state what is done / what
+				// remains / its last check status, and capture that answer as a
+				// partial report. Advisory by contract: a silent child, a closed
+				// stdin or an unwritable path costs only the configured window — the
+				// kill path below is never affected.
+				try {
+					const notice = await this.requestTerminationNotice({
+						name: state.name,
+						partialReportPath: req.partialReportPath,
+					});
+					partialReportPath = notice.partialReportPath;
+				} catch { /* advisory by contract — never fail teardown */ }
 				// Abort any in-flight run, then make sure the child is dead: if it
 				// has not exited on its own within the grace period, SIGKILL it
 				// (the abort write is the graceful path; there is no SIGTERM step).
@@ -735,7 +879,7 @@ export class RpcWorkerHost implements Transport {
 					const killTimer = setTimeout(() => {
 						try { state.child.kill("SIGKILL"); } catch { /* already dead */ }
 						resolve();
-					}, KILL_GRACE_MS);
+					}, this.killGraceMs);
 					state.child.once("exit", () => {
 						clearTimeout(killTimer);
 						resolve();
@@ -774,7 +918,7 @@ export class RpcWorkerHost implements Transport {
 				}
 			}
 		}
-		return { alreadyGone: !matched };
+		return { alreadyGone: !matched, ...(partialReportPath ? { partialReportPath } : {}) };
 	}
 
 	// -- internals ------------------------------------------------------------
@@ -876,6 +1020,12 @@ export function mapAgentStatus(state: RpcAgentState): AgentStatusName {
 	if (state.running) return "working";
 	if (state.settledSeq > 0 || state.stateKnown) return "idle";
 	return "unknown";
+}
+
+/** Issue #15 — the notice-wait's only timer: a bounded sleep kept local so
+ *  the adapter needs no clock dependency (tests shorten the window instead). */
+function sleepMs(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Append one bounded line to the readConsole activity ring buffer. */
@@ -1029,6 +1179,12 @@ export function createRpcTransport(opts?: {
 	/** Relay extension-UI dialogs onto the console stream instead of
 	 *  auto-cancelling them. Default false — legacy behavior, byte-identical. */
 	dialogRelay?: boolean;
+	/** Issue #15 — bounded termination-notice answer window (ms). */
+	terminationNoticeMs?: number;
+	/** Issue #15 — termination-notice prompt text. */
+	terminationNoticeText?: string;
+	/** Grace (ms) between the abort write and the SIGKILL. */
+	killGraceMs?: number;
 	/** Test seam — see the RpcWorkerHost constructor. */
 	spawnProcess?: SpawnProcessFn;
 }): Transport {

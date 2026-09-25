@@ -62,6 +62,24 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   the watcher log, never a dead watcher. A degraded self-id disables persistence
   entirely (fail-closed — no shared "anon" file).
 
+- **Graceful termination handoff on the rpc teardown path (#15).** Tearing
+  down a still-live `pi --mode rpc` worker no longer SIGKILLs it with its
+  unreported context lost. Before the abort/kill, the rpc adapter writes a
+  short bounded termination-notice prompt over the child's stdin ("state
+  what is done, what remains, and the last check status — answer without
+  tools"), waits at most a configurable window for the answer, and captures
+  that answer verbatim as a partial report (`partial-<name>.json`, a
+  `PartialReport` — deliberately NOT a schema-valid WorkerReport) at the
+  caller-supplied path. The capture is advisory by contract: a closed stdin,
+  a silent child or an unwritable path only costs the window and never fails
+  the teardown (abort-detaches-never-kills and alreadyGone idempotency
+  unchanged). `/delegate-teardown` supplies the path and stamps it onto the
+  worker's manifest entry (`partialReportPath`, additive optional field — no
+  schemaVersion bump, same convention as the passport fields); adapters
+  never write manifests (Law 4). New adapter-level method
+  `requestTerminationNotice()` (NOT a Transport seam method); the notice
+  window, notice text and kill grace are constructor-bounded.
+
 - **Dashboard access UX — widget link, fragment auth, one server per machine
   (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`
   stderr line carrying the ACTUAL bound port (an `EADDRINUSE` fallback is

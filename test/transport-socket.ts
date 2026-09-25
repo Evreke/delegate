@@ -309,6 +309,9 @@ try {
 		const herdrLive = await (async () => {
 			try {
 				await execFileP("herdr", ["--version"], { encoding: "utf8", timeout: 10_000 });
+				// A RUNNING server is required too: the binary alone makes the LIVE
+				// socket probe below throw an unhandled connect ENOENT.
+				await execFileP("herdr", ["agent", "list"], { encoding: "utf8", timeout: 10_000 });
 				return true;
 			} catch {
 				return false;

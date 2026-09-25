@@ -28,9 +28,16 @@
  *
  * Ordering: the envelope is written/published FIRST and the journal row is
  * appended AFTER (the `report` kind precedent — the journal never announces
- * an unpublished artifact). The journal append is advisory (Law 8): in
- * "files" storage mode appendSwarmEvent returns null and no row is written,
- * exactly like every other verb.
+ * an unpublished artifact). The journal append is advisory (Law 8): a failed
+ * append is recorded and skipped, never a verb failure. The HTTP mutation
+ * path appends its audit row REGARDLESS of `swarm.storage` (#62 item 1,
+ * preferred variant): the append-only journal is audit infrastructure, not
+ * the Phase A/B truth switch (§4.1.3) — the flag gates which store is TRUTH,
+ * not whether audit rows exist — so a `files`-mode steer still emits the
+ * journal event the dashboard confirms on. The success envelope states HOW
+ * the mutation confirms: `confirmation: "confirmed"` when the journal row is
+ * durably appended, `"unavailable"` when the advisory append failed (no row
+ * exists to wait for — the client renders "delivered" honestly).
  *
  * Dependencies: ../host.ts (Transport type via ../mailbox-store.ts's
  * SteerTransport), ../watch-role.ts (the canonical ownership verdict),
@@ -55,7 +62,7 @@ import {
 	type SteerTransport,
 } from "../mailbox-store.ts";
 import { workerAudienceMatch, type OwnerFields, type SessionIdentity } from "../watch-role.ts";
-import { appendSwarmEvent, type SwarmJournalOutcome } from "./storage.ts";
+import { appendSwarmEvent, resolveSwarmStorage, type SwarmJournalOutcome } from "./storage.ts";
 
 /** The manifest slice the ownership gate reads (untyped JSON at the edge). */
 export interface OrchestratorVerbManifest {
@@ -96,8 +103,13 @@ export interface OrchestratorVerbSuccess {
 	dir: string;
 	/** The posted a-<name>.json path. */
 	answerPath: string;
-	/** The journal outcome: null in files mode, else {seq} or {error}. */
+	/** The journal outcome: null only when the advisory append did not run
+	 *  (never for an HTTP mutation, which forces the audit append in #62). */
 	journal: SwarmJournalOutcome | null;
+	/** How this mutation confirms (#62 item 1): "confirmed" when the journal
+	 *  row is durably appended; "unavailable" when the advisory append failed
+	 *  (no row exists to wait for). */
+	confirmation: "confirmed" | "unavailable";
 	/** True when the console nudge was accepted (never on the no-transport path). */
 	nudged: boolean;
 	/** Human-readable nudge/outcome note ("" on the plain path). */
@@ -235,12 +247,30 @@ export async function runOrchestratorVerb(
 		deps.via === undefined || deps.via.length === 0
 			? { text: req.text }
 			: { text: req.text, via: deps.via };
+	const env = deps.env ?? process.env;
+	// #62 item 1 (preferred variant): the HTTP mutation path appends its audit
+	// row REGARDLESS of `swarm.storage`. The append-only journal is advisory
+	// infrastructure, not the Phase A/B truth switch (§4.1.3) — the flag gates
+	// which store is TRUTH, not whether audit rows exist — so a `files`-mode
+	// steer still emits the journal event the dashboard confirms on. Forcing
+	// the mode here (not in storage.ts) keeps every OTHER verb on the existing
+	// Phase A behavior, so the parity/cutover invariants are untouched.
+	const journalEnv =
+		deps.via === "http" && resolveSwarmStorage(env).storage !== "journal"
+			? { ...env, SWARM_STORAGE: "journal" }
+			: env;
 	const journal = await appendSwarmEvent(
 		{ task: target.task, worker: req.worker, dir: target.dir },
 		req.kind,
 		payload,
-		deps.env ?? process.env,
+		journalEnv,
 	);
+	// The journal append is advisory (Law 8) — the envelope is already
+	// published either way. "confirmed" only when a durable row exists to
+	// confirm against; "unavailable" is the honest answer when the advisory
+	// append failed (no journal event will ever arrive).
+	const confirmation: "confirmed" | "unavailable" =
+		journal !== null && "seq" in journal ? "confirmed" : "unavailable";
 
 	return {
 		ok: true,
@@ -249,6 +279,7 @@ export async function runOrchestratorVerb(
 		dir: target.dir,
 		answerPath,
 		journal,
+		confirmation,
 		nudged,
 		note,
 	};

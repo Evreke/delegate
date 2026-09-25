@@ -78,8 +78,12 @@ function runCli(
 	env.SWARM_TASK = TASK;
 	env.SWARM_WORKER = WORKER;
 	// Hermetic user-level schema tier: the CLI's getAgentDir() must not pick up
-	// any real ~/.pi/agent/pi-delegate-schemas fixture.
+	// any real ~/.pi/agent/pi-delegate-schemas fixture. Also scrub the ambient
+	// SWARM_SCHEMA_DIR a delegate worker inherits (the spawn flow exports it):
+	// the env tier must be set ONLY by the opts.env a scenario passes, otherwise
+	// R4.7's cwd-fallback scenario silently reads the orchestrator's library.
 	env.PI_CODING_AGENT_DIR = join(SANDBOX, "agent");
+	delete env.SWARM_SCHEMA_DIR;
 	Object.assign(env, opts.env);
 	for (const key of opts.dropEnv ?? []) delete env[key];
 	const res = spawnSync("bun", [CLI, ...args], {

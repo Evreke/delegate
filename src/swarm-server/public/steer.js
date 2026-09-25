@@ -9,9 +9,15 @@
  * `authRequired` so the page re-prompts.
  *
  * Steering is OPTIMISTIC-WITH-CONFIRMATION: a successful POST creates a
- * pending marker (`newPending`); it becomes `confirmed` ONLY when the matching
- * journal `steer`/`answer` event arrives (`reducePending` — the journal is the
- * truth) and `failed` on a structured error (`failPending`). `pendingAsks`
+ * pending marker (`newPending`). It becomes `confirmed` when the matching
+ * journal `steer`/`answer` event arrives (`reducePending` — the journal is
+ * the truth). Since #62 item 1 the HTTP mutation path appends that journal
+ * row in BOTH storage modes (§4.2.4), so a `files`-mode steer confirms the
+ * same way a journal-mode one does; the envelope's additive `confirmation`
+ * field records whether a durable row was appended (`"unavailable"` marks
+ * an advisory append failure — no journal event will ever arrive, and
+ * `pendingView` exposes the honest `unconfirmed`/"delivered" state for it).
+ * `pendingAsks`
  * folds the `ask`-without-`answer` event graph into the pending-question list
  * the answer form renders. `controlsView` states honestly why a card's
  * controls are disabled (foreign fleet, ended worker) instead of hiding them.
@@ -136,6 +142,7 @@ export function pendingView(pending) {
 		return { status: "confirmed", label: "confirmed", detail: `confirmed by journal #${pending.confirmedSeq}${via}`, via: pending.via };
 	}
 	if (pending.status === "failed") return { status: "failed", label: "failed", detail: pending.error || "failed", via: null };
+	if (pending.status === "unconfirmed") return { status: "unconfirmed", label: "delivered", detail: "delivered — journal confirmation unavailable", via: null };
 	return { status: "pending", label: "pending", detail: "awaiting journal confirmation…", via: null };
 }
 

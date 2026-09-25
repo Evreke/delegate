@@ -1,5 +1,5 @@
 /**
- * swarm-dashboard-steer-check — issue #54 acceptance 1–7 (ARCHITECTURE §4.2.4):
+ * swarm-dashboard-steer-check — issue #54 acceptance 1–7 (ARCHITECTURE §4.2.7):
  * the dashboard's console panel + steering controls.
  *
  * Run with: bun test/swarm-dashboard-steer-check.ts   (from repo root)

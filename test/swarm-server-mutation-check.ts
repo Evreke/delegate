@@ -33,6 +33,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentStatusName } from "../src/host.ts";
 import type { ExchangeManifest } from "../src/manifest-store.ts";
+import type { SwarmGraph } from "../src/swarm/graph.ts";
 
 const watchdog = setTimeout(() => {
 	console.error("swarm-server-mutation-check WATCHDOG TIMEOUT");
@@ -405,6 +406,113 @@ async function main(): Promise<void> {
 	}
 
 	h.stop();
+
+	// -----------------------------------------------------------------------
+	// M9 — #62 item 1 (preferred variant): in `files` storage mode the HTTP
+	//      mutation still appends its journal row, so the dashboard's journal
+	//      event confirmation fires instead of spinning on `pending` forever.
+	// -----------------------------------------------------------------------
+	{
+		const FILES_DB = join(SANDBOX, "journal-files", "events.db");
+		const hf = await mountSwarmServer({
+			sessionFile: SELF,
+			transport: fakeTransport(),
+			manifests,
+			operatorToken: TOKEN,
+			env: { ...process.env, SWARM_STORAGE: "files", SWARM_JOURNAL_DB: FILES_DB },
+		});
+		check("M9.1 a files-mode mount returns a handle", hf !== null);
+		if (hf) {
+			const steer = await req(hf.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "files-mode steer" } });
+			check(
+				"M9.2 files-mode steer → 200 with confirmation \"confirmed\" (a durable audit row)",
+				steer.status === 200 && steer.json?.ok === true && steer.json?.confirmation === "confirmed",
+				`${steer.status} ${steer.body}`,
+			);
+			const journal = steer.json?.journal as { seq?: number } | null | undefined;
+			check("M9.3 the files-mode envelope carries the journal seq (not null)", typeof journal?.seq === "number", JSON.stringify(steer.json));
+			const ev = await req(hf.port, "GET", "/api/swarm/events?after=0");
+			const events = (ev.json?.events as Array<Record<string, unknown>>) ?? [];
+			const row = events.find(
+				(e) =>
+					e.kind === "steer" &&
+					e.worker === "w1" &&
+					(e.payload as Record<string, unknown> | undefined)?.text === "files-mode steer",
+			);
+			check(
+				"M9.4 the files-mode steer row is readable off the journal (the event the dashboard confirms on)",
+				row !== undefined && (row.payload as Record<string, unknown>).via === "http",
+				JSON.stringify(events.map((e) => e.kind)),
+			);
+			hf.stop();
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// M10 — #62 item 2: the mutation routes accept the SwarmGraph SESSION node
+	//       id spelling additively (the same id the console route uses).
+	// -----------------------------------------------------------------------
+	{
+		const { fixtureConsoleGraph, fixtureConsoleWorkerId } = await import("./swarm-http-goldens.ts");
+		const hn = await mountSwarmServer({
+			sessionFile: SELF,
+			transport: fakeTransport(),
+			manifests,
+			operatorToken: TOKEN,
+			graph: fixtureConsoleGraph(SELF),
+			env: { ...process.env },
+		});
+		check("M10.1 a graph-fixture mount returns a handle", hn !== null);
+		if (hn) {
+			const nodeId = fixtureConsoleWorkerId();
+			const byNode = await req(hn.port, "POST", `/api/workers/${nodeId}/steer`, { token: TOKEN, body: { text: "by node id" } });
+			check(
+				"M10.2 a mutation by session node id resolves to the owned worker name (additive, v1 name route unaffected)",
+				byNode.status === 200 && byNode.json?.worker === "w1",
+				`${byNode.status} ${byNode.body}`,
+			);
+			check(
+				"M10.3 both spellings reach the SAME worker (a-w1.json carries the node-id mutation)",
+				existsSync(join(ALPHA, "a-w1.json")) && readFileSync(join(ALPHA, "a-w1.json"), "utf8").includes('"answer": "by node id"'),
+			);
+			hn.stop();
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// M11 — #62 item 2: a name that equals a node id resolves deterministically
+	//       NAME-FIRST (documented in docs/swarm-http-api.md).
+	// -----------------------------------------------------------------------
+	{
+		const shadowGraph: SwarmGraph = {
+			schemaVersion: 1,
+			available: true,
+			sources: { journal: true, manifests: true, liveStatus: false, usage: false },
+			nodes: [
+				{ kind: "session", id: "w1", sessionPath: "/sessions/shadow-w1.jsonl", role: "worker", isWorker: true, ownsChildren: false, tasks: ["beta"], degraded: [] },
+			],
+			edges: [],
+			orphans: [],
+		};
+		const ha = await mountSwarmServer({
+			sessionFile: SELF,
+			transport: fakeTransport(),
+			manifests,
+			operatorToken: TOKEN,
+			graph: shadowGraph,
+			env: { ...process.env },
+		});
+		check("M11.1 an ambiguity-fixture mount returns a handle", ha !== null);
+		if (ha) {
+			const r = await req(ha.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "name first" } });
+			check(
+				"M11.2 name == node id resolves NAME-FIRST: the owned w1 wins over the shadow session node",
+				r.status === 200 && r.json?.worker === "w1",
+				`${r.status} ${r.body}`,
+			);
+			ha.stop();
+		}
+	}
 }
 
 await main();

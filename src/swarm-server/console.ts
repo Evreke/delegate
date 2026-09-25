@@ -1,6 +1,6 @@
 /**
  * pi-delegate — src/swarm-server/console.ts — the worker-console endpoint
- * (issue #52, ARCHITECTURE §4.2.4, Law 8/Law 13).
+ * (issue #52, ARCHITECTURE §4.2.5, Law 8/Law 13).
  *
  * MODULE_CONTRACT — the console half of the session-hosted read server:
  *
@@ -128,6 +128,23 @@ export function matchConsoleStreamPath(path: string): string | null {
 
 export type ConsoleResolution = { ok: true; target: ConsoleTarget } | { ok: false; message: string };
 
+/** The worker embodiment behind a SwarmGraph SESSION node id — {name, task}
+ *  or undefined when the id is not a worker session node (#62 item 2: the
+ *  additive mutation-route spelling shares this ONE lookup). A PURE graph
+ *  lookup: ownership is the CALLER's gate (the console route proves it via
+ *  workerAudienceMatch; the mutation core re-proves it over the manifests),
+ *  so this helper never decides who may mutate. Total: never throws. */
+export function findWorkerEmbodiment(graph: SwarmGraph, id: string): { name: string; task: string | undefined } | undefined {
+	const node = graph.nodes.find((n) => n.id === id);
+	if (!node || node.kind !== "session") return undefined;
+	for (const n of graph.nodes) {
+		if (n.kind !== "task") continue;
+		const w = n.workers.find((x) => x.sessionId === id);
+		if (w) return { name: w.name, task: n.id };
+	}
+	return undefined;
+}
+
 /**
  * Resolve a SwarmGraph node id to a worker this session OWNS.
  * <p>
@@ -154,20 +171,12 @@ export function resolveConsoleTarget(
 	if (!node || node.kind !== "session") {
 		return { ok: false, message: `no worker session node ${JSON.stringify(id)} in the read-model` };
 	}
-	let task: string | undefined;
-	let name: string | undefined;
-	for (const n of graph.nodes) {
-		if (n.kind !== "task") continue;
-		const w = n.workers.find((x) => x.sessionId === id);
-		if (w) {
-			task = n.id;
-			name = w.name;
-			break;
-		}
-	}
-	if (name === undefined) {
+	const emb = findWorkerEmbodiment(graph, id);
+	if (emb === undefined) {
 		return { ok: false, message: `session node ${JSON.stringify(id)} is not a worker embodiment in the read-model` };
 	}
+	const name = emb.name;
+	const task = emb.task;
 	const ownerPath = ownerPathFor(graph, id, task);
 	const verdict = workerAudienceMatch({ orchestratorSessionPath: ownerPath }, { sessionFile }, { legacyFailOpen: false, ...(platform === undefined ? {} : { platform }) });
 	if (verdict !== "mine") {

@@ -6,7 +6,11 @@
  * dependency entirely. Implements the Transport seam from src/host.ts:
  *
  *   place()       — worktree: plain `git worktree add` under
- *                   getAgentDir()/worktrees/<repo>-wt-<n>; shared placement
+ *                   getAgentDir()/worktrees/<repo>-wt-<n>; the monotonic
+ *                   counter is probed against the filesystem (issue #73) so
+ *                   an occupied `-wt-<n>` left by another host session is
+ *                   skipped and the FINAL n feeds placementRef/workspaceId/
+ *                   paneId; shared placement
  *                   (wire mode "tab"): the caller's checkout, no isolation.
  *   startAgent()  — spawns `pi --mode rpc --provider P --model M --thinking T
  *                   --name <worker>` with cwd = the placement's checkoutPath
@@ -427,9 +431,20 @@ export class RpcWorkerHost implements Transport {
 					`rpc host: worktree placement rejected — session cwd is inside ${this.worktreeRoot} (sub-orchestrator)`,
 				);
 			}
-			const n = ++this.seq;
-			const dir = join(this.worktreeRoot, `${basename(req.repoPath)}-wt-${n}`);
+			// Issue #73: the counter never probed the filesystem, so a directory
+			// already held by a previous/parallel host session collided with
+			// `git worktree add` (`fatal: '<dir>' already exists` → E_PLACE, plus
+			// a dangling `-b` branch per failed attempt). Probe BEFORE running git
+			// and advance PAST foreign-owned dirs; the final n flows into every
+			// id below. `this.seq` stays the monotonic floor — each probe step
+			// consumes a number this session never reuses.
+			let n = ++this.seq;
+			let dir = join(this.worktreeRoot, `${basename(req.repoPath)}-wt-${n}`);
 			mkdirSync(this.worktreeRoot, { recursive: true });
+			while (existsSync(dir)) {
+				n = ++this.seq;
+				dir = join(this.worktreeRoot, `${basename(req.repoPath)}-wt-${n}`);
+			}
 			try {
 				const args = ["-C", req.repoPath, "worktree", "add"];
 				if (req.branch) args.push("-b", req.branch);

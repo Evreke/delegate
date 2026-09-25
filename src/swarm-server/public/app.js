@@ -14,22 +14,22 @@
  * The heavy halves live in their own modules: `./state.js` folds the read model,
  * `./layout.js` places the graph, `./ui.js` owns UI state, `./panels.js` the
  * console registry, `./mutations.js` steering. A snapshot frame re-renders; an
- * event frame patches status/progress IN PLACE. Ownership: a fleet is own unless
- * the console gate refuses its session (`refused`) or `env.ownSessionPath` /
- * `env.foreignSessionIds` say otherwise — the server's verdict is the authority.
+ * event frame patches status/progress IN PLACE (#88). Ownership (#81): the
+ * serving identity is the fleets envelope's `self` (ownSessionId/ownSessionPath),
+ * with console refusals as the per-worker refinement — the server's verdict.
  */
 
 import { buildDashboardState } from "./state.js";
 import { createStatusChrome } from "./status.js";
 import { bootstrapFragmentToken } from "./auth-bootstrap.js";
-import { scopedUrl, scopeGraphToFleet, servingScope, streamUrlFor } from "./fleet-scope.js";
+import { scopedUrl, scopeGraphToFleet, servingIdentity, servingScope, streamUrlFor } from "./fleet-scope.js";
 import { computeLayout } from "./layout.js";
 import { createUiState, uiReducer } from "./ui.js";
-import { renderAttention } from "./attention.js";
+import { renderAttention, renderErrorBanner, clearErrorBanner, regionStateView, renderRegionState } from "./attention.js";
 import { renderRail } from "./rail.js";
 import { renderCanvas, patchCanvas, attachCanvasControls } from "./canvas.js";
 import { renderDetail, resolveDetailSubject, pickWorker } from "./detail.js";
-import { createSwarmStream } from "./stream.js";
+import { createSwarmStream, readEnvelope, foldEventStore, MAX_EVENT_STORE, isStructuralEventFrame } from "./stream.js";
 import { consoleBanner, createConsoleTail } from "./console.js";
 import { createPanels } from "./panels.js";
 import { createMutations, MAX_AUTH_RETRIES } from "./mutations.js";
@@ -60,19 +60,14 @@ export function writeCursor(storage, seq) {
 }
 
 /** The shell regions, created inside the #fleet-tree shell root. */
-const REGIONS = [
-	["attention", "attention-strip"],
-	["rail", "rail"],
-	["canvas", "center-canvas"],
-	["detail", "detail"],
-];
+const REGIONS = [["attention", "attention-strip"], ["rail", "rail"], ["canvas", "center-canvas"], ["detail", "detail"]];
 
 /**
  * Build the dashboard app over injectable browser seams.
  * <p>
  * FUNCTION_CONTRACT:
  * Input: env — { doc, fetch, storage, location, stream, consoleTail, prompt,
- *   delayMs, ownSessionPath, nowMs } overrides
+ *   delayMs, ownSessionId, ownSessionPath, nowMs } overrides
  * Output: { start(), close(), get state(), get ui(), get lastSeq(),
  *   sendSteer(), sendAnswer(), get pending(), dispatch() }
  * Guarantees: a fetch/render failure is surfaced in #error and never throws
@@ -104,6 +99,12 @@ export function createFleetApp(env = {}) {
 	let renderTimer = null;
 	let stateVersion = 1;
 	let journalEvents = [];
+	let readError = null;
+	let fleetsBody = [];
+	// #81: the serving identity — from the fleets envelope's `self` once it resolves, else the env seam; `scopeKnown` gates the honest 'scoping…' strip.
+	let ownSessionId = env.ownSessionId ?? null;
+	let ownSessionPath = env.ownSessionPath ?? null;
+	let scopeKnown = Boolean(env.ownSessionId || env.ownSessionPath);
 	const drafts = new Map();
 
 	// --- shell ------------------------------------------------------------
@@ -115,8 +116,7 @@ export function createFleetApp(env = {}) {
 			const node = doc.createElement("div");
 			node.setAttribute("class", `region region-${cls}`);
 			node.setAttribute("data-region", name);
-			shell.appendChild(node);
-			regions[name] = node;
+			regions[name] = shell.appendChild(node);
 		}
 	}
 	const byId = (id) => (doc && typeof doc.getElementById === "function" ? doc.getElementById(id) : null);
@@ -125,11 +125,10 @@ export function createFleetApp(env = {}) {
 	// health footer, ticker, scope) lives in one factory behind this byId seam.
 	const chrome = createStatusChrome({ doc, byId, nowMs });
 	chrome.setScope(fleetId, []);
-	const showError = (err) => {
-		if (!errorEl) return;
-		errorEl.removeAttribute("hidden");
-		errorEl.textContent = String((err && err.message) || err);
-	};
+	const showError = (err, op) => { if (errorEl) renderErrorBanner(errorEl, err, doc, { op, onDismiss: () => clearErrorBanner(errorEl) }); };
+	const noteFailure = (err) => { readError = err; renderRegionStates(); showError(err); };
+	const noteSuccess = () => { readError = null; if (errorEl) clearErrorBanner(errorEl); };
+	const renderRegionStates = () => { const view = regionStateView(readError); for (const name of ["rail", "canvas", "detail"]) renderRegionState(regions[name], view, doc); };
 	const dispatch = (action) => {
 		ui = uiReducer(ui, action);
 		render();
@@ -161,20 +160,16 @@ export function createFleetApp(env = {}) {
 	chrome.setToken(mutations.tokenState);
 
 	// --- model + render ----------------------------------------------------
-	const foreignSessionIds = () => {
-		const ids = new Set(env.foreignSessionIds || []);
-		if (panels) for (const id of panels.foreignIds()) ids.add(id);
-		return ids;
-	};
-
 	const refreshModel = () => {
 		if (!lastSnapshot) return;
-		const ids = foreignSessionIds();
+		const foreign = new Set(env.foreignSessionIds || []);
+		if (panels) for (const id of panels.foreignIds()) foreign.add(id);
 		dash = buildDashboardState({
 			graph: lastSnapshot,
 			events: journalEvents,
-			ownSessionPath: env.ownSessionPath ?? null,
-			foreignSessionIds: ids,
+			ownSessionId,
+			ownSessionPath,
+			foreignSessionIds: foreign,
 			// #92: the read model accepts the UI's expansion Set (it used to drop it).
 			expansion: ui.expansion,
 			nowMs: nowMs(),
@@ -236,10 +231,7 @@ export function createFleetApp(env = {}) {
 	if (doc && typeof doc.addEventListener === "function") doc.addEventListener("keydown", onKeydown);
 
 	const viewport = () => ({ width: 1200, height: 720 });
-	const onView = (view) => {
-		ui = uiReducer(ui, { type: "view", view });
-		renderRegions();
-	};
+	const onView = (view) => { ui = uiReducer(ui, { type: "view", view }); renderRegions(); };
 	const renderRegions = () => {
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
 		if (regions.canvas) {
@@ -247,12 +239,12 @@ export function createFleetApp(env = {}) {
 			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
 		}
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
-		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
+		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });
 		syncFocus();
 	};
 	const render = () => {
 		refreshModel();
-		if (!dash) return;
+		if (!dash) { renderRegionStates(); return; }
 		renderRegions();
 		updateStatusbar();
 	};
@@ -264,7 +256,7 @@ export function createFleetApp(env = {}) {
 		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight });
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
-		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
+		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });
 		syncFocus();
 		updateStatusbar();
 	};
@@ -276,55 +268,54 @@ export function createFleetApp(env = {}) {
 	};
 	const scheduleRender = () => {
 		if (renderTimer !== null || !lastSnapshot) return;
-		renderTimer = setTimeout(() => {
-			renderTimer = null;
-			render();
-		}, 50);
+		renderTimer = setTimeout(() => { renderTimer = null; render(); }, 50);
 	};
 
 	// --- journal -----------------------------------------------------------
 	const foldEvents = (rows) => {
-		if (!Array.isArray(rows) || rows.length === 0) return;
-		const merged = new Map(journalEvents.map((e) => [e.seq, e]));
-		for (const e of rows) if (e && typeof e.seq === "number") merged.set(e.seq, e);
-		journalEvents = [...merged.values()].sort((a, b) => a.seq - b.seq);
+		journalEvents = foldEventStore(journalEvents, rows, MAX_EVENT_STORE);
+		if (journalEvents.length === 0) return;
 		mutations.fold(journalEvents);
 		chrome.setLatestEvent(journalEvents[journalEvents.length - 1] ?? null);
-		scheduleRender();
 	};
 
-	let fleetsBody = [];
 	const refreshFleets = async () => {
-		const res = await fetchImpl("/api/swarm/fleets");
-		const body = await res.json();
-		fleetsBody = Array.isArray(body && body.fleets) ? body.fleets : [];
-		chrome.setScope(fleetId, fleetsBody);
+		try {
+			const { body, error } = await readEnvelope(await fetchImpl("/api/swarm/fleets"), "loading the fleet index");
+			if (error) throw error;
+			fleetsBody = Array.isArray(body.fleets) ? body.fleets : [];
+			const identity = servingIdentity(body, env);
+			ownSessionId = identity.sessionId ?? ownSessionId;
+			ownSessionPath = identity.sessionPath ?? ownSessionPath;
+			chrome.setScope(fleetId, fleetsBody);
+		} catch { /* the index is advisory — identity stays unknown until the strip says so */ }
+		scopeKnown = true;
+		if (lastSnapshot) scheduleRender();
 	};
 
 	const refreshSnapshot = async () => {
-		const res = await fetchImpl("/api/swarm/snapshot");
-		const body = await res.json();
+		const { body, error } = await readEnvelope(await fetchImpl("/api/swarm/snapshot"), "loading the fleet snapshot");
+		if (error) throw error;
 		rerender(body.snapshot);
 		chrome.markUpdated();
-		for (const node of (lastSnapshot && lastSnapshot.nodes) || []) {
-			for (const worker of node.workers || []) panels.start(worker);
-		}
+		noteSuccess();
+		for (const node of (lastSnapshot && lastSnapshot.nodes) || []) for (const worker of node.workers || []) panels.start(worker);
 	};
 
 	const refreshJournal = async (after) => {
-		const res = await fetchImpl(scopedUrl(readBase, `/api/swarm/events?after=${after}`));
-		const body = await res.json();
+		const { body, error } = await readEnvelope(await fetchImpl(scopedUrl(readBase, `/api/swarm/events?after=${after}`)), "loading the journal");
+		if (error) throw error;
 		chrome.setJournal(body.journal);
 		chrome.markUpdated();
 		foldEvents(body.events);
+		noteSuccess();
+		scheduleRender();
+		return journalEvents.length > 0 ? journalEvents[journalEvents.length - 1].seq : after;
 	};
 
 	const scheduleRefresh = () => {
 		if (refreshTimer !== null) return;
-		refreshTimer = setTimeout(() => {
-			refreshTimer = null;
-			refreshSnapshot().catch(showError);
-		}, 50);
+		refreshTimer = setTimeout(() => { refreshTimer = null; refreshSnapshot().catch(showError); }, 50);
 	};
 
 	return {
@@ -347,18 +338,26 @@ export function createFleetApp(env = {}) {
 		async start() {
 			const cursor = readCursor(storage);
 			chrome.setConnection("connecting");
-			await refreshFleets().catch(() => {});
+			renderRegionStates();
+			// #81: identity and the first snapshot load CONCURRENTLY — the graph paints immediately with an honest 'scoping…' strip until `self` resolves, instead of counts that then retract.
+			const fleets = refreshFleets();
+			let streamAfter = cursor;
 			try {
 				await refreshSnapshot();
-				await refreshJournal(0);
+				streamAfter = await refreshJournal(0);
 			} catch (err) {
-				showError(err);
+				noteFailure(err);
 			}
+			await fleets.catch(() => {});
+			writeCursor(storage, streamAfter);
 			stream = streamFactory({
 				url: streamUrlFor(location),
-				after: cursor,
+				after: streamAfter,
 				delayMs: env.delayMs,
-				onState: (state) => chrome.setConnection(state),
+				onState: (state) => {
+					chrome.setConnection(state);
+					if (state === "open") noteSuccess();
+				},
 				onFrame: (frame, kind) => {
 					if (kind === "snapshot") {
 						rerender(frame.snapshot);
@@ -368,8 +367,7 @@ export function createFleetApp(env = {}) {
 						foldEvents(frame.events);
 						renderLive();
 						writeCursor(storage, stream ? stream.state.lastSeq : cursor);
-						refreshJournal(stream ? stream.state.lastSeq : cursor).catch(showError);
-						scheduleRefresh();
+						if (isStructuralEventFrame(frame.events)) scheduleRefresh();
 					}
 				},
 			});

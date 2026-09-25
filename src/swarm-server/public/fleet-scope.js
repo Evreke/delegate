@@ -27,7 +27,27 @@
  *     throws (Law 8).
  */
 
-/** The per-fleet serving path shape (`/fleets/<id>`, with or without slash). */
+/**
+ * The serving identity from a `GET /api/swarm/fleets` envelope (issue #81):
+ * `body.self` is the single source of truth (`sessionId` / `sessionPath`); the
+ * `env` seam is the test/embedded fallback. Pure.
+ * <p>
+ * FUNCTION_CONTRACT: Input — body (the fleets envelope), env ({ ownSessionId?,
+ *   ownSessionPath? }). Output — { sessionId, sessionPath } (nulls when
+ *   unknown). Guarantees: never throws on malformed input.
+ */
+export function servingIdentity(body, env = {}) {
+	const self = body && typeof body === "object" && body.self && typeof body.self === "object" ? body.self : {};
+	const pick = (v) => (typeof v === "string" && v.length > 0 ? v : null);
+	return {
+		sessionId: pick(self.sessionId) ?? pick(env.ownSessionId),
+		sessionPath: pick(self.sessionPath) ?? pick(env.ownSessionPath),
+	};
+}
+
+/**
+ * The per-fleet serving path shape (`/fleets/<id>`, with or without slash).
+ */
 const FLEET_PATH_RE = /^\/fleets\/([^/]+)(?:\/|$)/;
 
 /**

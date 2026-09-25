@@ -92,6 +92,7 @@ import type { OrchestratorVerbOutcome } from "../swarm/mailbox-verbs.ts";
 import { activeBackendName, manifestSource } from "../swarm/snapshot.ts";
 import { buildSwarmGraph, type SwarmLiveTransport, type SwarmUsageSource } from "../swarm/graph.ts";
 import type { JournalReader } from "../swarm/journal-read.ts";
+import { JOURNAL_EVENTS_PAGE_LIMIT } from "../swarm/journal-read.ts";
 import type { SwarmStorageConfig } from "../swarm/storage.ts";
 import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts";
 import { StreamHub } from "./stream.ts";
@@ -236,7 +237,7 @@ function eventsResponse(deps: SwarmServerDeps, req: Http1Request): Http1Response
 			verb: "events",
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
 			after: cursor,
-			events: journal ? journal.eventsAfter(cursor) : [],
+			events: journal ? journal.eventsAfter(cursor, { limit: JOURNAL_EVENTS_PAGE_LIMIT }) : [],
 			journal: journal ? { count: journal.count(), dbSizeBytes: journal.dbSizeBytes() } : { count: 0, dbSizeBytes: 0 },
 		}),
 	};
@@ -394,7 +395,7 @@ async function fleetEventsResponse(deps: SwarmServerDeps, req: Http1Request, raw
 	const tasks = await resolveFleetTasks(deps, id);
 	if (tasks === null) return fleetNotFound(id);
 	const journal = deps.journal;
-	const rows = journal ? journal.eventsAfter(cursor) : [];
+	const rows = journal ? journal.eventsAfter(cursor, { limit: JOURNAL_EVENTS_PAGE_LIMIT }) : [];
 	const events = rows.filter((r) => tasks.has(r.task));
 	return {
 		status: 200,

@@ -418,6 +418,70 @@ async function main(): Promise<void> {
 		golden("W2 WS upgrade on a non-stream path → 400 refusal envelope, no 101 (http1.ts:288)", refused, { status: 400, body: HTTP_GOLDENS.upgradeRefused });
 	}
 
+	// --- F: D1 per-fleet URL contract (issue #65 item 3) -------------------
+	// Own fleet = this server's session ("orch" 36f9edae, task alpha-fleet);
+	// the beta fleet (ef2f5792) is FOREIGN (read-only) and has no rows of its
+	// own — the two fixture fleets the "no cross-traffic" leg needs.
+	{
+		const ownFleet = "36f9edae";
+		const otherFleet = "ef2f5792";
+		golden("F1 GET /api/swarm/fleets → byte-exact index (self + one row per fleet, own flags)", await get(h.port, "/api/swarm/fleets"), {
+			status: 200,
+			body: HTTP_GOLDENS.fleets,
+		});
+		golden("F2 GET /fleets/<own>/api/swarm/events?after=0 → ONLY the own fleet's rows", await get(h.port, `/fleets/${ownFleet}/api/swarm/events?after=0`), {
+			status: 200,
+			body: render(HTTP_GOLDENS.fleetEvents, { DBSIZE: dbSize }),
+		});
+		golden("F3 GET /fleets/<foreign>/api/swarm/events?after=0 → empty-but-valid, NEVER the own fleet's rows (no cross-traffic)", await get(h.port, `/fleets/${otherFleet}/api/swarm/events?after=0`), {
+			status: 200,
+			body: render(HTTP_GOLDENS.fleetEventsEmpty, { DBSIZE: dbSize }),
+		});
+		golden("F4 GET /fleets/<unknown>/api/swarm/events → 404 E_SWARM_NOT_FOUND (never a fabricated fleet)", await get(h.port, "/fleets/deadbeef/api/swarm/events?after=0"), {
+			status: 404,
+			body: render(HTTP_GOLDENS.fleetNotFound, { ID: "deadbeef" }),
+		});
+		{
+			const idx = await get(h.port, "/");
+			check(
+				"F5 GET / with SEVERAL fleets serves the fleet index (the v1 SPA — no redirect)",
+				idx.status === 200 && idx.body.includes('id="fleet-tree"') && idx.body.includes('type="module"'),
+				`${idx.status} ${idx.body.slice(0, 60)}`,
+			);
+			const fleetPage = await get(h.port, `/fleets/${ownFleet}/`);
+			check("F6 GET /fleets/<own>/ serves the fleet view (the SPA)", fleetPage.status === 200 && fleetPage.body.includes('id="fleet-tree"'), `${fleetPage.status}`);
+			const missing = await get(h.port, "/fleets/deadbeef/");
+			golden("F7 GET /fleets/<unknown>/ → 404 E_SWARM_NOT_FOUND", missing, { status: 404, body: render(HTTP_GOLDENS.fleetNotFound, { ID: "deadbeef" }) });
+		}
+		// WS scoped stream: own fleet gets its own rows; the foreign fleet never does.
+		{
+			const wc = await WsClient.connect(h.port, `/fleets/${ownFleet}/api/swarm/stream?after=0`);
+			const frames = await wc.waitFrames(2);
+			check("F8 WS /fleets/<own>/api/swarm/stream → snapshot + the own fleet's events", frames.length >= 2, `frames=${frames.length}`);
+			goldenFrame("F8.1 WS scoped snapshot frame → byte-exact (the S1 graph, stream wrapping)", frames[0] ?? "", HTTP_STREAM_GOLDENS.streamSnapshot({ EXPATH: EX }));
+			goldenFrame("F8.2 WS scoped events frame → byte-exact (only the own fleet's rows)", frames[1] ?? "", render(HTTP_STREAM_GOLDENS.streamEvents, { AFTER: "0" }));
+			wc.close();
+		}
+		{
+			const wc = await WsClient.connect(h.port, `/fleets/${otherFleet}/api/swarm/stream?after=0`);
+			const frames = await wc.waitFrames(2, 400);
+			check(
+				"F9 WS /fleets/<foreign>/api/swarm/stream carries the snapshot but ZERO foreign events (no cross-traffic)",
+				frames.length === 1 && frames[0] === HTTP_STREAM_GOLDENS.streamSnapshot({ EXPATH: EX }),
+				`frames=${frames.length}`,
+			);
+			wc.close();
+		}
+		{
+			const refused = await rawUpgrade(h.port, "/fleets/deadbeef/api/swarm/stream?after=0");
+			check(
+				"F10 WS /fleets/<unknown>/api/swarm/stream → plain 404 E_SWARM_NOT_FOUND, no 101 (never a fabricated stream)",
+				refused.status === 404 && refused.body.includes("E_SWARM_NOT_FOUND"),
+				`${refused.status} ${refused.body.slice(0, 120)}`,
+			);
+		}
+	}
+
 	// --- C: console (separate mounts with injected fixture graphs) --------
 	const consoleSelf = "/sessions/console-rpc.jsonl";
 	const graph = fixtureConsoleGraph(consoleSelf);

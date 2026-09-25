@@ -70,7 +70,7 @@
  */
 
 import type { Http1Request, Http1Response } from "./http1.ts";
-import { SWARM_HTTP_SCHEMA_VERSION, errorEnvelope } from "./http1.ts";
+import { SWARM_HTTP_SCHEMA_VERSION, SWARM_FLEET_NOT_FOUND_HINT, errorEnvelope } from "./http1.ts";
 import { existsSync } from "node:fs";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
@@ -257,6 +257,144 @@ async function snapshotResponse(deps: SwarmServerDeps): Promise<Http1Response> {
 const STEER_ROUTE_RE = /^\/api\/workers\/([^/]+)\/steer$/;
 const ANSWER_ROUTE_RE = /^\/api\/asks\/([^/]+)\/answer$/;
 
+/** The D1 per-fleet route shapes (issue #65 item 3). */
+const FLEET_INDEX_RE = /^\/fleets\/([^/]+)(?:\/(?:index\.html)?)?$/;
+const FLEET_EVENTS_RE = /^\/fleets\/([^/]+)\/api\/swarm\/events$/;
+
+/** The fleet-unknown refusal (issue #65 item 3): one spelling shared by the
+ *  index and events routes (the WS hub reads the hint from http1.ts). */
+export function fleetNotFound(id: string): Http1Response {
+	return httpError(404, "E_SWARM_NOT_FOUND", `no such fleet ${JSON.stringify(id)}`, SWARM_FLEET_NOT_FOUND_HINT);
+}
+
+/** A 302 to another dashboard path (issue #65 item 3: `GET /` redirects). */
+function redirectResponse(location: string): Http1Response {
+	return { status: 302, headers: { Location: location }, body: "" };
+}
+
+/** One fleet view row of the per-fleet URL contract (issue #65 item 3). */
+export interface FleetView {
+	sessionId: string;
+	sessionPath: string | null;
+	/** The fleet belongs to THIS hosting session (own = full control; a
+	 *  foreign fleet is read-only through the ownership gate). */
+	own: boolean;
+	tasks: string[];
+}
+
+/** Read the fleet views out of the read-model graph (Law 13: fleet state
+ *  enters ONLY via the read-model; never a raw journal/manifest read). */
+async function fleetViews(deps: SwarmServerDeps): Promise<FleetView[]> {
+	const graph = deps.graph ?? (await buildSnapshotGraph(deps));
+	const self = deps.sessionFile;
+	const out: FleetView[] = [];
+	for (const node of graph.nodes) {
+		if (node.kind !== "session") continue;
+		const n = node as { id: string; sessionPath?: string; tasks?: string[] };
+		out.push({
+			sessionId: n.id,
+			sessionPath: n.sessionPath ?? null,
+			own: self !== undefined && n.sessionPath === self,
+			tasks: Array.isArray(n.tasks) ? n.tasks : [],
+		});
+	}
+	return out;
+}
+
+/** Resolve a fleet's task scope for a scoped stream (issue #65 item 3). */
+export async function resolveFleetTasks(deps: SwarmServerDeps, sessionId: string): Promise<ReadonlySet<string> | null> {
+	const fleet = (await fleetViews(deps)).find((f) => f.sessionId === sessionId);
+	return fleet ? new Set(fleet.tasks) : null;
+}
+
+/** GET /api/swarm/fleets — the per-fleet index (issue #65 item 3, additive). */
+async function fleetsResponse(deps: SwarmServerDeps): Promise<Http1Response> {
+	let fleets: FleetView[];
+	try {
+		fleets = await fleetViews(deps);
+	} catch {
+		fleets = [];
+	}
+	const selfNode = fleets.find((f) => f.own) ?? null;
+	return {
+		status: 200,
+		body: JSON.stringify({
+			ok: true,
+			schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+			self: { sessionId: selfNode ? selfNode.sessionId : null, sessionPath: deps.sessionFile ?? null },
+			fleets,
+		}),
+	};
+}
+
+/** GET / — redirect to the single fleet view, else the multi-fleet index
+ *  (issue #65 item 3: `/` redirects/index). */
+async function rootResponse(deps: SwarmServerDeps): Promise<Http1Response> {
+	let fleets: FleetView[] = [];
+	try {
+		fleets = await fleetViews(deps);
+	} catch {
+		fleets = [];
+	}
+	if (fleets.length === 1) return redirectResponse(`/fleets/${encodeURIComponent(fleets[0].sessionId)}/`);
+	const asset = serveStaticFile("/index.html", deps.publicDir);
+	return asset ?? httpError(404, "E_SWARM_NOT_FOUND", "the dashboard index asset is missing");
+}
+
+/** GET /fleets/<sessionId>/ — the fleet view (the SPA, scoped by its path).
+ *  An unknown fleet id is a structured 404 (never a fabricated view). */
+async function fleetIndexResponse(deps: SwarmServerDeps, rawId: string): Promise<Http1Response> {
+	let id: string;
+	try {
+		id = decodeURIComponent(rawId);
+	} catch {
+		return httpError(400, "E_SWARM_USAGE", "fleet id is not valid URL encoding");
+	}
+	let fleets: FleetView[] = [];
+	try {
+		fleets = await fleetViews(deps);
+	} catch {
+		fleets = [];
+	}
+	if (!fleets.some((f) => f.sessionId === id)) return fleetNotFound(id);
+	const asset = serveStaticFile("/index.html", deps.publicDir);
+	return asset ?? httpError(404, "E_SWARM_NOT_FOUND", "the dashboard index asset is missing");
+}
+
+/** GET /fleets/<sessionId>/api/swarm/events — this fleet's events ONLY (the
+ *  per-audience cursor precedent: attention never crosses fleets). */
+async function fleetEventsResponse(deps: SwarmServerDeps, req: Http1Request, rawId: string): Promise<Http1Response> {
+	let id: string;
+	try {
+		id = decodeURIComponent(rawId);
+	} catch {
+		return httpError(400, "E_SWARM_USAGE", "fleet id is not valid URL encoding");
+	}
+	let cursor: number;
+	try {
+		cursor = parseAfterCursor(req.query.get("after") ?? undefined);
+	} catch (err) {
+		if (err instanceof SwarmError) return { status: 400, body: JSON.stringify({ ok: false, schemaVersion: SWARM_HTTP_SCHEMA_VERSION, error: { code: err.code, message: err.message, hint: err.hint } }) };
+		throw err;
+	}
+	const tasks = await resolveFleetTasks(deps, id);
+	if (tasks === null) return fleetNotFound(id);
+	const journal = deps.journal;
+	const rows = journal ? journal.eventsAfter(cursor) : [];
+	const events = rows.filter((r) => tasks.has(r.task));
+	return {
+		status: 200,
+		body: JSON.stringify({
+			ok: true,
+			verb: "events",
+			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
+			after: cursor,
+			events,
+			journal: { count: events.length, dbSizeBytes: journal ? journal.dbSizeBytes() : 0 },
+		}),
+	};
+}
+
 /** Uniform auth refusal: missing and wrong tokens are indistinguishable. */
 function authRefusal(): Http1Response {
 	return httpError(401, "E_SWARM_AUTH", "missing or invalid operator token");
@@ -381,7 +519,7 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 		if (answer) return mutationResponse(deps, req, "answer", answer[1]);
 		// A POST against a known GET path is a method error (405), not a
 		// missing path — the #50 read surface's method contract is preserved.
-		if (req.path === "/api/version" || req.path === "/api/swarm/events" || req.path === "/api/swarm/snapshot") {
+		if (req.path === "/api/version" || req.path === "/api/swarm/events" || req.path === "/api/swarm/snapshot" || req.path === "/api/swarm/fleets") {
 			return httpError(405, "E_SWARM_USAGE", `method POST is not served on ${JSON.stringify(req.path)}; it is a GET path`);
 		}
 		return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
@@ -392,6 +530,12 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 	if (req.path === "/api/version") return versionResponse();
 	if (req.path === "/api/swarm/events") return eventsResponse(deps, req);
 	if (req.path === "/api/swarm/snapshot") return snapshotResponse(deps);
+	if (req.path === "/api/swarm/fleets") return fleetsResponse(deps);
+	if (req.path === "/") return rootResponse(deps);
+	const fleetEvents = FLEET_EVENTS_RE.exec(req.path);
+	if (fleetEvents) return fleetEventsResponse(deps, req, fleetEvents[1]);
+	const fleetIndex = FLEET_INDEX_RE.exec(req.path);
+	if (fleetIndex) return fleetIndexResponse(deps, fleetIndex[1]);
 	const consoleId = matchConsoleRestPath(req.path);
 	if (consoleId !== null) return consoleRoute(deps, consoleId, req.query.get("offset") ?? undefined, runtime);
 	if (matchConsoleStreamPath(req.path) !== null) {
@@ -421,6 +565,7 @@ export function createRouteTable(deps: SwarmServerDeps & { pollMs?: number }): S
 		journal: deps.journal,
 		buildSnapshot: () => buildSnapshotGraph(deps),
 		pollMs: deps.pollMs,
+		scopeFor: (sessionId: string) => resolveFleetTasks(deps, sessionId),
 	});
 	const consoleHub = new ConsoleHub({
 		deps: { transport: deps.transport, sessionFile: deps.sessionFile, graph: deps.graph, buildGraph: () => buildSnapshotGraph(deps) },

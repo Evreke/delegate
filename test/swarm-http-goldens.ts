@@ -137,6 +137,21 @@ export const HTTP_GOLDENS = {
 	/** GET /api/swarm/events over an ABSENT journal (empty-but-valid). */
 	eventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0}}',
 
+	/** The fleet-unknown refusal (issue #65 item 3): the ONE spelling shared
+	 *  by the index, events and scoped-stream routes. */
+	fleetNotFound: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_NOT_FOUND","message":"no such fleet \\"{{ID}}\\"","hint":"The fleet path takes a SwarmGraph session node id; enumerate them with GET /api/swarm/fleets."}}',
+
+	/** GET /api/swarm/fleets on the multi-fleet fixture (issue #65 item 3). */
+	fleets: '{"ok":true,"schemaVersion":1,"self":{"sessionId":"36f9edae","sessionPath":"/sessions/orch.jsonl"},"fleets":[{"sessionId":"1b863e90","sessionPath":"/sessions/w1.jsonl","own":false,"tasks":["alpha-fleet"]},{"sessionId":"36f9edae","sessionPath":"/sessions/orch.jsonl","own":true,"tasks":["alpha-fleet"]},{"sessionId":"7fed90cf","sessionPath":"/sessions/foreign1.jsonl","own":false,"tasks":["beta-fleet"]},{"sessionId":"c97a214a","sessionPath":"/sessions/absent-w3.jsonl","own":false,"tasks":["alpha-fleet"]},{"sessionId":"ef2f5792","sessionPath":"/sessions/other.jsonl","own":false,"tasks":["beta-fleet"]},{"sessionId":"sess-alpha","sessionPath":null,"own":false,"tasks":["alpha-fleet"]}]}',
+
+	/** GET /fleets/<id>/api/swarm/events — the fleet's OWN rows only (the
+	 *  per-audience cursor precedent: attention never crosses fleets). */
+	fleetEvents: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}}}}`,
+
+	/** The same route for a fleet with no rows of its own — an empty-but-valid
+	 *  envelope, never a foreign row (no cross-traffic). */
+	fleetEventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":{{DBSIZE}}}}',
+
 	/** GET /api/swarm/snapshot — the multi-fleet fixture, all four degraded
 	 *  flags. EXPATH = sandbox exchange root; session paths are FIXED (the
 	 *  usage resolver is injected so no sandbox path enters a node id). */

@@ -127,6 +127,16 @@ async function main(): Promise<void> {
 			if (h) {
 				const probe = await get(h.port, "/api/version");
 				check("F1.3 the fallback server SERVES", probe.ok && probe.status === 200);
+				// #65 item 1: the canonical dashboard line reflects the ACTUAL bound
+				// port (the OS-assigned substitute), never the configured one.
+				const dash = lines.map(asJson).find((j) => j?.event === "dashboard");
+				const url = typeof dash?.url === "string" ? (dash.url as string) : "";
+				const link = typeof dash?.link === "string" ? (dash.link as string) : "";
+				check(
+					"F1.4 the dashboard line carries the ACTUAL bound port and the token in the `#t=` FRAGMENT (never a query)",
+					url === `http://127.0.0.1:${h.port}/` && link.startsWith(`${url}#t=`) && !link.includes("?t="),
+					JSON.stringify({ url, link: link.slice(0, 48) }),
+				);
 				h.stop();
 			}
 		} finally {

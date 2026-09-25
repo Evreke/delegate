@@ -41,8 +41,10 @@
  */
 
 import { resolveSwarmServerConfig } from "./config.ts";
-import { createRouteTable, defaultUsageSource, type SwarmServerDeps } from "./server.ts";
-import { startHttp1Server, type Http1ServerHandle } from "./http1.ts";
+import { createRouteTable, defaultUsageSource, SWARM_HTTP_PROTOCOL, type SwarmServerDeps } from "./server.ts";
+import { startHttp1Server, SWARM_SERVER_BIND_HOST, type Http1ServerHandle } from "./http1.ts";
+import { PRIMARY_WATCH_PROBE_TIMEOUT_MS, startPrimaryWatch, type PrimaryWatchHandle } from "./primary-watch.ts";
+import { dashboardLinkFor, dashboardUrlFor, logDashboard } from "./dashboard-link.ts";
 import { openSessionJournal } from "./journal-session.ts";
 import { generateOperatorToken } from "./auth.ts";
 import { type JournalReader } from "../swarm/journal-read.ts";
@@ -56,10 +58,23 @@ import type { SteerTransport } from "../mailbox-store.ts";
 const SWARM_SERVER_MOUNT_REGISTRY_KEY = "__piDelegateSwarmServerMounts";
 
 export interface SwarmServerHandle extends Omit<Http1ServerHandle, "close"> {
+	/** This session's primary/secondary role under D1 (issue #65 item 3). */
+	readonly role: SwarmServerRole;
+	/** The canonical dashboard URL (`http://127.0.0.1:<port>/`) this session's
+	 *  widget link points at — the ACTUAL bound port when this session serves
+	 *  one, else the configured primary port. Never a token. */
+	readonly dashboardUrl: string;
 	/** Tear down THIS session's server (listener + sockets + journal reader +
 	 *  registry key). Idempotent. */
 	stop(): void;
 }
+
+/** D1 role of a mounted session (issue #65 item 3): the session that holds
+ *  the configured port is `primary`; a later session whose server is absent
+ *  (the primary serves its fleets read-only) is `secondary`; a session that
+ *  could not reach a delegate primary and mounted an OS-assigned fallback is
+ *  `fallback` (fail-open for single-session). */
+export type SwarmServerRole = "primary" | "secondary" | "fallback";
 
 export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "transport"> {
 	/** This session's file identity (the registry key; the Law-3 owner). */
@@ -87,6 +102,12 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	usage?: SwarmUsageSource | false;
 	/** The WS stream hub's cursor poll interval, ms (default 500; tests tighten). */
 	pollMs?: number;
+	/** Primary-probe override (tests/fault injection): true when the canonical
+	 *  port answers as a delegate server. Default: a bounded loopback HTTP
+	 *  probe of `/api/version` (the §4.2 identity envelope). */
+	probePrimary?: (port: number) => Promise<boolean>;
+	/** Takeover-watch tuning (issue #65 item 3b; tests tighten the backoff). */
+	primaryWatch?: { intervalMs?: number; maxIntervalMs?: number };
 }
 
 /** One structured stderr line (the writeJournalWarning shape — machine-readable). */
@@ -105,6 +126,30 @@ function logOperatorToken(token: string): void {
 		process.stderr.write(`${JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token })}\n`);
 	} catch {
 		// stderr itself is advisory
+	}
+}
+
+/**
+ * The canonical dashboard URL/fragment-link spelling lives in
+ * ./dashboard-link.ts (issue #65 items 1–2, Law 9 — ONE spelling).
+ */
+
+/**
+ * Is the loopback process on `port` a delegate swarm server?
+ * <p>
+ * FUNCTION_CONTRACT: Input — port, timeoutMs. Output — true iff
+ * `/api/version` answers 200 with `protocol: "swarm-http/1"` within the
+ * deadline (a foreign or dead occupant answers false). Total; never throws.
+ */
+async function probeDelegatePrimary(port: number, timeoutMs: number = PRIMARY_WATCH_PROBE_TIMEOUT_MS): Promise<boolean> {
+	try {
+		const url = "http://127.0.0.1:" + String(port) + "/api/version";
+		const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		if (!res.ok) return false;
+		const body = (await res.json()) as { protocol?: unknown };
+		return body !== null && typeof body === "object" && body.protocol === SWARM_HTTP_PROTOCOL;
+	} catch {
+		return false;
 	}
 }
 
@@ -226,33 +271,110 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	};
 	const routes = createRouteTable({ ...serverDeps, pollMs: deps.pollMs, operatorToken, mutate });
 
-	let bound: Http1ServerHandle;
-	try {
-		bound = await listen(cfg.port);
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException).code;
-		if (code !== "EADDRINUSE" || cfg.port === 0) {
-			logAdvisory("bind-failed", { port: cfg.port, code: code ?? String(err) });
+	// --- D1 bind decision (issue #65 item 3) -------------------------------
+	// A session that binds the configured port is PRIMARY; a later session sees
+	// the delegate primary, mounts NO listener and becomes SECONDARY (the
+	// primary serves its fleets read-only); an occupant that is not a delegate
+	// server (or nothing at all) falls back to an OS-assigned port (fail-open
+	// for single-session). Port 0 is always primary (no canonical port).
+	const probePrimary = deps.probePrimary ?? ((port: number) => probeDelegatePrimary(port));
+	const tryBind = async (port: number): Promise<Http1ServerHandle | null> => {
+		try {
+			return await listen(port);
+		} catch {
 			return null;
 		}
+	};
+	let role: SwarmServerRole = "primary";
+	let bound: Http1ServerHandle | null = null;
+	let watch: PrimaryWatchHandle | null = null;
+	let dashboardUrl = dashboardUrlFor(cfg.port);
+	const emitDashboard = (port: number): void => {
+		dashboardUrl = dashboardUrlFor(port);
+		logDashboard(dashboardUrl, dashboardLinkFor(port, operatorToken));
+	};
+
+	if (cfg.port === 0) {
 		try {
 			bound = await listen(0);
-			logAdvisory("port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
-		} catch (err2) {
-			logAdvisory("bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
+		} catch (err) {
+			logAdvisory("bind-failed", { port: 0, code: (err as NodeJS.ErrnoException).code ?? String(err) });
 			return null;
+		}
+	} else {
+		try {
+			bound = await listen(cfg.port);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EADDRINUSE") {
+				logAdvisory("bind-failed", { port: cfg.port, code: code ?? String(err) });
+				return null;
+			}
+			if (await probePrimary(cfg.port)) {
+				role = "secondary";
+				logAdvisory("secondary-mount", {
+					port: cfg.port,
+					reason: "a delegate primary holds the configured port; this session mounts no listener (its fleets are served read-only through the primary — D1)",
+				});
+			} else {
+				try {
+					bound = await listen(0);
+					role = "fallback";
+					logAdvisory("port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
+				} catch (err2) {
+					logAdvisory("bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
+					return null;
+				}
+			}
+			// Takeover watch (item 3b): advisory, bounded backoff; the OS arbitrates.
+			watch = startPrimaryWatch({
+				port: cfg.port,
+				probe: () => probePrimary(cfg.port),
+				bind: () => tryBind(cfg.port),
+				onPromoted: (promoted) => {
+					bound = promoted;
+					role = "primary";
+					// Only a real port CHANGE is re-announced: a secondary's link already
+					// names the canonical port (session churn never moves it).
+					if (dashboardUrl !== dashboardUrlFor(promoted.port)) emitDashboard(promoted.port);
+				},
+				log: logAdvisory,
+				intervalMs: deps.primaryWatch?.intervalMs,
+				maxIntervalMs: deps.primaryWatch?.maxIntervalMs,
+			});
 		}
 	}
 
-	// Bind succeeded — now (and only now) surface the token on the session's
-	// stderr. This is its ONLY channel (Law 11).
+	// Bound (or knowingly listenerless) — now (and only now) surface the token
+	// and the canonical dashboard link on the session's stderr. This is their
+	// ONLY channel (Law 11); the token rides in the fragment, never in the URL
+	// path/query. The link names the ACTUAL serving port when this session
+	// serves one, else the canonical primary port.
 	logOperatorToken(operatorToken);
+	emitDashboard(bound ? bound.port : cfg.port);
 
 	const handle: SwarmServerHandle = {
-		port: bound.port,
-		address: bound.address,
+		get role() {
+			return role;
+		},
+		get dashboardUrl() {
+			return dashboardUrl;
+		},
+		get port() {
+			return bound ? bound.port : cfg.port;
+		},
+		get address() {
+			return bound ? bound.address : SWARM_SERVER_BIND_HOST;
+		},
 		stop() {
-			bound.close();
+			watch?.stop();
+			watch = null;
+			try {
+				bound?.close();
+			} catch {
+				// advisory — a close failure never propagates past stop()
+			}
+			bound = null;
 			routes.close();
 			try {
 				journal?.close();

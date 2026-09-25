@@ -192,14 +192,21 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   envelopes, verbatim, with live worker statuses folded in) and
   `ws://127.0.0.1:7331/api/swarm/stream?after=<seq>` (one snapshot frame,
   then journal events as they happen; reconnect with your last consumed
-  `seq`). `swarm.server.port` (default 7331; `0` = OS-assigned) is a hint —
-  if the port is taken, the session binds an OS-assigned port and logs the
+  `seq`). One server per machine (D1): the FIRST session to bind
+  `swarm.server.port` (default 7331; `0` = OS-assigned) is the primary; a
+  later session that sees the primary mounts no listener and reads its fleets
+  through it (read-only), and a surviving session takes the configured port
+  over — advisory, bounded backoff — when the primary dies. If a non-delegate
+  process holds the port, the session binds an OS-assigned one and logs the
   substitution. The server binds 127.0.0.1 only. Reads carry no auth (any
   local process can read); WRITES are operator-only and land under **#51**:
   `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
   `{"text":"..."}`) require `Authorization: Bearer <operator token>`. The
-  token is generated per mount and printed ONLY on the session's stderr as a
-  structured `operator-token` line — copy it from the session UI. Writes only
+  token is generated per mount; the mount prints one `dashboard` stderr line
+  with the canonical link `http://127.0.0.1:<bound-port>/#t=<token>` — the
+  token rides in the URL FRAGMENT (never a path/query/log), the dashboard
+  moves it into sessionStorage and strips the address bar on load, and a
+  bookmark without a fragment still prompts. Writes only
   reach workers the session itself spawned (foreign/unknown ids refuse) and
   append a `steer`/`answer` journal row with the additive `via: "http"`
   field (the CLI tool path writes none). The server is advisory — a startup
@@ -208,9 +215,11 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   (issue #53): the tree (sessions → tasks → workers) built from
   `/api/swarm/snapshot`, live updates over the WS stream with cursor-resume
   reconnect, the four degradation flags as distinct honest visuals, and a
-  journal-health footer. It is a static SPA (vanilla ES modules + CSS, no
+  journal-health footer. Per-fleet views live at `/fleets/<sessionId>/`
+  (its events/stream carry only that fleet); `GET /api/swarm/fleets` lists
+  them. It is a static SPA (vanilla ES modules + CSS, no
   build step, no framework, zero external network calls; GET + WS only —
-  sessionStorage holds just the reconnect cursor).
+  sessionStorage holds the reconnect cursor and the operator token).
 - **Worker-console surface (issue #52).** The same session-hosted server
   streams one worker's console: `GET
   /api/workers/<nodeId>/console?offset=<n>` returns one frame
@@ -507,15 +516,22 @@ done/idle.
   байт-в-байт, со вживлёнными живыми статусами воркеров) и
   `ws://127.0.0.1:7331/api/swarm/stream?after=<seq>` (один snapshot-кадр,
   затем события журнала по мере появления; переподключайтесь с последним
-  потреблённым `seq`). `swarm.server.port` (по умолчанию 7331; `0` = назначается
-  ОС) — это подсказка: если порт занят, сессия возьмёт назначенный ОС порт и
+  потреблённым `seq`). Один сервер на машину (D1): ПЕРВАЯ сессия, занявшая
+  `swarm.server.port` (по умолчанию 7331; `0` = назначается ОС), становится
+  primary; следующая сессия, увидевшая primary, не поднимает свой слушатель и
+  читает флоты через него (только чтение), а выжившая сессия забирает
+  настроенный порт — advisory, с ограниченным backoff — когда primary умирает.
+  Если порт занят не-делегатным процессом, сессия возьмёт назначенный ОС порт и
   залогирует подмену. Сервер слушает только 127.0.0.1. Чтение — без аутентификации
   (читать может любой локальный процесс); ЗАПИСЬ — только для оператора и
   появилась в **#51**: `POST /api/workers/<id>/steer` и `POST /api/asks/<id>/answer`
   (тело `{"text":"..."}`) требуют `Authorization: Bearer <operator token>`.
-  Токен генерируется при монтировании и печатается ТОЛЬКО в stderr сессии
-  структурированной строкой `operator-token` — скопируйте его из UI сессии.
-  Запись доходит только до воркеров, которых породила эта сессия (чужие/
+  Токен генерируется при монтировании; монтирование печатает одну строку
+  `dashboard` с канонической ссылкой `http://127.0.0.1:<port>/#t=<token>` —
+  токен идёт во ФРАГМЕНТЕ URL (никогда не в path/query/логе), дашборд переносит
+  его в sessionStorage и очищает адресную строку при загрузке, а закладка без
+  фрагмента по-прежнему запрашивает токен вручную. Запись доходит только до
+  воркеров, которых породила эта сессия (чужие/
   неизвестные id отклоняются) и добавляет строку журнала `steer`/`answer`
   с аддитивным полем `via: "http"` (CLI tool-путь не пишет ни одной). Сервер
   advisory — сбой старта или неудачная запись никогда не блокируют сессию,
@@ -523,9 +539,11 @@ done/idle.
   **дашборд флота** (issue #53): дерево (сессии → задачи → воркеры) из
   `/api/swarm/snapshot`, live-обновления по WS-стриму с reconnect по курсору,
   четыре флага деградации как различные честные визуальные состояния и футер
-  со здоровьем журнала. Это статический SPA (vanilla ES-модули + CSS, без шага
+  со здоровьем журнала. Покомандные виды — `/fleets/<sessionId>/` (его
+  events/stream несут только этот флот); `GET /api/swarm/fleets` их перечисляет.
+  Это статический SPA (vanilla ES-модули + CSS, без шага
   сборки и фреймворка, ноль внешних сетевых вызовов; только GET + WS —
-  sessionStorage хранит лишь курсор reconnect).
+  sessionStorage хранит курсор reconnect и токен оператора).
 - **Windows: QA-гейт на реальном хосте.** Реальный Windows E2E (delegate spawn →
   отчёт → wake → почтовый ящик, с herdr for Windows) в CI НЕ выполняется — на POSIX CI
   идут только Windows-образные тесты путей (`path.win32` фикстуры). Оператор должен

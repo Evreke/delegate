@@ -358,7 +358,13 @@ herdr CLI verb strings · herdr JSON field names (`workspace.worktree.*`,
 `is_linked_worktree`) · the `not_linked_worktree` token · manifest
 `kind: "worktree"` value · journal event names (`delegate-fleet`,
 `spawn`/`collect`) · `/delegate-*` command names · tool names and parameter
-shapes · the E_* code names. Extension happens by addition; correction happens
+shapes · the E_* code names · the swarm-http route paths (`/api/version`,
+`/api/swarm/snapshot`, `/api/swarm/events`, `/api/swarm/stream`,
+`/api/swarm/fleets`, `/fleets/<sessionId>/`,
+`/fleets/<sessionId>/api/swarm/events`,
+`/fleets/<sessionId>/api/swarm/stream`, `/api/workers/:id/console`,
+`/api/workers/:id/steer`, `/api/asks/:id/answer`). Extension happens by
+addition; correction happens
 by deprecation with `prepareArguments`-style compatibility, never by silent
 reshape. The Law 13 lifecycle event names are additions to this list, never
 renames of the entries already here.
@@ -912,3 +918,80 @@ controls through an optional per-worker view provider. No build step. Static
 pins T1.20/T1.22 evolve (asset set, token store) and T1.24 constrains the
 mutation surface to `steer.js`'s two routes with a Bearer header. Check:
 `test/swarm-dashboard-steer-check.ts`.
+
+#### 4.2.8 Dashboard access: widget link, fragment token, one server per machine (issue #65)
+
+Issue #65 resolves the three access frictions the operator named — the URL
+was undiscoverable, copying a 64-hex token from stderr was friction, and
+parallel sessions fragmented the picture — by fixing the ACCESS SHAPE, not
+the dashboard. The dashboard shell from #66 is unchanged; every contract
+below is additive to it (Law 7).
+
+**Widget-link surface (item 1).** The mount is the ONE spelling of the
+canonical link (Law 9): on a successful bind it emits exactly ONE structured
+stderr line `{event:"dashboard", url, link}` carrying the ACTUAL bound port —
+the EADDRINUSE fallback is reflected, never the configured port
+(`src/swarm-server/mount.ts` `dashboardUrlFor` / `dashboardLinkFor`; the
+bound port is never re-derived by a consumer). The session handle exposes
+`dashboardUrl` (tokenless) and `role` for programmatic consumers; the widget
+surface is the stderr line (the brief's "widget and/or mount line").
+
+**Fragment-token rule (item 2).** The link carries the session's operator
+token in the URL FRAGMENT: `http://127.0.0.1:<port>/#t=<token>`. A fragment
+is never sent to the server, so the token cannot appear in a request line, a
+server log, the journal or a response body; it reaches the page only through
+`public/auth-bootstrap.js`, which moves it into the EXISTING `sessionStorage`
+token store (`steer.js` `TOKEN_KEY` — the one token store) and strips the
+address bar with `history.replaceState` before any request. A bookmark
+without a fragment bootstraps nothing and the existing manual prompt (with
+its bounded 401 re-prompt) stays the fallback. Automatic token entry into a
+PATH or QUERY, dropping auth on loopback, a one-time token exchange and
+cookie auth are REJECTED (see the issue's record); the graph shows only the
+one accepted mechanism. The token still travels to the mutation routes ONLY
+as `Authorization: Bearer`.
+
+**D1 RESOLVED: one server per machine (item 3, operator-pre-approved).** The
+first session to bind the configured port is the PRIMARY; a later session
+that sees a delegate primary on that port mounts NO listener and becomes a
+SECONDARY — its fleets are served READ-ONLY through the primary, because the
+shared journal already makes every fleet visible and no new store is
+introduced. Mutations stay strictly same-session: a server steers only the
+fleets its hosting session owns (the Transport handle exists only there), so
+a foreign fleet served by the primary refuses a mutation with the uniform
+`403 E_SWARM_FORBIDDEN`. A port occupied by something that is not a delegate
+server (or nothing at all) falls back to an OS-assigned port
+(`EADDRINUSE → 0`), fail-open for a single session — no cross-session
+dependency sits in the critical path (Law 8). Rationale: parallel sessions
+fragmented the picture precisely because each held its own server; one
+canonical URL per machine is the shape the operator asked for, and the OS
+arbitrates liveness so no election protocol is needed.
+
+**Takeover rule (item 3b).** Every non-primary mounted session runs an
+ADVISORY primary watch (`src/swarm-server/primary-watch.ts`): a bounded
+liveness probe of the configured port plus a bind attempt, with
+multiplicative backoff, at most one in-flight attempt, an unref'd timer and
+total failure handling. When the primary dies, the first survivor's bind
+succeeds — the OS is the arbiter, no election, no new store — and the
+canonical URL keeps serving. Takeover changes WHO SERVES reads, never WHO MAY
+MUTATE: each session keeps its OWN operator token (a token authenticates the
+operator to a session, not to a port), so after takeover the canonical URL
+requires the NEW primary's token and the promoted session re-announces its
+dashboard link only when the effective port actually changed. A second kill
+with no survivors leaves the port free — graceful degradation, never a
+phantom listener.
+
+**Per-fleet URL contract (item 3).** `GET /` redirects to the single fleet
+view when exactly one fleet exists, else serves the fleet index (the v1 SPA).
+`GET /fleets/<sessionId>/` serves that fleet's view; `<sessionId>` is a
+SwarmGraph SESSION node id and an unknown id is a structured 404.
+`GET /api/swarm/fleets` is the fleet index envelope (`self` + one row per
+fleet with its `own` flag). `GET /fleets/<sessionId>/api/swarm/events` and
+`WS /fleets/<sessionId>/api/swarm/stream` emit ONLY that fleet's journal rows
+(the per-audience cursor precedent: attention never crosses fleets); the WS
+scope is resolved from the read-model before the 101 handshake, so an unknown
+fleet is a plain 404, never a fabricated stream. Routing decisions read fleet
+state ONLY through the read-model (Law 13). The swarm-http route paths are
+frozen surface (§3); the v1 `/api/*` routes keep working unchanged (Law 7). Check:
+`test/swarm-server-lifecycle-check.ts` (L3–L7) and
+`test/swarm-http-api-check.ts` (F1–F10) with the additive goldens in
+`test/swarm-http-goldens.ts`.

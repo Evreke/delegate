@@ -308,6 +308,28 @@ async function main(): Promise<void> {
 		);
 		check("S1.8 GET /app.js + /app.css serve source (no build step)", jsRes.status === 200 && cssRes.status === 200 && (await jsRes.text()).includes("import"), `${jsRes.status}/${cssRes.status}`);
 		check("S1.9 unknown path still 404s with the structured envelope", nope.status === 404 && (await nope.text()).includes("E_SWARM_NOT_FOUND"));
+		// #65 item 3 (D1): with ONE fleet session present, `GET /` redirects to
+		// that fleet's view (an injected single-session graph makes the branch
+		// deterministic; the multi-fleet index leg is pinned by the API check).
+		const soloGraph = {
+			schemaVersion: 1,
+			available: true,
+			sources: { journal: true, manifests: true, liveStatus: false, usage: false },
+			nodes: [{ kind: "session", id: "solo-sess", role: "orchestrator", isWorker: false, ownsChildren: false, tasks: ["solo-task"], degraded: [] }],
+			edges: [],
+			orphans: [],
+		};
+		const hSolo = await mountSwarmServer({ sessionFile: "/sessions/solo.jsonl", transport, env, pollMs: 40, graph: soloGraph as never });
+		if (hSolo) {
+			const redirect = await fetch(`http://127.0.0.1:${hSolo.port}/`, { redirect: "manual" });
+			const fleetView = await fetch(`http://127.0.0.1:${hSolo.port}/fleets/solo-sess/`);
+			check(
+				"S1.10 GET / redirects to the single fleet view (302 → /fleets/<id>/) and that view serves the SPA",
+				redirect.status === 302 && (redirect.headers.get("location") ?? "") === "/fleets/solo-sess/" && fleetView.status === 200 && (await fleetView.text()).includes('id="fleet-tree"'),
+				`${redirect.status} ${redirect.headers.get("location")}`,
+			);
+			hSolo.stop();
+		}
 	}
 
 	// -- S2 — tree render node-for-node against GET snapshot (seam 2) -------

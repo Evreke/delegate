@@ -612,8 +612,8 @@ separate operator-approved PR, never bundled with #23):
 #### 4.1.4 Resume reconciliation (binds #27)
 
 Trigger: `session_start`, after watcher mount. Advisory by contract: a
-reconciliation failure never blocks session start — it is logged and
-skipped.
+reconciliation failure never blocks session start — it is skipped
+(silently; the result is the `IDLE` return, no stderr noise).
 
 Procedure:
 

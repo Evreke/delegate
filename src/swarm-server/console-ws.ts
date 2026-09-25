@@ -113,7 +113,7 @@ export class ConsoleHub {
 		}
 		const key = req.headers["sec-websocket-key"];
 		if (typeof key !== "string" || key.length === 0) {
-			writeHttp1Response(socket, errorEnvelope(400, "E_SWARM_USAGE", "missing Sec-WebSocket-Key", CONSOLE_USAGE_HINT));
+			writeHttp1Response(socket, errorEnvelope(400, "E_CONSOLE_USAGE", "missing Sec-WebSocket-Key", CONSOLE_USAGE_HINT));
 			socket.destroy();
 			return;
 		}
@@ -199,3 +199,4 @@ export class ConsoleHub {
 		}
 	}
 }
+

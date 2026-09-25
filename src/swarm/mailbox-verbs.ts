@@ -35,9 +35,7 @@
  * confirms (#62 item 1): `confirmation: "confirmed"` when the journal row is
  * durably appended, `"unavailable"` in files mode (no row exists to wait
  * for — the client renders "delivered" honestly) or on an advisory append
- * failure. The journal append is advisory (Law 8): in
- * "files" storage mode appendSwarmEvent returns null and no row is written,
- * exactly like every other verb.
+ * failure.
  *
  * Dependencies: ../host.ts (Transport type via ../mailbox-store.ts's
  * SteerTransport), ../watch-role.ts (the canonical ownership verdict),

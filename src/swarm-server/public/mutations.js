@@ -2,12 +2,16 @@
  * mutations.js — the dashboard's steering/answer pipeline (issue #54).
  *
  * The optimistic-with-confirmation half of the app, lifted out of app.js so
- * the shell stays a shell. A POST creates a pending marker; it becomes
- * `confirmed` ONLY when the matching journal `steer`/`answer` row arrives
- * (`fold(events)` — the journal is the truth; #62 makes HTTP mutations journal
- * in every storage mode, so there is no files-mode special case) and `failed`
- * on a structured error. A rejected operator token re-prompts at most
- * MAX_AUTH_RETRIES times and NEVER stacks a second marker.
+ * the shell stays a shell. A POST creates a pending marker; the success branch
+ * settles it from the server envelope's additive `confirmation` field (#69
+ * operator ruling): `"confirmed"` when the journal row is durably appended,
+ * `"unavailable"` in files storage mode (no row will exist — the honest
+ * `unconfirmed`/"delivered" state) or on an advisory append failure. A marker
+ * settles `failed` on a structured error. A marker whose pre-#62 server
+ * envelope has no `confirmation` field keeps the old wait-for-journal
+ * behavior (`fold`/`reducePending` — the journal is the truth there). A
+ * rejected operator token re-prompts at most MAX_AUTH_RETRIES times and NEVER
+ * stacks a second marker.
  *
  * Browser seams (fetch/storage/prompt) and render callbacks are injected. No
  * DOM.
@@ -77,6 +81,26 @@ export function createMutations(opts) {
 			}
 			pendingList = pendingList.map((p) => (p === pending ? failPending(p, errorText(res)) : p));
 			onChange();
+		} else {
+			// #69 operator ruling — settle the marker from the envelope's
+			// `confirmation` state instead of always waiting for a journal event:
+			//   "confirmed" (journal mode): the row is already durable — take the
+			//     seq/via straight from the envelope;
+			//   "unavailable" (files mode, §4.1.3): no journal row will ever
+			//     arrive — show the honest "delivered" state (steer.js
+			//     pendingView), never a forever-pending spinner;
+			//   absent (a pre-#62 server): keep waiting for the journal event
+			//     (fold/reducePending) — old servers stay fully supported.
+			const confirmation = res.envelope && res.envelope.confirmation;
+			if (confirmation === "confirmed" || confirmation === "unavailable") {
+				pendingList = pendingList.map((p) => {
+					if (p !== pending) return p;
+					if (confirmation === "unavailable") return { ...p, status: "unconfirmed" };
+					const seq = res.envelope.journal && typeof res.envelope.journal.seq === "number" ? res.envelope.journal.seq : null;
+					return { ...p, status: "confirmed", confirmedSeq: seq, via: typeof res.envelope.via === "string" ? res.envelope.via : null };
+				});
+				onChange();
+			}
 		}
 		return res;
 	};

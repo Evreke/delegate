@@ -802,18 +802,22 @@ The write itself is NOT reimplemented: `src/swarm/mailbox-verbs.ts` (the
 shared orchestrator verb core) calls the SAME `postSteerAndNudge` /
 `writeAnswer` / `archiveQuestion` path the `delegate_mailbox` tool uses, so
 an HTTP-issued `a-<name>.json` is byte-identical to a tool-issued one. The
-additive difference is journaling: every successful mutation appends its
+additive difference is journaling: a successful mutation appends its
 `steer` / `answer` journal row (`{text}` plus the additive `via: "http"`;
 no schema-version bump) AFTER the envelope is published — the `report` kind
-precedent — through the verb plumbing (`appendSwarmEvent`). The HTTP
-mutation path appends that audit row REGARDLESS of `swarm.storage` (#62
-item 1): the append-only journal is audit infrastructure, not the Phase A/B
-truth switch — the flag gates which store is TRUTH (§4.1.3), not whether
-audit rows exist — so a `files`-mode HTTP `steer` still emits the journal
-event the dashboard confirms on. ONLY this surface forces the append; every
-other verb keeps the Phase A behavior. The static pin `T1.16` proves no `src/swarm-server/**` file makes a direct
-mailbox write, so the mutation path cannot bypass the journal (#51
-acceptance 6).
+precedent — through the verb plumbing (`appendSwarmEvent`), under the REAL
+`swarm.storage` mode (#69 operator ruling, 2026-09-25T09:40Z). In `journal`
+mode the row is durable and the success envelope answers `confirmation:
+"confirmed"`; in `files` mode the append is Phase A (§4.1.3) and writes
+NO journal row — the envelope answers `confirmation: "unavailable"`, and
+the dashboard settles its optimistic marker from that envelope state
+(`steer.js`'s honest delivered/unconfirmed view), never a forever-pending
+spinner. An advisory append failure degrades to the same `"unavailable"`
+(Law 8). The field is additive (Law 7): a pre-fix server without
+`confirmation` keeps the old wait-for-journal client behavior. The static
+pin `T1.16` proves no `src/swarm-server/**` file makes a direct
+mailbox write, so the mutation path cannot bypass the journal once the
+journal is the truth store (#51 acceptance 6).
 
 Every mutation envelope — success and error — carries `schemaVersion: 1` and
 the structured `E_*` codes (`E_SWARM_AUTH`, `E_SWARM_FORBIDDEN` join by

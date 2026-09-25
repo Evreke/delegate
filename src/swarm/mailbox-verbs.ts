@@ -15,10 +15,11 @@
  * the functions the delegate_mailbox tool and the watcher already share).
  * The HTTP route and the tool therefore produce byte-identical mailbox files
  * (Law 9: one artifact, one implementation). The additive difference is the
- * journaling: every successful mutation appends its journal row through
- * ./storage.ts's appendSwarmEvent (the verb plumbing — the journal is the
- * truth, so a mutation that skipped it would be the write-path bypass #51
- * acceptance 6 forbids).
+ * journaling: a successful mutation appends its journal row through
+ * ./storage.ts's appendSwarmEvent (the verb plumbing), so no write path
+ * bypasses the journal once the journal is the truth store; the append runs
+ * under the REAL storage mode, and the envelope's `confirmation` field
+ * records honestly whether a durable row exists (#69 operator ruling).
  *
  * Ownership gate (fail-closed, Law 8): the worker id resolves ONLY to a
  * worker whose manifest entry proves this session as owner
@@ -29,15 +30,14 @@
  * Ordering: the envelope is written/published FIRST and the journal row is
  * appended AFTER (the `report` kind precedent — the journal never announces
  * an unpublished artifact). The journal append is advisory (Law 8): a failed
- * append is recorded and skipped, never a verb failure. The HTTP mutation
- * path appends its audit row REGARDLESS of `swarm.storage` (#62 item 1,
- * preferred variant): the append-only journal is audit infrastructure, not
- * the Phase A/B truth switch (§4.1.3) — the flag gates which store is TRUTH,
- * not whether audit rows exist — so a `files`-mode steer still emits the
- * journal event the dashboard confirms on. The success envelope states HOW
+ * append is recorded and skipped, never a verb failure. The append runs under
+ * the REAL storage mode (#69 operator ruling, 2026-09-25): in `files` mode
+ * (Phase A, §4.1.3) no journal write happens at all, and the append failed
+ * advisably means no row exists either way. The success envelope states HOW
  * the mutation confirms: `confirmation: "confirmed"` when the journal row is
- * durably appended, `"unavailable"` when the advisory append failed (no row
- * exists to wait for — the client renders "delivered" honestly).
+ * durably appended (seq present), `"unavailable"` when no row exists to wait
+ * for (files mode or an advisory append failure) — "delivered" rendered
+ * honestly by the dashboard.
  *
  * Dependencies: ../host.ts (Transport type via ../mailbox-store.ts's
  * SteerTransport), ../watch-role.ts (the canonical ownership verdict),
@@ -62,7 +62,7 @@ import {
 	type SteerTransport,
 } from "../mailbox-store.ts";
 import { workerAudienceMatch, type OwnerFields, type SessionIdentity } from "../watch-role.ts";
-import { appendSwarmEvent, resolveSwarmStorage, type SwarmJournalOutcome } from "./storage.ts";
+import { appendSwarmEvent, type SwarmJournalOutcome } from "./storage.ts";
 
 /** The manifest slice the ownership gate reads (untyped JSON at the edge). */
 export interface OrchestratorVerbManifest {
@@ -103,12 +103,12 @@ export interface OrchestratorVerbSuccess {
 	dir: string;
 	/** The posted a-<name>.json path. */
 	answerPath: string;
-	/** The journal outcome: null only when the advisory append did not run
-	 *  (never for an HTTP mutation, which forces the audit append in #62). */
+	/** The journal outcome: null whenever the append ran under `files` storage
+	 *  mode (Phase A writes nothing) or failed advisably. */
 	journal: SwarmJournalOutcome | null;
-	/** How this mutation confirms (#62 item 1): "confirmed" when the journal
-	 *  row is durably appended; "unavailable" when the advisory append failed
-	 *  (no row exists to wait for). */
+	/** How this mutation confirms (#69): "confirmed" when a durable journal row
+	 *  was actually appended (seq present); "unavailable" when no row exists to
+	 *  confirm against — files mode (§4.1.3) or an advisory append failure. */
 	confirmation: "confirmed" | "unavailable";
 	/** True when the console nudge was accepted (never on the no-transport path). */
 	nudged: boolean;
@@ -248,27 +248,21 @@ export async function runOrchestratorVerb(
 			? { text: req.text }
 			: { text: req.text, via: deps.via };
 	const env = deps.env ?? process.env;
-	// #62 item 1 (preferred variant): the HTTP mutation path appends its audit
-	// row REGARDLESS of `swarm.storage`. The append-only journal is advisory
-	// infrastructure, not the Phase A/B truth switch (§4.1.3) — the flag gates
-	// which store is TRUTH, not whether audit rows exist — so a `files`-mode
-	// steer still emits the journal event the dashboard confirms on. Forcing
-	// the mode here (not in storage.ts) keeps every OTHER verb on the existing
-	// Phase A behavior, so the parity/cutover invariants are untouched.
-	const journalEnv =
-		deps.via === "http" && resolveSwarmStorage(env).storage !== "journal"
-			? { ...env, SWARM_STORAGE: "journal" }
-			: env;
+	// #69 operator ruling (2026-09-25T09:40Z): the HTTP mutation path appends
+	// under the REAL `swarm.storage` mode. In `files` mode (Phase A) nothing is
+	// appended — the journal is not the truth store there, and a forced append
+	// would bypass §4.1.3. The envelope records the resulting honest state via
+	// `confirmation` instead (see below).
 	const journal = await appendSwarmEvent(
 		{ task: target.task, worker: req.worker, dir: target.dir },
 		req.kind,
 		payload,
-		journalEnv,
+		env,
 	);
 	// The journal append is advisory (Law 8) — the envelope is already
 	// published either way. "confirmed" only when a durable row exists to
-	// confirm against; "unavailable" is the honest answer when the advisory
-	// append failed (no journal event will ever arrive).
+	// confirm against; "unavailable" is the honest answer in files mode (no
+	// journal row will ever arrive) and for an advisory append failure.
 	const confirmation: "confirmed" | "unavailable" =
 		journal !== null && "seq" in journal ? "confirmed" : "unavailable";
 

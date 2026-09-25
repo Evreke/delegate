@@ -30,12 +30,13 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXTENSION_VERSION } from "../src/version.ts";
 import type { AgentStatusName } from "../src/host.ts";
+import type { ExchangeManifest } from "../src/manifest-store.ts";
 import { additiveViolations, fixtureAnswerPath, fixtureConsoleGraph, fixtureConsoleWorkerId, fixtureForeignWorkerId, HTTP_GOLDENS, HTTP_STREAM_GOLDENS, render } from "./swarm-http-goldens.ts";
 
 const watchdog = setTimeout(() => {
@@ -106,6 +107,15 @@ writeManifest("beta-fleet", "/sessions/other.jsonl", [
 	{ ...base, name: "foreign1", sessionPath: "/sessions/foreign1.jsonl", orchestratorSessionPath: "/sessions/other.jsonl" },
 ]);
 writeManifest("orphan-fleet", undefined, [{ ...base, name: "orphan1", orchestratorSessionPath: undefined, placement: { ...P, placementRef: "herdr:pane:9" } }]);
+
+/** The fixture manifests as a scan seam. The journal-mode companion mount
+ *  reads manifests from its (fresh, empty) journal, so it is handed the SAME
+ *  file fixtures the files-mode mount scans. */
+function fixtureManifests(): ExchangeManifest[] {
+	return readdirSync(EX)
+		.filter((t) => existsSync(join(EX, t, "manifest.json")))
+		.map((t) => JSON.parse(readFileSync(join(EX, t, "manifest.json"), "utf8")) as ExchangeManifest);
+}
 
 type Handle = { stop(): void; port: number; address: string };
 
@@ -550,14 +560,12 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// --- M: mutation surface (files storage: #62 item 1 forces the audit
-	//        append, so the envelope still carries the journal seq) ----------
+	// --- M: mutation surface (files storage, #69 operator ruling: Phase A
+	//        appends NO journal row, so the envelope says "unavailable") ------
 	const answerPath = fixtureAnswerPath(EX, "alpha-fleet", "w1");
-	// The journal is seeded with two rows above (seq 1, 2), so this first
-	// HTTP mutation is seq 3 and the answer below is seq 4.
-	golden("M1 steer success → byte-exact mutation envelope (files mode journals the audit row, #62 item 1)", await req(h.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "carry on" } }), {
+	golden("M1 files-mode steer success → byte-exact envelope, journal null + confirmation \"unavailable\" (#69)", await req(h.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "carry on" } }), {
 		status: 200,
-		body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "3" }),
+		body: render(HTTP_GOLDENS.steerOkFiles, { ANSWER_PATH: answerPath }),
 	});
 	const noToken = await req(h.port, "POST", "/api/workers/w1/steer", { body: { text: "x" } });
 	const wrongToken = await req(h.port, "POST", "/api/workers/w1/steer", { token: "wrong", body: { text: "x" } });
@@ -573,9 +581,9 @@ async function main(): Promise<void> {
 	});
 	{
 		writeFileSync(join(EX, "alpha-fleet", "q-w1.json"), `${JSON.stringify({ worker: "w1", ts: "2026-06-01T00:00:00.000Z", question: "which color?" })}\n`, "utf8");
-		golden("M6 answer success → byte-exact envelope, verb answer", await req(h.port, "POST", "/api/asks/w1/answer", { token: TOKEN, body: { text: "42" } }), {
+		golden("M6 files-mode answer success → byte-exact envelope, verb answer + confirmation \"unavailable\"", await req(h.port, "POST", "/api/asks/w1/answer", { token: TOKEN, body: { text: "42" } }), {
 			status: 200,
-			body: render(HTTP_GOLDENS.answerOk, { ANSWER_PATH: answerPath, SEQ: "4" }),
+			body: render(HTTP_GOLDENS.answerOkFiles, { ANSWER_PATH: answerPath }),
 		});
 	}
 	h.stop();
@@ -610,6 +618,23 @@ async function main(): Promise<void> {
 				body: HTTP_GOLDENS.forbidden,
 			});
 			hN.stop();
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Mount J — journal-mode companion (#69): the durable append is unchanged —
+	// the envelope carries the seq and `confirmation:"confirmed"`.
+	// -----------------------------------------------------------------------
+	{
+		const JDB = join(SANDBOX, "journal-confirmed", "events.db");
+		const hj = await mountSwarmServer({ sessionFile: SELF, manifests: { scan: () => fixtureManifests() }, env: env({ SWARM_STORAGE: "journal", SWARM_JOURNAL_DB: JDB }), operatorToken: TOKEN, usage: usageResolver, pollMs: 40 });
+		check("MJ0 journal-mode companion mount returns a handle", hj !== null);
+		if (hj) {
+			golden("MJ1 journal-mode steer success → byte-exact envelope with confirmation \"confirmed\" (#69 companion)", await req(hj.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "carry on" } }), {
+				status: 200,
+				body: render(HTTP_GOLDENS.steerOk, { ANSWER_PATH: answerPath, SEQ: "1" }),
+			});
+			hj.stop();
 		}
 	}
 

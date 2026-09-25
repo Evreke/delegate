@@ -1,43 +1,43 @@
 /**
  * pi-delegate — watch-schedule: the scheduled-wake store and due computation
- * (issue #10, watcher scheduled wakes, stage A).
+ * (issue #10 stage A one-shot; issue #11 stage B periodic).
  * <p>
- * MODULE_CONTRACT: owns the session's scheduled wakes — the one-shot
- * "wake me at/delay T with message M" records the orchestrator mails to its
- * OWN watcher. Pure and in-memory: no filesystem, no timers, no transports.
+ * MODULE_CONTRACT: owns the session's scheduled wakes — one-shot "wake me
+ * at/delay T with M" and periodic "wake me every N with M until cancelled or
+ * maxRuns". Pure and in-memory: no filesystem, no timers, no transports.
  * Time enters ONLY through the injected ClockPort (src/clock.ts), so every
- * timing regression runs on the VirtualClock — deterministic, no real
- * waiting in tests (the fail-fast discipline; ARCHITECTURE.md Law 10).
+ * timing regression runs on the VirtualClock (ARCHITECTURE.md Law 10).
  * <p>
- * Delivery key: `id#run` (scheduleKey) — one run can never wake twice. The
- * store does NOT deliver: dueWakes() is a non-mutating read, and only
- * markDelivered(id, run) — called by the watcher tick AFTER a successful
- * send through the guarded sink — retires the run. A failed (or silent)
- * delivery therefore leaves the schedule pending and it re-fires while due;
- * silence is never recorded as a success (Law 2).
+ * Delivery key `id#run` (scheduleKey): one run can never wake twice. The
+ * store does NOT deliver — dueWakes() is a non-mutating read and only
+ * markDelivered(id, run), called by the watcher after a REAL send, retires a
+ * run. A failed/silent delivery leaves the schedule pending; a periodic
+ * schedule's next read coalesces the skipped interval and advances the run,
+ * so a failing wake is skipped with its cadence preserved, never retried
+ * unboundedly and never wedging the tick (Law 8). Silence is never a success (Law 2).
  * <p>
- * Limits (anti-spam): a configuration floor on the minimum delay (a wake may
- * not be scheduled to fire sooner than minDelayMs from now) and a cap on the
- * number of active schedules per session. Both are resolved from the
- * `schedule` config section (src/watch-config.ts) and share their default
- * constants with it — one source of truth (Law 9).
+ * Coalescing (#11): dueWakes() reports ONE run — the latest interval whose
+ * time has passed (`run + floor((now - dueAt) / interval)`, capped by
+ * maxRuns) — and next-due advances only on markDelivered, so a burst of
+ * missed intervals is ONE advanced wake, never a back-wake burst. The store
+ * is the single source of truth for run counts and next-due (Law 9).
  * <p>
- * Scope: stage A is ONE-SHOT only. The `kind` field and the run-numbered
- * delivery key are the extension seam for #11 (periodic wakes) and #12
- * (durable persistence) — neither is implemented here.
+ * Limits (anti-spam), all from the `schedule` config section (defaults shared
+ * with src/watch-config.ts, Law 9): minDelayMs (floors the one-shot delay AND
+ * the periodic interval), maxActive (active schedules per session) and the
+ * periodic run cap maxRuns. #12 durable persistence stacks on this shape
+ * (`kind`/`run`/`intervalMs`/`maxRuns`); no persistence lives here.
  * <p>
  * Dependencies: src/clock.ts (the injected clock — a leaf port) and the
- * seam's DelegateErrorCode type (src/host.ts). A leaf module otherwise:
- * nothing above the seam imports anything from here except the watcher tick
- * (the SchedulePort read) and the delegate_wake tool.
+ * seam's DelegateErrorCode type (src/host.ts); a leaf module otherwise.
  */
 
 import type { ClockPort } from "./clock.ts";
 import type { DelegateErrorCode } from "./host.ts";
 
-/** The stage-A schedule kind. The union grows by ADDITION (#11 periodic) —
- *  never by redefining `once`. */
-export type ScheduleKind = "once";
+/** The schedule kind. Stage A added `once`; stage B (#11) ADDS `periodic` —
+ *  the union grows by addition, never by redefining `once`. */
+export type ScheduleKind = "once" | "periodic";
 
 /** Default floor on the minimum delay (ms) before a scheduled wake may fire
  *  (config key `schedule.minDelayMs`). Canonically owned HERE; watch-config.ts
@@ -46,29 +46,48 @@ export const SCHEDULE_DEFAULT_MIN_DELAY_MS = 1_000;
 /** Default cap on active schedules per session (config key
  *  `schedule.maxActive`). Canonically owned HERE (see above). */
 export const SCHEDULE_DEFAULT_MAX_ACTIVE = 8;
+/** Default run cap for a periodic schedule (config key `schedule.maxRuns`, #11).
+ *  Canonically owned HERE; watch-config.ts imports it — one constant, never
+ *  two (Law 9). */
+export const SCHEDULE_DEFAULT_MAX_RUNS = 100;
 
-/** One pending scheduled wake (stage A: one-shot). */
+/** One pending scheduled wake. Stage A: one-shot. Stage B (#11): `periodic`
+ *  wakes carry the interval and the run cap. `run` is the NEXT run to deliver
+ *  (1 for a fresh schedule); a coalesced read reports `run + skipped` runs. */
 export interface WakeSchedule {
 	/** Store-assigned id (`w1`, `w2`, …) — stable, never reused. */
 	id: string;
 	kind: ScheduleKind;
-	/** The free-form message the watcher delivers verbatim. */
+	/** The message delivered verbatim (a periodic one MAY use the `{run}` /
+	 *  `{maxRuns}` / `{elapsed}` placeholders — see formatScheduleWake). */
 	text: string;
 	createdAtMs: number;
 	dueAtMs: number;
-	/** The run number of THIS schedule instance (1 for a one-shot). The
-	 *  delivery key is `id#run`; #11 periodic wakes increment it. */
+	/** The NEXT run to deliver (1 for a fresh schedule); the `id#run` key.
+	 *  #11 periodic wakes advance it on a real delivery. */
 	run: number;
+	/** Periodic only (#11): the fire interval in ms (> 0). */
+	intervalMs?: number;
+	/** Periodic only (#11): the run cap — the schedule removes itself after
+	 *  this many fires (config default when omitted). */
+	maxRuns?: number;
 }
 
 /** A due wake as reported to the delivery path — the store's own record
- *  minus the mutable bookkeeping the tick must not see. */
+ *  minus the mutable bookkeeping the tick must not see. For a periodic
+ *  schedule `run` is the COALESCED run (the latest interval whose time has
+ *  passed), never a burst of back-wakes (issue #11). */
 export interface DueWake {
 	id: string;
 	run: number;
 	kind: ScheduleKind;
 	text: string;
 	dueAtMs: number;
+	/** Periodic only: the run cap (for the `run N/M` header). */
+	maxRuns?: number;
+	/** Periodic only: ms elapsed since the schedule was created — available to
+	 *  the `{elapsed}` template placeholder. */
+	elapsedMs?: number;
 }
 
 /** The read/delivery half of the store the watcher tick consumes — the
@@ -101,12 +120,19 @@ export type ScheduleResult = ScheduleAccepted | ScheduleRefusal;
 export type ScheduleCancelResult = { ok: true; schedule: WakeSchedule } | ScheduleRefusal;
 
 export interface ScheduleInput {
-	/** The message to deliver verbatim (required, non-empty after trim). */
+	/** The message delivered verbatim (periodic: may use `{run}` /
+	 *  `{maxRuns}` / `{elapsed}`). Required, non-empty after trim. */
 	text: string;
-	/** Absolute due time (epoch ms). Exactly one of atMs / delayMs. */
+	/** Absolute due time (epoch ms). Exactly one of atMs / delayMs / everyMs. */
 	atMs?: number;
-	/** Relative delay (ms). Exactly one of atMs / delayMs. */
+	/** Relative delay (ms). Exactly one of atMs / delayMs / everyMs. */
 	delayMs?: number;
+	/** Periodic interval (ms, #11): fire every N until cancelled or maxRuns
+	 *  (mutually exclusive with atMs / delayMs). */
+	everyMs?: number;
+	/** Periodic run cap (#11) — defaults to the store's maxRuns; only valid
+	 *  together with everyMs. */
+	maxRuns?: number;
 }
 
 export interface ScheduleStoreOptions {
@@ -117,11 +143,15 @@ export interface ScheduleStoreOptions {
 	minDelayMs?: number;
 	/** Cap on active schedules — default SCHEDULE_DEFAULT_MAX_ACTIVE. */
 	maxActive?: number;
+	/** Default periodic run cap (#11); a per-schedule maxRuns overrides it. */
+	maxRuns?: number;
 }
 
 export interface ScheduleStore extends SchedulePort {
-	/** Accept a new one-shot schedule, or refuse with E_SCHEDULE (empty
-	 *  text, both/neither of at/delay, below the delay floor, cap reached). */
+	/** Accept a one-shot (`at`/`delayMs`) or periodic (`everyMs` + optional
+	 *  `maxRuns`) schedule, or refuse with a structured E_SCHEDULE (empty text,
+	 *  wrong number of at/delay/every, maxRuns without every, bad maxRuns,
+	 *  below the floor, cap reached). */
 	schedule(input: ScheduleInput): ScheduleResult;
 	/** Cancel a pending schedule by id. Unknown/cancelled ids are refused
 	 *  with E_SCHEDULE. */
@@ -133,17 +163,51 @@ export interface ScheduleStore extends SchedulePort {
 	activeCount(): number;
 }
 
-/** The delivery key of one schedule run — `id#run`. The ONE spelling of the
- *  dedup key (the watcher and the tool both go through it). */
+/** The delivery key of one schedule run — `id#run`, the ONE spelling of the
+ *  dedup key. */
 export function scheduleKey(id: string, run: number): string {
 	return `${id}#${run}`;
 }
 
-/** The delivered wake text — the exact format the issue specifies:
- *  `scheduled wake (id w1): check the build output now`. Pure; the message
- *  is never truncated or reformatted here. */
-export function formatScheduleWake(w: Pick<DueWake, "id" | "text">): string {
-	return `scheduled wake (id ${w.id}): ${w.text}`;
+/** The delivered wake text: `scheduled wake (id w1): <text>` for a one-shot,
+ *  `scheduled wake (id w2, run 3/10): <text>` for a periodic schedule (#11).
+ *  Pure; a one-shot message is never reformatted. A periodic message may use
+ *  `{run}`, `{maxRuns}` and `{elapsed}` placeholders, substituted here.
+ *  <p>
+ *  FUNCTION_CONTRACT:
+ *  Input: w — the due wake (id, text, kind, run; maxRuns/elapsedMs for a
+ *    periodic one)
+ *  Output: the one-line wake text
+ *  Guarantees: pure; `once` output is byte-identical to stage A
+ *  Raises: never
+ */
+export function formatScheduleWake(
+	w: Pick<DueWake, "id" | "text" | "kind" | "run"> & { maxRuns?: number; elapsedMs?: number },
+): string {
+	if (w.kind !== "periodic") return `scheduled wake (id ${w.id}): ${w.text}`;
+	const cap = w.maxRuns === undefined ? "" : `/${w.maxRuns}`;
+	return `scheduled wake (id ${w.id}, run ${w.run}${cap}): ${applyWakeTemplate(w.text, w)}`;
+}
+
+/** Human duration formatting — ONE spelling for `{elapsed}` and the tool's
+ *  interval display (Law 9). */
+export function formatDurationMs(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 1_000));
+	const s = total % 60;
+	const m = Math.floor(total / 60) % 60;
+	const h = Math.floor(total / 3_600);
+	if (h > 0) return `${h}h${m > 0 ? ` ${m}m` : ""}`;
+	if (m > 0) return `${m}m${s > 0 ? ` ${s}s` : ""}`;
+	return `${s}s`;
+}
+
+/** Substitute the periodic placeholders `{run}` / `{maxRuns}` / `{elapsed}` (pure). */
+function applyWakeTemplate(text: string, w: { run: number; maxRuns?: number; elapsedMs?: number }): string {
+	if (!text.includes("{")) return text;
+	return text
+		.replaceAll("{run}", String(w.run))
+		.replaceAll("{maxRuns}", w.maxRuns === undefined ? "?" : String(w.maxRuns))
+		.replaceAll("{elapsed}", formatDurationMs(w.elapsedMs ?? 0));
 }
 
 function refuse(code: DelegateErrorCode, error: string, hint: string): ScheduleRefusal {
@@ -151,20 +215,18 @@ function refuse(code: DelegateErrorCode, error: string, hint: string): ScheduleR
 }
 
 /**
- * Build the session's in-memory schedule store (issue #10, stage A).
+ * Build the session's in-memory schedule store (#10 one-shot, #11 periodic).
  * <p>
  * FUNCTION_CONTRACT:
- * Input: opts.clock (required ClockPort), opts.minDelayMs / opts.maxActive
- *   (optional limits; defaults SCHEDULE_DEFAULT_MIN_DELAY_MS /
- *   SCHEDULE_DEFAULT_MAX_ACTIVE; values are floored defensively —
- *   minDelayMs ≥ 0, maxActive ≥ 1)
+ * Input: opts.clock (required ClockPort); opts.minDelayMs / opts.maxActive /
+ *   opts.maxRuns (optional limits; defaults SCHEDULE_DEFAULT_*; floored
+ *   defensively — minDelayMs ≥ 0, maxActive ≥ 1, maxRuns ≥ 1)
  * Output: a ScheduleStore (see the interface contracts above)
  * Guarantees:
  *   - every time read goes through opts.clock.now() — no Date.now() here
  *   - dueWakes() is non-mutating and idempotent; only markDelivered() (after
- *     a real send) retires a run — a failed/silent delivery re-fires
- *   - ids are assigned monotonically (`w1`, `w2`, …) and never reused; a
- *     cancelled id is dead forever
+ *     a real send) retires/advances a run
+ *   - ids are assigned monotonically (`w1`, `w2`, …) and never reused
  *   - schedule() is total: every invalid input returns a structured
  *     E_SCHEDULE refusal with a hint, never a throw
  * Raises: never
@@ -173,15 +235,26 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 	const clock = opts.clock;
 	const minDelayMs = Math.max(0, opts.minDelayMs ?? SCHEDULE_DEFAULT_MIN_DELAY_MS);
 	const maxActive = Math.max(1, Math.floor(opts.maxActive ?? SCHEDULE_DEFAULT_MAX_ACTIVE));
+	const storeMaxRuns = Math.max(1, Math.floor(opts.maxRuns ?? SCHEDULE_DEFAULT_MAX_RUNS));
 	// The pending set lives in insertion order; the read sorts by due time.
 	const active = new Map<string, WakeSchedule>();
-	// Retired delivery keys (`id#run`) — the stage-A in-memory dedup. #12
-	// replaces this with the durable store.
+	// Retired delivery keys (`id#run`) — the in-memory dedup. #12 replaces
+	// this with the durable store.
 	const delivered = new Set<string>();
 	let seq = 0;
 
 	const byDue = (a: WakeSchedule, b: WakeSchedule): number =>
 		a.dueAtMs - b.dueAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+	/** The run a due schedule reports NOW — the latest interval whose time has
+	 *  passed, capped by the run cap. Missed intervals coalesce into ONE run
+	 *  (#11); a one-shot is always its `run`. */
+	const effectiveRun = (s: WakeSchedule, now: number): number => {
+		if (s.kind !== "periodic" || s.intervalMs === undefined || s.intervalMs <= 0) return s.run;
+		const skipped = Math.max(0, Math.floor((now - s.dueAtMs) / s.intervalMs));
+		const advanced = s.run + skipped;
+		return s.maxRuns === undefined ? advanced : Math.min(advanced, s.maxRuns);
+	};
 
 	return {
 		schedule(input: ScheduleInput): ScheduleResult {
@@ -195,16 +268,34 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 			}
 			const hasDelay = typeof input.delayMs === "number" && Number.isFinite(input.delayMs);
 			const hasAt = typeof input.atMs === "number" && Number.isFinite(input.atMs);
-			if (hasDelay === hasAt) {
+			const hasEvery = typeof input.everyMs === "number" && Number.isFinite(input.everyMs);
+			const picked = (hasDelay ? 1 : 0) + (hasAt ? 1 : 0) + (hasEvery ? 1 : 0);
+			if (picked !== 1) {
 				return refuse(
 					"E_SCHEDULE",
-					"E_SCHEDULE — pass exactly one of 'delayMs' (relative) or 'at' (absolute ISO-8601); " +
-						(hasDelay ? "both were given." : "neither was given."),
-					"Pass 'delayMs: <ms>' for a relative wake or 'at: <ISO-8601>' for an absolute one — never both.",
+					"E_SCHEDULE — pass exactly one of 'delayMs' (relative), 'at' (absolute ISO-8601) or 'every' (periodic interval ms); " +
+						(picked > 1 ? "more than one was given." : "none was given."),
+					"Pass exactly one of 'delayMs: <ms>', 'at: <ISO-8601>' or 'every: <ms>' — a one-shot and a periodic wake are mutually exclusive.",
+				);
+			}
+			if (input.maxRuns !== undefined && !hasEvery) {
+				return refuse(
+					"E_SCHEDULE",
+					"E_SCHEDULE — 'maxRuns' applies only to a periodic 'every' schedule; a one-shot has exactly one run.",
+					"Drop 'maxRuns' for a one-shot, or use 'every: <ms>' for a periodic wake with a run cap.",
+				);
+			}
+			if (hasEvery && input.maxRuns !== undefined && (!Number.isInteger(input.maxRuns) || input.maxRuns < 1)) {
+				return refuse(
+					"E_SCHEDULE",
+					`E_SCHEDULE — 'maxRuns' must be a positive integer (got ${JSON.stringify(input.maxRuns)}).`,
+					"Pass e.g. 'maxRuns: 10', or omit it to use the configured schedule.maxRuns cap.",
 				);
 			}
 			const now = clock.now();
-			const dueAtMs = hasDelay ? now + input.delayMs! : input.atMs!;
+			// A periodic schedule's first due is now + the interval, so the same
+			// minimum-delay floor guards the interval (anti-spam).
+			const dueAtMs = hasDelay ? now + input.delayMs! : hasAt ? input.atMs! : now + input.everyMs!;
 			if (dueAtMs - now < minDelayMs) {
 				return refuse(
 					"E_SCHEDULE",
@@ -223,12 +314,16 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 			}
 			const schedule: WakeSchedule = {
 				id: `w${++seq}`,
-				kind: "once",
+				kind: hasEvery ? "periodic" : "once",
 				text,
 				createdAtMs: now,
 				dueAtMs,
 				run: 1,
 			};
+			if (hasEvery) {
+				schedule.intervalMs = input.everyMs!;
+				schedule.maxRuns = input.maxRuns ?? storeMaxRuns;
+			}
 			active.set(schedule.id, schedule);
 			return { ok: true, schedule };
 		},
@@ -259,13 +354,46 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 			return [...active.values()]
 				.filter((s) => s.dueAtMs <= now && !delivered.has(scheduleKey(s.id, s.run)))
 				.sort(byDue)
-				.map((s) => ({ id: s.id, run: s.run, kind: s.kind, text: s.text, dueAtMs: s.dueAtMs }));
+				.map((s) => {
+					const wake: DueWake = {
+						id: s.id,
+						run: effectiveRun(s, now),
+						kind: s.kind,
+						text: s.text,
+						dueAtMs: s.dueAtMs,
+					};
+					if (s.kind === "periodic") {
+						wake.maxRuns = s.maxRuns;
+						wake.elapsedMs = now - s.createdAtMs;
+					}
+					return wake;
+				});
 		},
 
 		markDelivered(id: string, run: number): void {
 			delivered.add(scheduleKey(id, run));
 			const found = active.get(id);
-			if (found !== undefined && found.run === run) active.delete(id);
+			if (found === undefined) return;
+			if (found.kind !== "periodic") {
+				// One-shot: a matching delivery retires the schedule (stage A).
+				if (found.run === run) active.delete(id);
+				return;
+			}
+			// Periodic (#11): the delivered run advances the next-due past NOW
+			// (`covered` intervals = this run plus the skipped ones it coalesced,
+			// so the cadence stays anchored to the original interval grid). A
+			// stale/unknown run changes nothing; reaching the cap removes the
+			// schedule. Advancing only HERE (never in dueWakes) keeps the store
+			// the single source of truth for run counts and next-due (Law 9).
+			if (run < found.run) return;
+			const nextRun = run + 1;
+			if (found.maxRuns !== undefined && nextRun > found.maxRuns) {
+				active.delete(id);
+				return;
+			}
+			const covered = run - found.run + 1;
+			found.dueAtMs += covered * (found.intervalMs ?? 0);
+			found.run = nextRun;
 		},
 	};
 }

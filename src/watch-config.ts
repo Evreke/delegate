@@ -44,7 +44,7 @@ import { loadDelegateConfig } from "./profile.ts";
 import { WATCH_DEFAULT_STALE_AFTER_MS } from "./usage.ts";
 // The scheduled-wake limits' defaults are CANONICALLY owned by the leaf
 // store module (watch-schedule.ts) — one constant, no second copy (Law 9).
-import { SCHEDULE_DEFAULT_MAX_ACTIVE, SCHEDULE_DEFAULT_MIN_DELAY_MS } from "./watch-schedule.ts";
+import { SCHEDULE_DEFAULT_MAX_ACTIVE, SCHEDULE_DEFAULT_MAX_RUNS, SCHEDULE_DEFAULT_MIN_DELAY_MS } from "./watch-schedule.ts";
 
 // ---------------------------------------------------------------------------
 // Config — {"watch": {"intervalMs": 10000, "settleGateMs": 15000}} from
@@ -283,28 +283,33 @@ function warnBadDurableDelivery(v: unknown): void {
 
 // ---------------------------------------------------------------------------
 // Scheduled-wake config (issue #10): {"schedule": {"minDelayMs": 1000,
-// "maxActive": 8}} — the anti-spam limits of the delegate_wake tool. Same
-// tolerant style as the other resolvers: missing/corrupt/partial → defaults,
-// never throws; a PRESENT-but-bad value warns ONCE and falls back (a silent
-// fallback would leave a misconfigured operator wondering why a wake was
-// refused). The default constants are owned by src/watch-schedule.ts.
+// "maxActive": 8, "maxRuns": 100}} — the anti-spam limits of the
+// delegate_wake tool plus the periodic run cap (#11). Same tolerant style as
+// the other resolvers: missing/corrupt/partial → defaults, never throws; a
+// PRESENT-but-bad value warns ONCE and falls back (a silent fallback would
+// leave a misconfigured operator wondering why a wake was refused). The
+// default constants are owned by src/watch-schedule.ts.
 // ---------------------------------------------------------------------------
 
-/** The scheduled-wake limits (issue #10). */
+/** The scheduled-wake limits (issue #10; #11 adds the periodic run cap). */
 export interface ScheduleConfig {
 	/** Floor on the minimum delay (ms) before a scheduled wake may fire. */
 	minDelayMs: number;
 	/** Cap on active schedules per session. */
 	maxActive: number;
+	/** Default run cap for a periodic schedule (#11). */
+	maxRuns: number;
 }
 
 /**
  * FUNCTION_CONTRACT:
  * Input: none
- * Output: ScheduleConfig — minDelayMs (default 1000) and maxActive (default 8)
+ * Output: ScheduleConfig — minDelayMs (default 1000), maxActive (default 8)
+ *   and maxRuns (default 100, the periodic run cap)
  * Guarantees:
- *   - per-key defaults: a non-finite/negative minDelayMs and a non-finite/
- *     non-positive maxActive fall back (warn ONCE each per process)
+ *   - per-key defaults: a non-finite/negative minDelayMs, a non-finite/
+ *     non-positive maxActive and a non-integer/non-positive maxRuns fall
+ *     back (warn ONCE each per process)
  *   - missing/corrupt section → defaults, never throws
  * Raises: never
  * EXTERNAL_DEPENDENCY: the config file via readDelegateConfig (above).
@@ -313,6 +318,7 @@ export function resolveScheduleConfig(): ScheduleConfig {
 	const fallback: ScheduleConfig = {
 		minDelayMs: SCHEDULE_DEFAULT_MIN_DELAY_MS,
 		maxActive: SCHEDULE_DEFAULT_MAX_ACTIVE,
+		maxRuns: SCHEDULE_DEFAULT_MAX_RUNS,
 	};
 	try {
 		const e = readDelegateConfig()?.schedule;
@@ -334,7 +340,15 @@ export function resolveScheduleConfig(): ScheduleConfig {
 				warnBadScheduleMaxActive(s.maxActive);
 			}
 		}
-		return { minDelayMs, maxActive };
+		let maxRuns = fallback.maxRuns;
+		if (s.maxRuns !== undefined) {
+			if (typeof s.maxRuns === "number" && Number.isInteger(s.maxRuns) && s.maxRuns >= 1) {
+				maxRuns = s.maxRuns;
+			} else {
+				warnBadScheduleMaxRuns(s.maxRuns);
+			}
+		}
+		return { minDelayMs, maxActive, maxRuns };
 	} catch {
 		return fallback; // defensive — readDelegateConfig already absorbs throws
 	}
@@ -359,6 +373,17 @@ function warnBadScheduleMaxActive(v: unknown): void {
 	console.error(
 		`[pi-delegate watch] bad schedule.maxActive (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${SCHEDULE_DEFAULT_MAX_ACTIVE}`,
+	);
+}
+
+/** Warn-once flag for a bad schedule.maxRuns (issue #11) — once per process. */
+let scheduleMaxRunsWarned = false;
+function warnBadScheduleMaxRuns(v: unknown): void {
+	if (scheduleMaxRunsWarned) return;
+	scheduleMaxRunsWarned = true;
+	console.error(
+		`[pi-delegate watch] bad schedule.maxRuns (${JSON.stringify(v) ?? "undefined"}) — ` +
+			`using the default ${SCHEDULE_DEFAULT_MAX_RUNS}`,
 	);
 }
 

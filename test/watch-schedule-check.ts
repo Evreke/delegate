@@ -40,6 +40,7 @@ import {
 	createScheduleStore,
 	formatScheduleWake,
 	SCHEDULE_DEFAULT_MAX_ACTIVE,
+	SCHEDULE_DEFAULT_MAX_RUNS,
 	SCHEDULE_DEFAULT_MIN_DELAY_MS,
 	scheduleKey,
 } from "../src/watch-schedule.ts";
@@ -354,7 +355,7 @@ function makeScheduledWatcher(
 
 const WATCH_MOD = new URL("../src/watch-config.ts", import.meta.url).pathname;
 
-function scheduleConfigInHome(configJson: string): { minDelayMs: number; maxActive: number; raw: string } {
+function scheduleConfigInHome(configJson: string): { minDelayMs: number; maxActive: number; maxRuns: number; raw: string } {
 	const home = mkdtempSync(join(tmpdir(), "schedule-check-home-"));
 	const configDir = join(home, ".pi", "agent");
 	mkdirSync(configDir, { recursive: true });
@@ -364,9 +365,9 @@ function scheduleConfigInHome(configJson: string): { minDelayMs: number; maxActi
 	rmSync(home, { recursive: true, force: true });
 	const raw = res.stdout.toString().trim();
 	try {
-		return { ...(JSON.parse(raw) as { minDelayMs: number; maxActive: number }), raw };
+		return { ...(JSON.parse(raw) as { minDelayMs: number; maxActive: number; maxRuns: number }), raw };
 	} catch {
-		return { minDelayMs: -1, maxActive: -1, raw: `SPAWN FAILED: ${res.stderr.slice(0, 200)}` };
+		return { minDelayMs: -1, maxActive: -1, maxRuns: -1, raw: `SPAWN FAILED: ${res.stderr.slice(0, 200)}` };
 	}
 }
 
@@ -395,6 +396,266 @@ function scheduleConfigInHome(configJson: string): { minDelayMs: number; maxActi
 {
 	const text = formatEventBatch([{ worker: "w1", dir: "/tmp/exchange/t", kind: "report-ready", message: "read /x/y" }]);
 	check("WS9.1 formatEventBatch keeps its existing single-argument shape", text.includes("w1") && text.includes("report-ready"));
+}
+
+// ---------------------------------------------------------------------------
+// WS11–WS17. Periodic wakes (#11, stage B): every N, run-numbered, capped and
+// coalesced. All on the VirtualClock — no real waiting.
+// ---------------------------------------------------------------------------
+
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	const acc = store.schedule({ text: "health-check the port", everyMs: 5_000, maxRuns: 3 });
+	check(
+		"WS11.1 every schedule is periodic: run 1/3, due now+5000, interval recorded",
+		acc.ok &&
+			acc.schedule.kind === "periodic" &&
+			acc.schedule.run === 1 &&
+			acc.schedule.dueAtMs === NOW + 5_000 &&
+			acc.schedule.maxRuns === 3 &&
+			acc.schedule.intervalMs === 5_000,
+		JSON.stringify(acc),
+	);
+	await clock.advance(4_999);
+	check("WS11.2 periodic is silent one virtual ms short", store.dueWakes().length === 0);
+	await clock.advance(1);
+	let due = store.dueWakes();
+	check(
+		"WS11.3 the first fire is run 1 of the periodic schedule",
+		due.length === 1 && due[0]!.run === 1 && due[0]!.kind === "periodic" && due[0]!.maxRuns === 3,
+		JSON.stringify(due),
+	);
+	check(
+		"WS11.4 the periodic wake text carries id and run/maxRuns",
+		due.length === 1 && formatScheduleWake(due[0]!) === "scheduled wake (id w1, run 1/3): health-check the port",
+		JSON.stringify(due),
+	);
+	store.markDelivered("w1", 1);
+	check(
+		"WS11.5 after run 1 the schedule stays pending at run 2, next interval",
+		store.activeCount() === 1 && store.list()[0]!.run === 2 && store.list()[0]!.dueAtMs === NOW + 10_000,
+		JSON.stringify(store.list()),
+	);
+	await clock.advance(5_000);
+	due = store.dueWakes();
+	check("WS11.6 the second fire is run 2", due.length === 1 && due[0]!.run === 2, JSON.stringify(due));
+	store.markDelivered("w1", 2);
+	await clock.advance(5_000);
+	due = store.dueWakes();
+	check("WS11.7 the third fire is run 3", due.length === 1 && due[0]!.run === 3, JSON.stringify(due));
+	store.markDelivered("w1", 3);
+	check(
+		"WS11.8 maxRuns=3 removes the schedule after the third fire",
+		store.activeCount() === 0 && store.list().length === 0 && store.dueWakes().length === 0,
+		JSON.stringify(store.list()),
+	);
+	await clock.advance(600_000);
+	check("WS11.9 there is never a fourth fire", store.dueWakes().length === 0 && store.activeCount() === 0);
+}
+
+// WS12. Coalescing under a burst of missed intervals
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	store.schedule({ text: "poll me", everyMs: 5_000, maxRuns: 10 });
+	await clock.advance(5_000);
+	store.markDelivered("w1", 1); // now due NOW+10000 at run 2
+	await clock.advance(12_000); // NOW+17000: intervals at 10k and 15k passed
+	const due = store.dueWakes();
+	check("WS12.1 a burst of missed intervals yields exactly ONE wake", due.length === 1, JSON.stringify(due));
+	check(
+		"WS12.2 the coalesced run advanced by the number of missed intervals (2 → 3)",
+		due[0]?.run === 3,
+		JSON.stringify(due),
+	);
+	check("WS12.3 a second read is still one wake — never a back-wake burst", store.dueWakes().length === 1);
+	store.markDelivered("w1", due[0]?.run ?? 0);
+	check(
+		"WS12.4 the next due is the first interval AFTER now (cadence preserved), run 4",
+		store.list()[0]?.dueAtMs === NOW + 20_000 && store.list()[0]?.run === 4,
+		JSON.stringify(store.list()),
+	);
+	await clock.advance(2_999);
+	check("WS12.5 no premature fire after the coalesced delivery", store.dueWakes().length === 0);
+	await clock.advance(1);
+	check("WS12.6 cadence resumes cleanly at run 4", store.dueWakes()[0]?.run === 4, JSON.stringify(store.dueWakes()));
+}
+
+// WS13. A burst PAST the cap coalesces to the capped run and terminates
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	store.schedule({ text: "cap me", everyMs: 5_000, maxRuns: 3 });
+	await clock.advance(20_000); // four intervals passed in one jump
+	const due = store.dueWakes();
+	check(
+		"WS13.1 a burst beyond the cap coalesces to run maxRuns (3/3)",
+		due.length === 1 && due[0]!.run === 3,
+		JSON.stringify(due),
+	);
+	check(
+		"WS13.2 the capped wake names the cap",
+		due.length === 1 && formatScheduleWake(due[0]!) === "scheduled wake (id w1, run 3/3): cap me",
+		JSON.stringify(due),
+	);
+	store.markDelivered("w1", 3);
+	check("WS13.3 the capped schedule removes itself", store.activeCount() === 0 && store.list().length === 0);
+	await clock.advance(600_000);
+	check("WS13.4 no further fires after termination", store.dueWakes().length === 0 && store.activeCount() === 0);
+}
+
+// WS14. Cancel mid-cycle
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	store.schedule({ text: "cancel me", everyMs: 5_000, maxRuns: 5 });
+	await clock.advance(5_000);
+	store.markDelivered("w1", 1); // run 2 pending
+	const c = store.cancel("w1");
+	check("WS14.1 cancel mid-cycle returns the schedule at its current run", c.ok && c.schedule.run === 2, JSON.stringify(c));
+	await clock.advance(600_000);
+	check("WS14.2 a cancelled periodic never fires again", store.dueWakes().length === 0 && store.activeCount() === 0);
+	check("WS14.3 cancel stays one-shot: a second cancel is refused", !store.cancel("w1").ok);
+}
+
+// WS15. Store validation of the periodic surface
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock, maxRuns: 4 });
+	check("WS15.1 every + delayMs is refused", !store.schedule({ text: "x", everyMs: 5_000, delayMs: 1_000 }).ok);
+	check("WS15.2 every + at is refused", !store.schedule({ text: "x", everyMs: 5_000, atMs: NOW + 9_000 }).ok);
+	check(
+		"WS15.3 the refusal is structured E_SCHEDULE naming the exclusivity",
+		(() => {
+			const r = store.schedule({ text: "x", everyMs: 5_000, delayMs: 1_000 });
+			return !r.ok && r.code === "E_SCHEDULE" && r.error.includes("every");
+		})(),
+	);
+	const a = store.schedule({ text: "x", everyMs: 5_000 });
+	check(
+		"WS15.4 every without maxRuns uses the store's configured run cap",
+		a.ok && a.schedule.kind === "periodic" && a.schedule.maxRuns === 4,
+		JSON.stringify(a),
+	);
+	const b = store.schedule({ text: "y", everyMs: 5_000, maxRuns: 2 });
+	check("WS15.5 a per-schedule maxRuns overrides the configured cap", b.ok && b.schedule.maxRuns === 2);
+	check("WS15.6 maxRuns below 1 is refused", !store.schedule({ text: "z", everyMs: 5_000, maxRuns: 0 }).ok);
+	check("WS15.7 a non-integer maxRuns is refused", !store.schedule({ text: "z", everyMs: 5_000, maxRuns: 2.5 }).ok);
+	check(
+		"WS15.8 the interval must clear the minimum-delay floor",
+		!createScheduleStore({ clock, minDelayMs: 6_000 }).schedule({ text: "x", everyMs: 5_000 }).ok,
+	);
+	check(
+		"WS15.9 maxRuns without every is refused (a one-shot has exactly one run)",
+		!store.schedule({ text: "z", delayMs: 5_000, maxRuns: 3 }).ok,
+	);
+}
+
+// WS16. Tool surface — delegate_wake gains `every` + `maxRuns`
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	let captured: {
+		execute: (...a: unknown[]) => Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }>;
+	} | undefined;
+	registerWakeTool({ registerTool: (t: never) => (captured = t as never) } as never, () => store);
+
+	const sch = await captured!.execute("p1", { action: "schedule", text: "health-check the port", every: 5_000, maxRuns: 3 });
+	check(
+		"WS16.1 the tool accepts every + maxRuns and returns the periodic schedule",
+		sch.details.ok === true && (sch.details.schedule as { kind: string }).kind === "periodic",
+		JSON.stringify(sch.details),
+	);
+	const badMutual = await captured!.execute("p2", { action: "schedule", text: "x", every: 5_000, delayMs: 1_000 });
+	check(
+		"WS16.2 every + delayMs is a failed E_SCHEDULE result",
+		badMutual.details.ok === false && badMutual.details.code === "E_SCHEDULE",
+		JSON.stringify(badMutual.details),
+	);
+	const badAt = await captured!.execute("p3", { action: "schedule", text: "x", every: 5_000, at: new Date(NOW + 9_000).toISOString() });
+	check(
+		"WS16.3 every + at is a failed E_SCHEDULE result",
+		badAt.details.ok === false && badAt.details.code === "E_SCHEDULE",
+		JSON.stringify(badAt.details),
+	);
+	const listText = (await captured!.execute("p4", { action: "list" })).content.map((c) => c.text).join("\n");
+	check(
+		"WS16.4 list shows the periodic schedule with its run/interval info",
+		listText.includes("w1") && listText.includes("run 1/3"),
+		listText,
+	);
+	const cancel = await captured!.execute("p5", { action: "cancel", id: "w1" });
+	check("WS16.5 cancel mid-cycle reports the cancelled periodic id", cancel.details.ok === true && cancel.details.id === "w1");
+}
+
+// WS17. Watcher tick integration for periodic wakes (the acceptance path)
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	const sent: string[] = [];
+	const handle = makeScheduledWatcher(clock, store, (t: string) => {
+		sent.push(t);
+	});
+	store.schedule({ text: "health-check the port", everyMs: 5_000, maxRuns: 3 });
+	await clock.advance(5_000);
+	await handle.tick();
+	check(
+		"WS17.1 the tick delivers run 1 through the same guarded send",
+		sent.length === 1 && sent[0] === "scheduled wake (id w1, run 1/3): health-check the port",
+		JSON.stringify(sent),
+	);
+	await clock.advance(12_000); // 17k: intervals at 10k and 15k missed
+	await handle.tick();
+	check(
+		"WS17.2 the tick coalesces the burst into ONE advanced wake (run 3/3)",
+		sent.length === 2 && sent[1] === "scheduled wake (id w1, run 3/3): health-check the port",
+		JSON.stringify(sent),
+	);
+	await handle.tick();
+	check("WS17.3 the coalesced wake never re-fires", sent.length === 2, JSON.stringify(sent));
+	await clock.advance(600_000);
+	await handle.tick();
+	check("WS17.4 after the cap the schedule is gone from the tick loop", sent.length === 2 && store.activeCount() === 0, JSON.stringify(sent));
+	handle.stop();
+}
+
+// WS17b. Law 8: a failed periodic send is skipped, never wedges the loop,
+// and the cadence (run advance) is preserved
+{
+	const clock = createVirtualClock(NOW);
+	const store = createScheduleStore({ clock });
+	const sent: string[] = [];
+	let broken = true;
+	const handle = makeScheduledWatcher(clock, store, (t: string) => {
+		if (broken) {
+			broken = false;
+			throw new Error("transient sink failure");
+		}
+		sent.push(t);
+	});
+	store.schedule({ text: "retry me", everyMs: 5_000, maxRuns: 5 });
+	await clock.advance(5_000);
+	await handle.tick();
+	check("WS17b.1 a failed periodic send leaves the schedule pending, loop survives", sent.length === 0 && store.activeCount() === 1);
+	await clock.advance(5_000);
+	await handle.tick();
+	check(
+		"WS17b.2 cadence preserved: the next tick delivers the ADVANCED run (2/5)",
+		sent.length === 1 && sent[0] === "scheduled wake (id w1, run 2/5): retry me",
+		JSON.stringify(sent),
+	);
+	handle.stop();
+}
+
+// WS18. Config plumbing — schedule.maxRuns
+{
+	const d = scheduleConfigInHome("");
+	check("WS18.1 no config → maxRuns default", d.maxRuns === SCHEDULE_DEFAULT_MAX_RUNS, d.raw);
+	const o = scheduleConfigInHome(JSON.stringify({ schedule: { maxRuns: 7 } }));
+	check("WS18.2 schedule.maxRuns overrides the default", o.maxRuns === 7, o.raw);
+	const bad = scheduleConfigInHome(JSON.stringify({ schedule: { maxRuns: 0 } }));
+	check("WS18.3 a garbage maxRuns falls back to the default", bad.maxRuns === SCHEDULE_DEFAULT_MAX_RUNS, bad.raw);
 }
 
 if (failures > 0) {

@@ -26,8 +26,23 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   silent send leaves the schedule pending. Schedules are session-scoped
   (Law 3): they die with the session. Anti-spam limits: `schedule.minDelayMs`
   (default 1000 ms) and `schedule.maxActive` (default 8); bad input refuses
-  with the new `E_SCHEDULE` code. Periodic wakes (#11) and durable
-  persistence (#12) are later stages — stage A is one-shot and in-memory.
+  with the new `E_SCHEDULE` code. Durable persistence (#12) is a later stage —
+  stage A is one-shot and in-memory.
+
+- **Scheduled wakes, stage B — periodic wakes (#11).** `delegate_wake` action
+  `schedule` gains an `every` parameter (interval ms, next to `at`/`delayMs`
+  and mutually exclusive with them, structured `E_SCHEDULE` on conflict) plus
+  an optional per-schedule `maxRuns` cap (config default `schedule.maxRuns`,
+  100). A periodic wake fires every N until cancelled or the cap is reached,
+  carrying its run number: `scheduled wake (id w2, run 3/10): <text>` (the
+  free-form `text` may reference `{run}`, `{maxRuns}` and `{elapsed}`). Missed
+  intervals COALESCE — at most one pending delivery per schedule, so a sleep
+  or a busy session yields ONE wake whose run number advanced past the
+  skipped fires, never a back-wake burst; the run count and next-due live
+  only in the store (Law 9) and advance on a real send, so a failed periodic
+  wake is skipped with its cadence preserved (Law 8). A capped schedule
+  removes itself after its last run; `cancel` stops it mid-cycle. In-memory
+  and session-scoped (Law 3); durable persistence is #12.
 
 - **Dashboard access UX — widget link, fragment auth, one server per machine
   (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`

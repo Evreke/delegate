@@ -30,15 +30,28 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fail, textResult } from "./tool-result.ts";
 import { clampLines, renderDelegateLines } from "./ui-text.ts";
-import type { ScheduleStore } from "./watch-schedule.ts";
+import { formatDurationMs, type ScheduleStore } from "./watch-schedule.ts";
 
 /** The session's schedule store, or undefined before session_start / after
  *  session_shutdown (index.ts owns the lifecycle). */
 export type WakeStoreProvider = () => ScheduleStore | undefined;
 
-/** One rendered list row: `w1  due 1970-01-01T00:00:05.000Z  <text>`. */
-function listLine(s: { id: string; dueAtMs: number; text: string }): string {
-	return `${s.id}  due ${new Date(s.dueAtMs).toISOString()}  ${s.text}`;
+/** One rendered list row: `w1  due 1970-01-01T00:00:05.000Z  <text>`, with a
+ *  `[periodic run 2/10, every 5m]` tag for a periodic schedule (#11). */
+function listLine(s: {
+	id: string;
+	dueAtMs: number;
+	text: string;
+	kind?: string;
+	run?: number;
+	maxRuns?: number;
+	intervalMs?: number;
+}): string {
+	const tag =
+		s.kind === "periodic"
+			? `  [periodic run ${s.run ?? 1}/${s.maxRuns ?? "∞"}, every ${formatDurationMs(s.intervalMs ?? 0)}]`
+			: "";
+	return `${s.id}  due ${new Date(s.dueAtMs).toISOString()}${tag}  ${s.text}`;
 }
 
 /**
@@ -68,33 +81,48 @@ export function registerWakeTool(
 		name: "delegate_wake",
 		label: "Delegate Wake",
 		description:
-			"Schedule a one-shot wake for YOUR OWN orchestrator session: the background watcher " +
+			"Schedule a wake for YOUR OWN orchestrator session: the background watcher " +
 			"delivers the message as a followUp turn when due. action 'schedule' takes a free-form " +
-			"'text' plus exactly one of 'delayMs' (relative, ms) or 'at' (absolute ISO-8601); " +
+			"'text' plus exactly one of 'delayMs' (relative ms), 'at' (absolute ISO-8601) or 'every' " +
+			"(periodic interval ms); a periodic wake also takes an optional 'maxRuns' cap. " +
 			"'cancel' drops a pending wake by 'id'; 'list' shows the pending wakes with their due " +
 			"times. Use this after delegating a long-running external process (a build, a compose " +
 			"stack, an install) that leaves no worker behind to watch — end your turn instead of " +
-			"sleeping. Limits: a configured minimum delay (schedule.minDelayMs) and a cap on active " +
-			"wakes per session (schedule.maxActive).",
-		promptSnippet: "Schedule a one-shot wake for your own session (delegate_wake)",
+			"sleeping. A periodic wake repeats every N until cancelled or maxRuns is reached; missed " +
+			"intervals coalesce into ONE wake whose run number advances (never a burst), and the " +
+			"delivered text is `scheduled wake (id <id>, run <n>/<maxRuns>): <text>` (the text may " +
+			"reference {run}, {maxRuns} and {elapsed}). Limits: a configured minimum delay " +
+			"(schedule.minDelayMs), a cap on active wakes (schedule.maxActive) and a default run cap " +
+			"(schedule.maxRuns).",
+		promptSnippet: "Schedule a one-shot or periodic wake for your own session (delegate_wake)",
 		promptGuidelines: [
 			"Use delegate_wake instead of sleeping when you must check on an external process later.",
+			"Use every: <ms> (with an optional maxRuns cap) to re-check something periodically until cancelled.",
 			"A scheduled wake is your session mailing itself — worker mail still goes through delegate_mailbox.",
 			"List pending wakes with action 'list'; cancel one by id when it is no longer needed.",
 		],
 		parameters: Type.Object({
 			action: StringEnum(["schedule", "cancel", "list"] as const, {
 				description:
-					"schedule = one-shot wake at/delay T with text; cancel = drop a pending wake by id; list = pending wakes with due times",
+					"schedule = wake at/delay T, or every N (periodic), with text; cancel = drop a pending wake by id; list = pending wakes with due times",
 			}),
 			text: Type.Optional(
 				Type.String({ description: "The wake message delivered verbatim (required for 'schedule')" }),
 			),
 			delayMs: Type.Optional(
-				Type.Number({ description: "Relative delay in ms from now (schedule; exactly one of delayMs/at)" }),
+				Type.Number({ description: "Relative delay in ms from now (schedule; exactly one of delayMs/at/every)" }),
 			),
 			at: Type.Optional(
-				Type.String({ description: "Absolute ISO-8601 due time (schedule; exactly one of delayMs/at)" }),
+				Type.String({ description: "Absolute ISO-8601 due time (schedule; exactly one of delayMs/at/every)" }),
+			),
+			every: Type.Optional(
+				Type.Number({
+					description:
+						"Periodic interval in ms — fire every N until cancelled or maxRuns (schedule; exactly one of delayMs/at/every)",
+				}),
+			),
+			maxRuns: Type.Optional(
+				Type.Number({ description: "Periodic run cap — requires 'every' (defaults to schedule.maxRuns)" }),
 			),
 			id: Type.Optional(Type.String({ description: "Schedule id to cancel (e.g. 'w1')" })),
 		}),
@@ -103,11 +131,13 @@ export function registerWakeTool(
 			const detail =
 				typeof args?.id === "string"
 					? args.id
-					: typeof args?.delayMs === "number"
-						? `+${args.delayMs}ms`
-						: typeof args?.at === "string"
-							? args.at
-							: "";
+					: typeof args?.every === "number"
+						? `every +${args.every}ms${typeof args?.maxRuns === "number" ? ` ×${args.maxRuns}` : ""}`
+						: typeof args?.delayMs === "number"
+							? `+${args.delayMs}ms`
+							: typeof args?.at === "string"
+								? args.at
+								: "";
 			const head = theme.fg("toolTitle", theme.bold("delegate_wake "));
 			return {
 				render: (width?: number) => clampLines([`${head} ${theme.fg("muted", action)} ${theme.fg("accent", detail)}`], width),
@@ -176,16 +206,28 @@ export function registerWakeTool(
 				text: params.text ?? "",
 				...(atMs !== undefined ? { atMs } : {}),
 				...(typeof params.delayMs === "number" ? { delayMs: params.delayMs } : {}),
+				...(typeof params.every === "number" ? { everyMs: params.every } : {}),
+				...(typeof params.maxRuns === "number" ? { maxRuns: params.maxRuns } : {}),
 			});
 			if (!res.ok) {
 				return fail(res.code, res.error, {
 					action: "schedule",
 					...(atMs !== undefined ? { atMs } : {}),
 					...(typeof params.delayMs === "number" ? { delayMs: params.delayMs } : {}),
+					...(typeof params.every === "number" ? { every: params.every } : {}),
+					...(typeof params.maxRuns === "number" ? { maxRuns: params.maxRuns } : {}),
 					hint: res.hint,
 				});
 			}
 			const s = res.schedule;
+			if (s.kind === "periodic") {
+				return textResult(
+					`Scheduled periodic wake ${s.id} every ${formatDurationMs(s.intervalMs ?? 0)} ` +
+						`(run ${s.run}/${s.maxRuns ?? "∞"}, first at ${new Date(s.dueAtMs).toISOString()}): "${s.text}". ` +
+						`It fires until cancelled or the run cap is reached; cancel it with action 'cancel', id '${s.id}'.`,
+					{ action: "schedule", schedule: s },
+				);
+			}
 			return textResult(
 				`Scheduled wake ${s.id} for ${new Date(s.dueAtMs).toISOString()} (run ${s.run}): "${s.text}". ` +
 					`It fires once as a followUp turn; cancel it with action 'cancel', id '${s.id}'.`,

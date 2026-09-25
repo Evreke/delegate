@@ -32,6 +32,16 @@
  * fabricated stream, never an HTTP error). Console text is ephemeral — it
  * never reaches the journal or the snapshot.
  *
+ * Issue #87 adds the worker exchange-file read surface (additive, §4.2):
+ *   GET /api/workers/:id/brief  → the worker's `brief-<name>.md` text
+ *   GET /api/workers/:id/report → the worker's `report-<name>.json` text
+ * `:id` is the same SwarmGraph session node id the console route takes and
+ * resolution reuses the SAME fail-closed ownership gate (`resolveConsoleTarget`).
+ * The file name is rebuilt from the graph's worker name (`[a-z0-9_-]` only)
+ * and the resolved path MUST stay inside the graph's task dir (no traversal,
+ * no NUL, no absolute name); a missing file is an honest `absent:true` (200),
+ * never a fabricated stream.
+ *
  * TRUST MODEL (§4.2): loopback only. The READ surface (GET/WS) has no auth
  * beyond the loopback bind — every process on this machine can read it; that
  * is the documented boundary (a future daemon may add auth; this server
@@ -71,7 +81,8 @@
 
 import type { Http1Request, Http1Response } from "./http1.ts";
 import { SWARM_HTTP_SCHEMA_VERSION, SWARM_FLEET_NOT_FOUND_HINT, errorEnvelope, type UpgradeRefusal } from "./http1.ts";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { EXTENSION_VERSION } from "../version.ts";
 import { parseAfterCursor, SWARM_EVENTS_SCHEMA_VERSION } from "../swarm/events.ts";
 import { SwarmError } from "../swarm/result.ts";
@@ -86,7 +97,7 @@ import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts
 import { StreamHub } from "./stream.ts";
 import { ConsoleCapture } from "./console-buffer.ts";
 import type { ConsoleStreamSource } from "./console-buffer.ts";
-import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRouteDeps, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
+import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleStreamPath, resolveConsoleTarget, type ConsoleRouteDeps, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
 import { upgradeRefusal } from "./ws.ts";
 import { ConsoleHub } from "./console-ws.ts";
 import type { SwarmGraph } from "../swarm/graph.ts";
@@ -107,7 +118,8 @@ export type SwarmServerErrorCode =
 	| "E_SWARM_USAGE"
 	| "E_SWARM_IO"
 	| "E_SWARM_AUTH"
-	| "E_SWARM_FORBIDDEN";
+	| "E_SWARM_FORBIDDEN"
+	| "E_EXCHANGE_FILE_REFUSED";
 
 const SERVER_ERROR_HINTS: Record<SwarmServerErrorCode, string> = {
 	E_SWARM_NOT_FOUND: "The server serves /api/version, /api/swarm/snapshot, /api/swarm/events, the WS /api/swarm/stream, and the token-gated POST /api/workers/<id>/steer and /api/asks/<id>/answer — check the path.",
@@ -115,6 +127,7 @@ const SERVER_ERROR_HINTS: Record<SwarmServerErrorCode, string> = {
 	E_SWARM_IO: "The read server could not serve this request; retry or check the orchestrator log.",
 	E_SWARM_AUTH: "Every mutation request needs Authorization: Bearer <operator token>; the token is printed on the session's stderr at mount.",
 	E_SWARM_FORBIDDEN: "The mutation surface only reaches workers this session provably spawned.",
+	E_EXCHANGE_FILE_REFUSED: "The id must be a worker session node this session owns, and the read-model must carry a safe exchange dir + canonical worker name; unknown, non-worker, foreign and unsafe-name targets are refused identically (fail-closed).",
 };
 
 /** Build a structured error envelope (schemaVersion on every response — Law 7).
@@ -508,6 +521,118 @@ function consoleDeps(deps: SwarmServerDeps): ConsoleRouteDeps {
 	return { transport: deps.transport, sessionFile: deps.sessionFile, graph: deps.graph, buildGraph: () => buildSnapshotGraph(deps) };
 }
 
+// ---------------------------------------------------------------------------
+// Worker exchange files (#87): GET /api/workers/:id/brief|report
+// ---------------------------------------------------------------------------
+
+/** The two read-only exchange-file routes (additive — new paths only). */
+const EXCHANGE_FILE_ROUTE_RE = /^\/api\/workers\/([^/]+)\/(brief|report)$/;
+
+/** The closed kind set of the exchange-file routes. */
+export type ExchangeFileKind = "brief" | "report";
+
+/** Match `/api/workers/:id/brief|report`; null when the path is not ours. */
+export function matchExchangeFilePath(path: string): { id: string; kind: ExchangeFileKind } | null {
+	const m = EXCHANGE_FILE_ROUTE_RE.exec(path);
+	return m === null ? null : { id: m[1]!, kind: m[2] as ExchangeFileKind };
+}
+
+/** The task node's exchange dir from the read-model (undefined when absent). */
+function exchangeDirFor(graph: SwarmGraph, task: string | undefined): string | undefined {
+	if (task === undefined) return undefined;
+	const node = graph.nodes.find((n) => n.id === task && n.kind === "task");
+	return node && node.kind === "task" ? node.dir : undefined;
+}
+
+/**
+ * Rebuild ONE exchange-file path from graph-derived inputs, refusing any
+ * input that could escape the task dir.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: dir — the task's exchange dir (graph); name — the worker name
+ *   (graph); kind — the closed {brief, report} set
+ * Output: the safe absolute path, or a refusal reason
+ * Guarantees:
+ *   - the name must match the canonical worker-name token [a-z0-9_-] (no
+ *     `..`, no `/`, no absolute form, no NUL) — anything else refuses;
+ *   - the dir must be an absolute, NUL-free path;
+ *   - the resolved file path stays inside the resolved task dir (the
+ *     containment check is the traversal backstop, not the only guard)
+ * Raises: never
+ */
+export function exchangeFilePath(
+	dir: string | undefined,
+	name: string,
+	kind: ExchangeFileKind,
+): { ok: true; path: string } | { ok: false; reason: string } {
+	if (typeof dir !== "string" || dir.length === 0) return { ok: false, reason: "the read-model carries no exchange dir for this worker's task" };
+	if (dir.includes("\0")) return { ok: false, reason: "the task's exchange dir is not a usable path (NUL byte)" };
+	if (!isAbsolute(dir)) return { ok: false, reason: "the task's exchange dir is not absolute" };
+	if (!WORKER_NAME_RE.test(name)) return { ok: false, reason: `worker name ${JSON.stringify(name)} is not a canonical [a-z0-9_-] token` };
+	const fileName = kind === "brief" ? `brief-${name}.md` : `report-${name}.json`;
+	const root = resolve(dir);
+	const file = join(root, fileName);
+	if (resolve(file) !== file || !file.startsWith(root + sep)) return { ok: false, reason: `the resolved ${kind} path escapes the task's exchange dir` };
+	return { ok: true, path: file };
+}
+
+/** One exchange-file success envelope (fixed key order; `task` optional). */
+function exchangeFileEnvelope(kind: ExchangeFileKind, target: { name: string; nodeId: string; task?: string }, text: string | null): string {
+	const body: Record<string, unknown> = {
+		ok: true,
+		schemaVersion: SWARM_HTTP_SCHEMA_VERSION,
+		kind,
+		nodeId: target.nodeId,
+		worker: target.name,
+	};
+	if (target.task !== undefined) body.task = target.task;
+	body.absent = text === null;
+	body.text = text;
+	return JSON.stringify(body);
+}
+
+/**
+ * Serve one plain exchange-file GET (brief or report).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: deps — the read-model sources; rawId — the path's worker id (still
+ *   URL-encoded); kind — {brief, report}
+ * Output: 200 present/absent envelope | 400 usage | 404 refusal | 500 IO
+ * Guarantees:
+ *   - ownership is the SAME fail-closed `resolveConsoleTarget` verdict the
+ *     console route uses (unknown / non-worker / foreign refuse identically);
+ *   - a task with no dir, or a file that does not exist, is an honest
+ *     `absent:true` (200) — never fabricated content;
+ *   - the file name/path is rebuilt + contained (see `exchangeFilePath`);
+ *   - never throws
+ * Raises: never
+ */
+export async function exchangeFileResponse(deps: SwarmServerDeps, rawId: string, kind: ExchangeFileKind): Promise<Http1Response> {
+	let id: string;
+	try {
+		id = decodeURIComponent(rawId);
+	} catch {
+		return httpError(400, "E_SWARM_USAGE", "worker id is not valid URL encoding");
+	}
+	const graph = deps.graph ?? (await buildSnapshotGraph(deps));
+	const resolved = resolveConsoleTarget(graph, id, deps.sessionFile);
+	if (!resolved.ok) return httpError(404, "E_EXCHANGE_FILE_REFUSED", resolved.message);
+	const { target } = resolved;
+	const dir = exchangeDirFor(graph, target.task);
+	if (dir === undefined) return { status: 200, body: exchangeFileEnvelope(kind, target, null) };
+	const file = exchangeFilePath(dir, target.name, kind);
+	if (!file.ok) return httpError(404, "E_EXCHANGE_FILE_REFUSED", file.reason);
+	let text: string;
+	try {
+		text = readFileSync(file.path, "utf8");
+	} catch (err) {
+		const code = err !== null && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+		if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { status: 200, body: exchangeFileEnvelope(kind, target, null) };
+		return httpError(500, "E_SWARM_IO", `could not read the worker ${kind}: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	return { status: 200, body: exchangeFileEnvelope(kind, target, text) };
+}
+
 /**
  * The plain-request router.
  * <p>
@@ -533,7 +658,7 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 		if (answer) return mutationResponse(deps, req, "answer", answer[1]);
 		// A POST against a known GET path is a method error (405), not a
 		// missing path — the #50 read surface's method contract is preserved.
-		if (req.path === "/api/version" || req.path === "/api/swarm/events" || req.path === "/api/swarm/snapshot" || req.path === "/api/swarm/fleets") {
+		if (req.path === "/api/version" || req.path === "/api/swarm/events" || req.path === "/api/swarm/snapshot" || req.path === "/api/swarm/fleets" || matchExchangeFilePath(req.path) !== null) {
 			return httpError(405, "E_SWARM_USAGE", `method POST is not served on ${JSON.stringify(req.path)}; it is a GET path`);
 		}
 		return httpError(404, "E_SWARM_NOT_FOUND", `no such path ${JSON.stringify(req.path)}`);
@@ -552,6 +677,8 @@ export function routeRequest(deps: SwarmServerDeps, req: Http1Request, runtime?:
 	if (fleetIndex) return fleetIndexResponse(deps, fleetIndex[1]);
 	const consoleId = matchConsoleRestPath(req.path);
 	if (consoleId !== null) return consoleRoute(consoleDeps(deps), consoleId, req.query.get("offset") ?? undefined, runtime);
+	const fileRoute = matchExchangeFilePath(req.path);
+	if (fileRoute !== null) return exchangeFileResponse(deps, fileRoute.id, fileRoute.kind);
 	if (matchConsoleStreamPath(req.path) !== null) {
 		return httpError(400, "E_SWARM_USAGE", "the console stream is a WebSocket endpoint (/api/workers/:id/console/stream)");
 	}

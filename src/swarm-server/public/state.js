@@ -69,10 +69,12 @@ export function rootOf(id, parents) {
 }
 
 function ownedBy(input, sessionPath, rootId) {
-	if (input.ownSessionPath && sessionPath && sessionPath !== input.ownSessionPath) return true;
-	if (input.ownSessionPath && !sessionPath && rootId !== input.ownSessionId) return true;
+	// #81: the serving identity (ownSessionId preferred) is the authority; a console refusal still outranks the path heuristics.
+	const ownId = input.ownSessionId && typeof input.ownSessionId === "string" ? input.ownSessionId : null;
+	const ownPath = input.ownSessionPath && typeof input.ownSessionPath === "string" ? input.ownSessionPath : null;
 	if (input.foreignSessionIds && input.foreignSessionIds.has(rootId)) return true;
-	return false;
+	if ((ownId && rootId === ownId) || (ownPath && sessionPath === ownPath)) return false;
+	return Boolean(ownId || ownPath);
 }
 
 function resolveStatus({ node, worker, journal, degradedFlags }) {
@@ -272,11 +274,9 @@ export function buildDashboardState(input = {}) {
 	});
 	const journal = foldJournal(ownEvents);
 	const ctx = { journal, parents, children, embodiments, foreign, nowMs };
-
 	const enriched = nodes.map((n) => (n.kind === "task" ? buildTaskNode(n, ctx) : buildSessionNode(n, ctx)));
 	const byId = new Map(enriched.map((n) => [n.id, n]));
 	for (const n of enriched) n.childIds = (children.get(n.id) ?? []).filter((id) => byId.has(id));
-
 	const sorted = [...enriched].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 	const rail = buildRail(enriched, children, byId);
 	const attention = buildAttention(sorted, journal, input.expansion);

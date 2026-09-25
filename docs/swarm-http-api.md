@@ -167,18 +167,19 @@ body `{"text":"<non-empty>"}`.
 - A non-canonical/undecodable id or an invalid body is `400 E_SWARM_USAGE`.
 - The write goes through the SAME mailbox core the `delegate_mailbox` tool
   uses (`src/swarm/mailbox-verbs.ts`); a `steer`/`answer` row with the
-  additive `via:"http"` is appended AFTER the envelope is published. The
-  HTTP mutation path appends that audit row REGARDLESS of `swarm.storage`
-  (#62 item 1, preferred variant): the append-only journal is audit
-  infrastructure, not the Phase A/B truth switch — the flag gates which
-  store is TRUTH (§4.1.3), not whether audit rows exist.
-- **Confirmation** (additive field since #62): `confirmation` states how the
-  mutation confirms. `"confirmed"` — the journal row is durably appended
-  (the normal path in BOTH storage modes). `"unavailable"` — the advisory
-  append failed (no row exists to wait for); the envelope still reached the
-  worker, so a client must not wait for a journal event. Clients connecting
-  to a pre-#62 server (no `confirmation` field) keep waiting for the journal
-  event — the field is additive and old servers stay fully supported.
+  additive `via:"http"` is appended AFTER the envelope is published, under
+  the REAL `swarm.storage` mode (#69 operator ruling). In `journal` mode the
+  row is durable; in `files` mode the append is Phase A (§4.1.3) and writes
+  NO journal row — the envelope says so via `confirmation:"unavailable"`.
+- **Confirmation** (additive field since #62, semantics ruled in #69):
+  `confirmation` states how the mutation confirms. `"confirmed"` — the
+  journal row was durably appended (seq present; journal mode).
+  `"unavailable"` — no row exists to wait for: `files` storage mode (Phase
+  A writes nothing) or an advisory append failure; the envelope still
+  reached the worker, so a client must render the honest delivered state and
+  must not wait for a journal event. Clients connecting to a pre-#62 server
+  (no `confirmation` field) keep waiting for the journal event — the field
+  is additive and old servers stay fully supported.
 
 Success envelope:
 
@@ -188,9 +189,10 @@ Success envelope:
  "nudged":false}
 ```
 
-(`journal` is `null` and `confirmation` is `"unavailable"` only when the
-advisory journal append failed; a successful HTTP mutation carries `{seq}`
-and `"confirmed"` in BOTH storage modes.)
+(`journal` is `null` and `confirmation` is `"unavailable"` in `files`
+storage mode (no row is written — §4.1.3) and when the advisory journal
+append fails; in `journal` mode a successful HTTP mutation carries `{seq}`
+and `"confirmed"`.)
 
 ## 8. Dashboard access: link, fragment token, one server per machine (#65)
 

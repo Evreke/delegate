@@ -11,13 +11,11 @@
  * Steering is OPTIMISTIC-WITH-CONFIRMATION: a successful POST creates a
  * pending marker (`newPending`). It becomes `confirmed` when the matching
  * journal `steer`/`answer` event arrives (`reducePending` — the journal is
- * the truth). Since #62 item 1 the HTTP mutation path appends that journal
- * row in BOTH storage modes (§4.2.4), so a `files`-mode steer confirms the
- * same way a journal-mode one does; the envelope's additive `confirmation`
- * field records whether a durable row was appended (`"unavailable"` marks
- * an advisory append failure — no journal event will ever arrive, and
- * `pendingView` exposes the honest `unconfirmed`/"delivered" state for it).
- * `pendingAsks`
+ * the truth for servers whose envelope predates `confirmation`), OR when the
+ * envelope's additive `confirmation` field settles it directly (#69 operator
+ * ruling): `"confirmed"` in journal mode, `"unavailable"` in `files` storage
+ * mode (§4.1.3 — no row will ever arrive), in which case `pendingView`
+ * exposes the honest `unconfirmed`/"delivered" state for it. `pendingAsks`
  * folds the `ask`-without-`answer` event graph into the pending-question list
  * the answer form renders. `controlsView` states honestly why a card's
  * controls are disabled (foreign fleet, ended worker) instead of hiding them.

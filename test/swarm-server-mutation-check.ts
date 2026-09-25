@@ -23,6 +23,10 @@
  *   M7 no write path bypasses the journal: every successful HTTP mutation
  *      produced exactly one journal row.
  *   M8 CLI verbs unchanged: the read verbs still run with no token.
+ *   M9 #69 confirmation envelope (operator ruling): files mode appends NO
+ *      journal row and answers `confirmation:"unavailable"` — the dashboard
+ *      settles the marker at delivered/unconfirmed, never a forever-pending
+ *      spinner; journal mode still yields a durable row + `"confirmed"`.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; every fetch
  * is loopback and bounded by it. Exit 0 only if all checks pass.
@@ -408,11 +412,36 @@ async function main(): Promise<void> {
 	h.stop();
 
 	// -----------------------------------------------------------------------
-	// M9 — #62 item 1 (preferred variant): in `files` storage mode the HTTP
-	//      mutation still appends its journal row, so the dashboard's journal
-	//      event confirmation fires instead of spinning on `pending` forever.
+	// M9 — #69 operator ruling (2026-09-25T09:40Z): the confirmation envelope.
+	//      `files` storage mode is Phase A (§4.1.3) — the HTTP mutation appends
+	//      NO journal row, the envelope says confirmation "unavailable", and the
+	//      dashboard settles the marker at the honest delivered/unconfirmed
+	//      state instead of spinning on `pending` forever. The companion leg
+	//      proves journal mode still yields a durable row + "confirmed".
 	// -----------------------------------------------------------------------
 	{
+		/** The REAL dashboard mutation pipeline (public/mutations.js) pointed at
+		 *  one mounted server, with the token already in an in-memory store. */
+		const dashboardFor = async (port: number) => {
+			const mod = await import(new URL("../src/swarm-server/public/mutations.js", import.meta.url).href);
+			const mem = new Map<string, string>();
+			return mod.createMutations({
+				fetch: (url: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${url}`, init),
+				storage: {
+					getItem: (k: string) => (mem.has(k) ? (mem.get(k) as string) : null),
+					setItem: (k: string, v: string) => {
+						mem.set(k, String(v));
+					},
+					removeItem: (k: string) => {
+						mem.delete(k);
+					},
+				},
+				prompt: () => TOKEN,
+				currentSeq: () => 0,
+			});
+		};
+
+		// --- files mode: no row → "unavailable" → honest delivered state ------
 		const FILES_DB = join(SANDBOX, "journal-files", "events.db");
 		const hf = await mountSwarmServer({
 			sessionFile: SELF,
@@ -425,26 +454,59 @@ async function main(): Promise<void> {
 		if (hf) {
 			const steer = await req(hf.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "files-mode steer" } });
 			check(
-				"M9.2 files-mode steer → 200 with confirmation \"confirmed\" (a durable audit row)",
-				steer.status === 200 && steer.json?.ok === true && steer.json?.confirmation === "confirmed",
+				"M9.2 files-mode steer → journal null + confirmation \"unavailable\" (Phase A appends no row)",
+				steer.status === 200 && steer.json?.ok === true && steer.json?.journal === null && steer.json?.confirmation === "unavailable",
 				`${steer.status} ${steer.body}`,
 			);
-			const journal = steer.json?.journal as { seq?: number } | null | undefined;
-			check("M9.3 the files-mode envelope carries the journal seq (not null)", typeof journal?.seq === "number", JSON.stringify(steer.json));
 			const ev = await req(hf.port, "GET", "/api/swarm/events?after=0");
 			const events = (ev.json?.events as Array<Record<string, unknown>>) ?? [];
-			const row = events.find(
-				(e) =>
-					e.kind === "steer" &&
-					e.worker === "w1" &&
-					(e.payload as Record<string, unknown> | undefined)?.text === "files-mode steer",
-			);
 			check(
-				"M9.4 the files-mode steer row is readable off the journal (the event the dashboard confirms on)",
-				row !== undefined && (row.payload as Record<string, unknown>).via === "http",
+				"M9.3 files mode → NO durable steer row exists (the journal received no write)",
+				events.every((e) => !(e.kind === "steer" && (e.payload as Record<string, unknown> | undefined)?.text === "files-mode steer")),
 				JSON.stringify(events.map((e) => e.kind)),
 			);
+			// The REAL dashboard pipeline submits and settles the marker from the
+			// envelope — the honest delivered/unconfirmed state, never a spinner.
+			const mf = await dashboardFor(hf.port);
+			await mf.sendSteer("w1", "files-mode dashboard steer");
+			const marker = mf.latestPending("w1", "steer");
+			check(
+				"M9.4 the dashboard settles the files-mode marker at delivered/unconfirmed, NOT pending",
+				marker !== null && marker.status === "unconfirmed" && marker.label === "delivered" && marker.detail.includes("confirmation unavailable"),
+				JSON.stringify(marker),
+			);
+			mf.fold([]);
+			check("M9.5 no journal fold ever reverts the delivered marker to pending", mf.latestPending("w1", "steer")?.status === "unconfirmed", JSON.stringify(mf.latestPending("w1", "steer")));
 			hf.stop();
+		}
+
+		// --- journal mode (companion): durable row → "confirmed" --------------
+		const JOURNAL_DB = join(SANDBOX, "journal-confirmed", "events.db");
+		const hj = await mountSwarmServer({
+			sessionFile: SELF,
+			transport: fakeTransport(),
+			manifests,
+			operatorToken: TOKEN,
+			env: { ...process.env, SWARM_STORAGE: "journal", SWARM_JOURNAL_DB: JOURNAL_DB },
+		});
+		check("M9.6 a journal-mode companion mount returns a handle", hj !== null);
+		if (hj) {
+			const steer = await req(hj.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "journal-mode steer" } });
+			const journal = steer.json?.journal as { seq?: number } | null | undefined;
+			check(
+				"M9.7 journal-mode steer → confirmation \"confirmed\" with the durable seq (behavior unchanged)",
+				steer.status === 200 && steer.json?.confirmation === "confirmed" && typeof journal?.seq === "number",
+				`${steer.status} ${steer.body}`,
+			);
+			const mj = await dashboardFor(hj.port);
+			await mj.sendSteer("w1", "journal-mode dashboard steer");
+			const marker = mj.latestPending("w1", "steer");
+			check(
+				"M9.8 the dashboard settles the journal-mode marker confirmed from the envelope",
+				marker !== null && marker.status === "confirmed" && marker.detail.includes("confirmed by journal"),
+				JSON.stringify(marker),
+			);
+			hj.stop();
 		}
 	}
 

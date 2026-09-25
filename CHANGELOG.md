@@ -372,6 +372,20 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Files-mode steering never settles (issue #69).** The HTTP mutation path
+  forced a journal append regardless of `swarm.storage` (#62's ruled-against
+  "preferred variant"), contradicting `src/swarm/storage.ts`'s Phase A
+  contract (files mode writes no journal row) and leaving the dashboard's
+  optimistic steering marker pending forever. The append now runs under the
+  REAL storage mode and the success envelope's additive `confirmation` field
+  states the honest outcome: `"confirmed"` when a durable row was appended,
+  `"unavailable"` in files mode or on an advisory append failure. The
+  dashboard (`public/mutations.js`) settles the marker from that envelope —
+  files mode shows the delivered/unconfirmed state, never a spinner — while a
+  pre-fix server without the field keeps the old wait-for-journal behavior
+  (Law 7). ARCHITECTURE §4.2.4 and `docs/swarm-http-api.md` now state the
+  ruled rule; the mutation and HTTP golden checks encode it.
+
 - **Adaptive sqlite driver — the extension must load under node too.** The
   journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
   (node ≥ 22.13); a statically chosen driver crashed the extension import

@@ -170,12 +170,21 @@ export const HTTP_GOLDENS = {
 	/** Console bad offset (400). */
 	consoleUsage: '{"ok":false,"schemaVersion":1,"error":{"code":"E_CONSOLE_USAGE","message":"invalid ?offset= value","hint":"Pass an integer ?offset=<n> (>= 0; omit for 0). The endpoint refuses non-numeric or negative offsets."}}',
 
-	/** Mutation success (steer; the HTTP mutation path journals its audit row
-	 *  in BOTH storage modes — #62 item 1 — so `journal` carries the seq). */
+	/** Mutation success (steer, journal mode; the durable audit row is appended
+	 *  under the real storage mode — #69 operator ruling — so `journal` carries
+	 *  the seq and `confirmation` is "confirmed"). */
 	steerOk: '{"ok":true,"schemaVersion":1,"verb":"steer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":{"seq":{{SEQ}}},"confirmation":"confirmed","nudged":false}',
+
+	/** Mutation success (steer, `files` storage mode — #69): Phase A appends NO
+	 *  journal row, so `journal` is null and `confirmation` is the honest
+	 *  "unavailable" (the dashboard settles delivered/unconfirmed). */
+	steerOkFiles: '{"ok":true,"schemaVersion":1,"verb":"steer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"confirmation":"unavailable","nudged":false}',
 
 	/** Mutation success (answer; the same envelope with verb=answer). */
 	answerOk: '{"ok":true,"schemaVersion":1,"verb":"answer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":{"seq":{{SEQ}}},"confirmation":"confirmed","nudged":false}',
+
+	/** Mutation success (answer, `files` storage mode — #69; journal null). */
+	answerOkFiles: '{"ok":true,"schemaVersion":1,"verb":"answer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"confirmation":"unavailable","nudged":false}',
 
 	/** Mutation auth refusal — missing and wrong token are byte-identical. */
 	authRefused: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_AUTH","message":"missing or invalid operator token","hint":"Every mutation request needs Authorization: Bearer <operator token>; the token is printed on the session\'s stderr at mount."}}',

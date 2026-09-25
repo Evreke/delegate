@@ -117,3 +117,35 @@ export function scopeGraphToFleet(graph, rootId) {
 	const orphans = (graph.orphans ?? []).filter((o) => o && ids.has(o.task));
 	return { ...graph, nodes, edges, orphans };
 }
+
+/**
+ * Build the scope chrome view (issue #82): the brand text, the document title,
+ * the shell's `data-fleet-id` key and the switcher entries that make the two
+ * scopes reachable from each other.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: { fleetId, fleets } — the serving scope (null = the root view) and the
+ *   `GET /api/swarm/fleets` rows ({sessionId, own, tasks})
+ * Output: { fleetId, key, brandText, title, entries, show }
+ * Guarantees: pure; the root view is `key: "all"` / `"all fleets"`; a scoped
+ *   view always leads with the `all fleets` link back to `/`; fleet entries
+ *   are own-first then id-sorted and never include the scope's own fleet;
+ *   malformed rows are dropped; never throws
+ * Raises: never
+ */
+export function chromeScope({ fleetId = null, fleets = [] } = {}) {
+	const current = typeof fleetId === "string" && fleetId.length > 0 ? fleetId : null;
+	const fleetEntries = (Array.isArray(fleets) ? fleets : [])
+		.filter((f) => f && typeof f.sessionId === "string" && f.sessionId !== current)
+		.map((f) => ({ href: `/fleets/${encodeURIComponent(f.sessionId)}/`, label: f.sessionId, own: f.own === true, current: false }))
+		.sort((a, b) => (a.own === b.own ? (a.label < b.label ? -1 : a.label > b.label ? 1 : 0) : a.own ? -1 : 1));
+	const entries = current ? [{ href: "/", label: "all fleets", own: false, current: false }, ...fleetEntries] : fleetEntries;
+	return {
+		fleetId: current,
+		key: current ?? "all",
+		brandText: current ?? "all fleets",
+		title: current ? `fleet ${current} \u2014 pi-delegate dashboard` : "pi-delegate \u2014 fleet dashboard",
+		entries,
+		show: current !== null || fleetEntries.length > 1,
+	};
+}

@@ -23,6 +23,7 @@
  */
 
 import { buildDashboardState } from "./state.js";
+import { createStatusChrome } from "./status.js";
 import { bootstrapFragmentToken } from "./auth-bootstrap.js";
 import { scopedUrl, scopeGraphToFleet, servingScope, streamUrlFor } from "./fleet-scope.js";
 import { computeLayout } from "./layout.js";
@@ -105,7 +106,6 @@ export function createFleetApp(env = {}) {
 	let refreshTimer = null;
 	let renderTimer = null;
 	let stateVersion = 1;
-	let activity = "";
 	let journalEvents = [];
 	const drafts = new Map();
 
@@ -123,24 +123,11 @@ export function createFleetApp(env = {}) {
 		}
 	}
 	const byId = (id) => (doc && typeof doc.getElementById === "function" ? doc.getElementById(id) : null);
-	const connectionEl = byId("connection-state");
-	const tokenEl = byId("token-state");
-	const countEl = byId("journal-count");
-	const bytesEl = byId("journal-bytes");
-	const schemaEl = byId("schema-version");
-	const tickerEl = byId("activity-ticker");
 	const errorEl = byId("error");
-
-	const setConnection = (state) => {
-		if (!connectionEl) return;
-		connectionEl.setAttribute("data-connection-state", state);
-		connectionEl.textContent = state;
-	};
-	const setTokenState = (state) => {
-		if (!tokenEl) return;
-		tokenEl.setAttribute("data-token-state", state);
-		tokenEl.textContent = `token: ${state}`;
-	};
+	// #79/#82/#86: the static-frame chrome (connection pill, token pill, journal
+	// health footer, ticker, scope) lives in one factory behind this byId seam.
+	const chrome = createStatusChrome({ doc, byId, nowMs });
+	chrome.setScope(fleetId, []);
 	const showError = (err) => {
 		if (!errorEl) return;
 		errorEl.removeAttribute("hidden");
@@ -158,7 +145,7 @@ export function createFleetApp(env = {}) {
 		storage,
 		prompt: promptImpl,
 		currentSeq: () => (stream ? stream.state.lastSeq : journalEvents.reduce((m, e) => Math.max(m, e.seq), 0)),
-		onTokenState: setTokenState,
+		onTokenState: (state) => chrome.setToken(state),
 		onChange: () => scheduleRender(),
 		onError: showError,
 	});
@@ -174,7 +161,7 @@ export function createFleetApp(env = {}) {
 			else panels.patchTail(nodeId);
 		},
 	});
-	setTokenState(mutations.tokenState);
+	chrome.setToken(mutations.tokenState);
 
 	// --- model + render ----------------------------------------------------
 	const foreignSessionIds = () => {
@@ -197,10 +184,7 @@ export function createFleetApp(env = {}) {
 		stateVersion = Number.isFinite(lastSnapshot.schemaVersion) ? lastSnapshot.schemaVersion : 1;
 	};
 
-	const updateStatusbar = () => {
-		if (schemaEl) schemaEl.textContent = String(stateVersion);
-		if (tickerEl) tickerEl.textContent = activity || "\u2014";
-	};
+	const updateStatusbar = () => chrome.renderStatus(dash, stateVersion);
 
 	const detailView = () => {
 		const subject = resolveDetailSubject(dash, ui);
@@ -299,15 +283,23 @@ export function createFleetApp(env = {}) {
 		for (const e of rows) if (e && typeof e.seq === "number") merged.set(e.seq, e);
 		journalEvents = [...merged.values()].sort((a, b) => a.seq - b.seq);
 		mutations.fold(journalEvents);
-		const newest = journalEvents[journalEvents.length - 1];
-		if (newest) activity = `${newest.kind} #${newest.seq}${newest.worker ? ` ${newest.worker}` : ""}`;
+		chrome.setLatestEvent(journalEvents[journalEvents.length - 1] ?? null);
 		scheduleRender();
+	};
+
+	let fleetsBody = [];
+	const refreshFleets = async () => {
+		const res = await fetchImpl("/api/swarm/fleets");
+		const body = await res.json();
+		fleetsBody = Array.isArray(body && body.fleets) ? body.fleets : [];
+		chrome.setScope(fleetId, fleetsBody);
 	};
 
 	const refreshSnapshot = async () => {
 		const res = await fetchImpl("/api/swarm/snapshot");
 		const body = await res.json();
 		rerender(body.snapshot);
+		chrome.markUpdated();
 		for (const node of (lastSnapshot && lastSnapshot.nodes) || []) {
 			for (const worker of node.workers || []) panels.start(worker);
 		}
@@ -316,8 +308,8 @@ export function createFleetApp(env = {}) {
 	const refreshJournal = async (after) => {
 		const res = await fetchImpl(scopedUrl(readBase, `/api/swarm/events?after=${after}`));
 		const body = await res.json();
-		if (countEl) countEl.textContent = String((body.journal && body.journal.count) || 0);
-		if (bytesEl) bytesEl.textContent = String((body.journal && body.journal.dbSizeBytes) || 0);
+		chrome.setJournal(body.journal);
+		chrome.markUpdated();
 		foldEvents(body.events);
 	};
 
@@ -348,7 +340,8 @@ export function createFleetApp(env = {}) {
 		dispatch,
 		async start() {
 			const cursor = readCursor(storage);
-			setConnection("connecting");
+			chrome.setConnection("connecting");
+			await refreshFleets().catch(() => {});
 			try {
 				await refreshSnapshot();
 				await refreshJournal(0);
@@ -359,7 +352,7 @@ export function createFleetApp(env = {}) {
 				url: streamUrlFor(location),
 				after: cursor,
 				delayMs: env.delayMs,
-				onState: setConnection,
+				onState: (state) => chrome.setConnection(state),
 				onFrame: (frame, kind) => {
 					if (kind === "snapshot") {
 						rerender(frame.snapshot);
@@ -383,6 +376,7 @@ export function createFleetApp(env = {}) {
 			if (renderTimer !== null) clearTimeout(renderTimer);
 			if (panels) panels.close();
 			if (stream) stream.close();
+			chrome.close();
 		},
 	};
 }

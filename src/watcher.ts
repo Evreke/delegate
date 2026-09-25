@@ -60,6 +60,11 @@ import { sameSessionPath } from "./watch-role.ts";
 // satellite reads — the caller-held closures Law 3 wants (no module globals).
 import { type SessionToolCallCacheEntry } from "./usage.ts";
 import { postSteerAndNudge } from "./mailbox-store.ts";
+// Scheduled wakes (issue #10, stage A): the tick's ONE new event source. The
+// watcher depends only on the SchedulePort read (dueWakes/markDelivered) —
+// the store itself lives in src/watch-schedule.ts and is created per session
+// by index.ts (Law 3) and threaded through compose.ts.
+import { formatScheduleWake, scheduleKey, type DueWake, type SchedulePort } from "./watch-schedule.ts";
 import type { Transport } from "./host.ts";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +89,29 @@ export function formatEventBatch(events: WatchEvent[]): string {
 }
 
 /**
+ * One tick's ONE wake-up message: the fresh events (if any) plus the due
+ * scheduled wakes (if any) — a scheduled wake rides the SAME guarded send as
+ * the event batch, never a second send and never a setTimeout (issue #10).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: events — the tick's accepted event batch (may be empty); wakes — the
+ *   tick's due scheduled wakes (may be empty)
+ * Output: a single message: the existing event batch when events exist, and
+ *   one `scheduled wake (id <id>): <text>` line per due wake; with no events
+ *   the message is exactly the schedule lines (the wake text is intact)
+ * Guarantees:
+ *   - pure formatting; no truncation beyond what detect already applied
+ *   - the event-only output is byte-identical to formatEventBatch(events)
+ * Raises: never
+ */
+export function formatWakeBatch(events: WatchEvent[], wakes: DueWake[] = []): string {
+	const parts: string[] = [];
+	if (events.length > 0) parts.push(formatEventBatch(events));
+	for (const w of wakes) parts.push(formatScheduleWake(w));
+	return parts.join("\n");
+}
+
+/**
  * Audit line for a REAL send (watcher delivery).
  * <p>
  * The durable journal cursor answers "what did this audience already hear";
@@ -94,7 +122,9 @@ export function formatEventBatch(events: WatchEvent[]): string {
  * never spammed). The line states the send FACT and the batch CONTENT: for every event
  * its task dir, worker name, event kind and fingerprint — the same four
  * components the dedup key is built from, so a post-incident reader can
- * re-derive exactly which key was committed.
+ * re-derive exactly which key was committed. Due scheduled wakes append
+ * their `id#run` delivery keys (the schedule dedup key), so the same reader
+ * can re-derive which schedule run was retired.
  * <p>
  * The word "sent" (never "fail"/"error") is deliberate: the production sink
  * (makeWatcherLogSink) surfaces only error-shaped lines to the console, so a
@@ -103,17 +133,22 @@ export function formatEventBatch(events: WatchEvent[]): string {
  * <p>
  * FUNCTION_CONTRACT:
  * Input: events — the events of one batch that was really sent (silent mode
- *   and a failed send have their own lines and never reach this formatter)
+ *   and a failed send have their own lines and never reach this formatter);
+ *   wakes — the due scheduled wakes of the same batch (optional)
  * Output: one line, e.g.
  *   `wake-up sent: 2 event(s) — /tmp/exchange/x :: w1/report-ready#1726..., /tmp/exchange/x :: w2/report-ready#1726...`
+ *   with due wakes: `wake-up sent: 0 event(s) + 1 scheduled [w1#1] — `
  * Guarantees: pure formatting; no I/O; one line per batch regardless of how
  *   many task dirs the batch spans; an event without a fingerprint renders an
- *   empty `#` (the same empty component the dedup key uses)
+ *   empty `#` (the same empty component the dedup key uses); with no wakes
+ *   the output is byte-identical to the pre-#10 form
  * Raises: never
  */
-export function formatWakeUpAuditLine(events: WatchEvent[]): string {
+export function formatWakeUpAuditLine(events: WatchEvent[], wakes: DueWake[] = []): string {
 	const content = events.map((e) => `${e.dir} :: ${e.worker}/${e.kind}#${e.fingerprint ?? ""}`).join(", ");
-	return `wake-up sent: ${events.length} event(s) — ${content}`;
+	const scheduled =
+		wakes.length > 0 ? ` + ${wakes.length} scheduled [${wakes.map((w) => scheduleKey(w.id, w.run)).join(", ")}]` : "";
+	return `wake-up sent: ${events.length} event(s)${scheduled} — ${content}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +189,15 @@ export interface WatcherDeps {
 	 *  Law 8) and can never affect a spawn or collect. `null` disables the read
 	 *  entirely (tests without a journal). */
 	journal?: { eventsAfter(cursor: number): JournalEvent[] } | null;
+	/** Scheduled-wake source (issue #10, stage A): the ONE new event source of
+	 *  the tick. Every tick asks it for due, not-yet-delivered wakes and folds
+	 *  them into the SAME guarded send as the event batch; only a successful
+	 *  send calls markDelivered (id#run) — a failed or silent delivery leaves
+	 *  the schedule pending and it re-fires while due. `undefined`/`null`
+	 *  disables scheduled wakes (the pre-#10 tick, byte-identical). The store
+	 *  is session-scoped and owned by index.ts (Law 3); the watcher depends
+	 *  only on this narrow SchedulePort. */
+	schedules?: SchedulePort | null;
 	/** Snapshot source override (tests drive fixtures; production uses
 	 *  collectSnapshot over manifestStore.scan() + the injected transport). */
 	snapshot?: () => Promise<WatchSnapshot>;
@@ -192,11 +236,27 @@ import { errText } from "./tool-result.ts";
  *   restart. Silent mode (no pi.sendUserMessage) → no disk write, memory
  *   keys stay. Garbage collection: records of a worker that really
  *   vanished from the manifests are removed from this audience's cursor.
+ *   <p>
+ *   Scheduled wakes (issue #10, stage A) are ONE more event source of this
+ *   tick, never a setTimeout swarm: after detection, the injected
+ *   SchedulePort reports its DUE, not-yet-delivered wakes; they are folded
+ *   into the SAME guarded send (formatWakeBatch) and are committed by
+ *   markDelivered(id#run) ONLY on a real send — a failed or silent delivery
+ *   leaves them pending. The leaf-worker filter silences the event batch
+ *   only (a scheduled wake is self-directed); the cursor/journal commit path
+ *   is untouched (it is event-scoped).
  */
 export function createWatcher(deps: WatcherDeps): WatcherHandle {
 	const seen = new Map<string, DeliveryKey>();
 	const log = deps.log ?? ((m: string) => console.error(`[pi-delegate watch] ${m}`));
 	let stopped = false;
+	// Scheduled wakes (issue #10, stage A): the injected source (undefined/null
+	// = disabled). silentWakeKeys is the in-memory SUPPRESSION set mirroring
+	// the event `seen` map: a silent (headless) send suppresses a due wake in
+	// memory — it never claims a delivery (the store keeps it pending) and it
+	// never re-offers the same run every tick.
+	const scheduleSource = deps.schedules ?? null;
+	const silentWakeKeys = new Set<string>();
 	// The audience key of THIS mount — the cursor file name component
 	// (cursor-<watcherKey>.json). A degraded self-id degrades to the shared
 	// "anon" file (strictly no worse than the old shared-manifest stamps).
@@ -502,7 +562,26 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// Garbage collection of vanished workers — before the delivery path,
 		// so a gone worker's records leave the store even on a quiet tick.
 		if (durableEnabled && snapOrNull !== null) await garbageCollect(snapOrNull);
-		if (leafWorker || events.length === 0) return [];
+		if (leafWorker) events = [];
+		// Scheduled wakes (issue #10, stage A): the tick's ONE new event source.
+		// A self-directed scheduled wake is not a foreign-fleet event, so the
+		// leaf-worker suppression (which exists to stop a worker hearing about
+		// its PARENT's fleet) silences the event batch only. dueWakes() is
+		// NON-MUTATING — only a successful send below retires a run
+		// (markDelivered), so a failed send re-fires while due; silent-mode
+		// runs are filtered here (the in-memory analogue of the event `seen`
+		// map). The read is advisory-wrapped (Law 8): a throwing injected port
+		// costs this tick's scheduled wakes, never the tick or a spawn/collect.
+		let dueWakes: DueWake[] = [];
+		if (scheduleSource !== null) {
+			try {
+				dueWakes = scheduleSource.dueWakes().filter((w) => !silentWakeKeys.has(scheduleKey(w.id, w.run)));
+			} catch (err) {
+				log(`scheduled-wake read failed (${errText(err)}) — advisory, no outcome affected`);
+				dueWakes = [];
+			}
+		}
+		if (events.length === 0 && dueWakes.length === 0) return [];
 		// Tick step 7: drop events whose delivery key is already committed to
 		// THIS audience's cursor (e.g. after a session restart, where the memory
 		// cache starts empty). Dropped keys STAY in memory and are never rolled
@@ -518,7 +597,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 				return cursor.records[cursorRecordKey(e.worker, e.kind, e.fingerprint ?? "")] === undefined;
 			});
 		}
-		if (events.length === 0) return [];
+		if (events.length === 0 && dueWakes.length === 0) return [];
 		// Wave 2 (the watcher-vs-collect race): report-kind suppression reads
 		// collectedAt in the TICK SNAPSHOT — a collect that stamps between the
 		// snapshot and the send produced a duplicate report-ready wake for a
@@ -538,7 +617,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 			if (e.kind !== "report-ready" && e.kind !== "report-invalid") return true;
 			return !becameCollectedOnDisk(e.dir, e.worker);
 		});
-		if (events.length === 0) return [];
+		if (events.length === 0 && dueWakes.length === 0) return [];
 		// Automatic self-heal (fix-report-heal): the batch is now FULLY accepted
 		// for delivery (memory dedup + durable cursor + collectedAt suppression
 		// all passed) — nudge live workers whose report failed validation to fix
@@ -557,7 +636,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// re-fire). Only a genuine PRE-delivery failure rolls the keys back.
 		let delivered: boolean;
 		try {
-			const outcome = await deps.send(formatEventBatch(events));
+			const outcome = await deps.send(formatWakeBatch(events, dueWakes));
 			delivered = outcome === undefined || outcome.delivered === true;
 		} catch (err) {
 			if (isDeliveredBeforeThrow(err)) {
@@ -590,6 +669,11 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 			}
 		}
 		if (!delivered) {
+			// Silent mode: the event batch's keys stay in `seen`; a due wake is
+			// suppressed IN MEMORY the same way so it does not re-offer on every
+			// tick. It is NOT markDelivered'ed — the store keeps it pending
+			// (silence is never a success, Law 2).
+			for (const w of dueWakes) silentWakeKeys.add(scheduleKey(w.id, w.run));
 			log("delivery sink is silent (no usable pi.sendUserMessage) — wake-up suppressed in memory, nothing committed to the durable cursor");
 			return events;
 		}
@@ -600,7 +684,11 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// SENDING, so a later commit failure must not hide it (the commit-failure
 		// line below then names the same batch). Silent mode and a failed send
 		// returned above with their own lines — never a third line here.
-		log(formatWakeUpAuditLine(events));
+		log(formatWakeUpAuditLine(events, dueWakes));
+		// Retire the delivered schedule runs — the in-memory analogue of the
+		// cursor commit below, and only on a REAL send: the `id#run` delivery key
+		// is recorded exactly once, so one run can never wake twice (issue #10).
+		for (const w of dueWakes) scheduleSource?.markDelivered(w.id, w.run);
 		// tick step 9 — commit AFTER the successful send, one atomic merge per
 		// task dir (a batch may span dirs: atomicity holds WITHIN each dir's
 		// file; a partial commit between dirs is possible and documented). A
@@ -884,6 +972,10 @@ export function makeWatcherLogSink(): (m: string) => void {
  *   - transport: the injected WorkerHost seam
  *   - ctx.cwd / ctx.sessionManager: the session identity (sessionFile read
  *     tolerantly — a throwing getter degrades to undefined, the mount lives)
+ *   - schedules (optional, issue #10): this session's schedule store; it is
+ *     threaded verbatim into createWatcher's SchedulePort (the same instance
+ *     the delegate_wake tool mutates). Absent/null → scheduled wakes are
+ *     disabled and the mount is the pre-#10 watcher.
  * Output: the stop handle for THIS mount. For an already-mounted session file
  *   the handle of the FIRST (still running) instance.
  * Guarantees:
@@ -903,6 +995,7 @@ export function startWatcher(
 	pi: import("@earendil-works/pi-coding-agent").ExtensionAPI,
 	transport: Transport,
 	ctx: { cwd?: string; sessionManager?: { getSessionFile?: () => string | undefined } },
+	schedules?: SchedulePort | null,
 ): () => void {
 	let sessionFile: string | undefined;
 	try {
@@ -934,6 +1027,9 @@ export function startWatcher(
 		intervalMs: cfg.intervalMs,
 		self: { sessionFile, cwd: ctx.cwd },
 		send: makeSender(pi),
+		// Scheduled wakes (issue #10): the session's store instance (created by
+		// index.ts at session_start) is the tick's one new event source.
+		schedules: schedules ?? null,
 		// Watcher log sink (UX fix, 2026-09-10) — extracted to makeWatcherLogSink
 		// (behaviorally tested; see that function's contract).
 		log: makeWatcherLogSink(),

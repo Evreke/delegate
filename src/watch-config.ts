@@ -42,6 +42,9 @@
 
 import { loadDelegateConfig } from "./profile.ts";
 import { WATCH_DEFAULT_STALE_AFTER_MS } from "./usage.ts";
+// The scheduled-wake limits' defaults are CANONICALLY owned by the leaf
+// store module (watch-schedule.ts) — one constant, no second copy (Law 9).
+import { SCHEDULE_DEFAULT_MAX_ACTIVE, SCHEDULE_DEFAULT_MIN_DELAY_MS } from "./watch-schedule.ts";
 
 // ---------------------------------------------------------------------------
 // Config — {"watch": {"intervalMs": 10000, "settleGateMs": 15000}} from
@@ -275,6 +278,87 @@ function warnBadDurableDelivery(v: unknown): void {
 	console.error(
 		`[pi-delegate watch] bad watch.durableDelivery (${JSON.stringify(v) ?? "undefined"}) — ` +
 			"durable delivery stays ENABLED (default true; false reverts to memory-only dedup)",
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled-wake config (issue #10): {"schedule": {"minDelayMs": 1000,
+// "maxActive": 8}} — the anti-spam limits of the delegate_wake tool. Same
+// tolerant style as the other resolvers: missing/corrupt/partial → defaults,
+// never throws; a PRESENT-but-bad value warns ONCE and falls back (a silent
+// fallback would leave a misconfigured operator wondering why a wake was
+// refused). The default constants are owned by src/watch-schedule.ts.
+// ---------------------------------------------------------------------------
+
+/** The scheduled-wake limits (issue #10). */
+export interface ScheduleConfig {
+	/** Floor on the minimum delay (ms) before a scheduled wake may fire. */
+	minDelayMs: number;
+	/** Cap on active schedules per session. */
+	maxActive: number;
+}
+
+/**
+ * FUNCTION_CONTRACT:
+ * Input: none
+ * Output: ScheduleConfig — minDelayMs (default 1000) and maxActive (default 8)
+ * Guarantees:
+ *   - per-key defaults: a non-finite/negative minDelayMs and a non-finite/
+ *     non-positive maxActive fall back (warn ONCE each per process)
+ *   - missing/corrupt section → defaults, never throws
+ * Raises: never
+ * EXTERNAL_DEPENDENCY: the config file via readDelegateConfig (above).
+ */
+export function resolveScheduleConfig(): ScheduleConfig {
+	const fallback: ScheduleConfig = {
+		minDelayMs: SCHEDULE_DEFAULT_MIN_DELAY_MS,
+		maxActive: SCHEDULE_DEFAULT_MAX_ACTIVE,
+	};
+	try {
+		const e = readDelegateConfig()?.schedule;
+		if (e === null || typeof e !== "object") return fallback;
+		const s = e as Record<string, unknown>;
+		let minDelayMs = fallback.minDelayMs;
+		if (s.minDelayMs !== undefined) {
+			if (typeof s.minDelayMs === "number" && Number.isFinite(s.minDelayMs) && s.minDelayMs >= 0) {
+				minDelayMs = s.minDelayMs;
+			} else {
+				warnBadScheduleMinDelay(s.minDelayMs);
+			}
+		}
+		let maxActive = fallback.maxActive;
+		if (s.maxActive !== undefined) {
+			if (typeof s.maxActive === "number" && Number.isFinite(s.maxActive) && s.maxActive >= 1) {
+				maxActive = Math.floor(s.maxActive);
+			} else {
+				warnBadScheduleMaxActive(s.maxActive);
+			}
+		}
+		return { minDelayMs, maxActive };
+	} catch {
+		return fallback; // defensive — readDelegateConfig already absorbs throws
+	}
+}
+
+/** Warn-once flag for a bad schedule.minDelayMs (issue #10) — once per process. */
+let scheduleMinDelayWarned = false;
+function warnBadScheduleMinDelay(v: unknown): void {
+	if (scheduleMinDelayWarned) return;
+	scheduleMinDelayWarned = true;
+	console.error(
+		`[pi-delegate watch] bad schedule.minDelayMs (${JSON.stringify(v) ?? "undefined"}) — ` +
+			`using the default ${SCHEDULE_DEFAULT_MIN_DELAY_MS} ms`,
+	);
+}
+
+/** Warn-once flag for a bad schedule.maxActive (issue #10) — once per process. */
+let scheduleMaxActiveWarned = false;
+function warnBadScheduleMaxActive(v: unknown): void {
+	if (scheduleMaxActiveWarned) return;
+	scheduleMaxActiveWarned = true;
+	console.error(
+		`[pi-delegate watch] bad schedule.maxActive (${JSON.stringify(v) ?? "undefined"}) — ` +
+			`using the default ${SCHEDULE_DEFAULT_MAX_ACTIVE}`,
 	);
 }
 

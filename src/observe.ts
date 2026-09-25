@@ -25,7 +25,7 @@
  *   - watcher.ts       — the watcher loop + delivery + mount lifecycle
  *     (WatcherDeps/WatcherHandle, createWatcher, SendOutcome, makeSender,
  *     markDeliveredBeforeThrow, makeWatcherLogSink, formatEventBatch,
- *     formatWakeUpAuditLine, startWatcher, stopWatcher + the session-keyed
+ *     formatWakeBatch, formatWakeUpAuditLine, startWatcher, stopWatcher + the session-keyed
  *     mount registry on globalThis — Wave 2, Law 3).
  *   - status-tool.ts   — the `delegate_status` tool (registerStatusTool +
  *     formatFleetUsageLine and its read-only helpers).
@@ -109,6 +109,7 @@ export {
 export {
 	createWatcher,
 	formatEventBatch,
+	formatWakeBatch,
 	formatWakeUpAuditLine,
 	makeSender,
 	makeWatcherLogSink,

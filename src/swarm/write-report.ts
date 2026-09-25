@@ -19,7 +19,7 @@
  * appends the journal event (kind `report` — the operator-approved 14th
  * kind; payload = the validated report JSON verbatim) AFTER a successful
  * atomic publish (the journal never announces an unpublished report); the
- * append is advisory (Law 8: swallowed + structured stderr note) and surfaces
+ * append is advisory (Law 8: swallowed, no stderr note) and surfaces
  * in the success envelope's `journal` field.
  *
  * Schema-tier resolution ORDER (fix/cli-schema-tier, 2026-09-21): the brief's

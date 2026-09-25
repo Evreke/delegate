@@ -333,6 +333,14 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **The noisy advisory stderr lines are gone.** The `swarm-journal` advisory
+  note (a journal append failure) and the `swarm-reconcile` note (a reconcile
+  failure) no longer print a structured JSON line to stderr — the failure is
+  still reflected in the structured result (the journal error envelope / the
+  `IDLE` return) and never blocks the verb, but no longer surfaces as JSON
+  noise in the session TUI. The operator-facing `dashboard` and
+  `operator-token` lines are unchanged.
+
 - **The orphan `public/tree.js` dashboard renderer is removed (#92).** The SPA
   has rendered the tree through `rail.js` (and the panel/controls through
   `detail.js`) since the v1 shell; `tree.js` was a dead renderer no module

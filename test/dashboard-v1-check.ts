@@ -300,6 +300,7 @@ async function main(): Promise<void> {
 	const detailMod = (await import(publicUrl("detail.js"))) as any;
 	const attentionMod = (await import(publicUrl("attention.js"))) as any;
 	const appMod = (await import(publicUrl("app.js"))) as any;
+	const scopeMod = (await import(publicUrl("fleet-scope.js"))) as any;
 
 	const { graph, events } = buildFixture();
 	const ownSessionPath = SELF;
@@ -321,6 +322,8 @@ async function main(): Promise<void> {
 		check("A1.3 the shell root and the module script are static (no build step)", idx.includes('id="fleet-tree"') && idx.includes('type="module"') && idx.includes("/app.js"));
 		const appSrc = readAsset("app.js");
 		check("A1.4 app.js mounts the four in-shell regions (attention/rail/canvas/detail); the statusbar lives in the static frame", /data-region/.test(appSrc) && ["attention-strip", "rail", "center-canvas", "detail"].every((r) => appSrc.includes(`"${r}"`)));
+		check("A1.5 the shell carries the scope chrome, the source-health/age footer slots and a live connection pill (#79/#82/#86)", idx.includes('id="brand-sub"') && idx.includes('id="scope-switch"') && idx.includes('id="health-sources"') && idx.includes('id="journal-updated"') && /id="connection-state"[^>]*role="status"[^>]*aria-live="polite"/.test(idx), idx.slice(0, 200));
+		check("A1.6 the footer pre-fetch placeholders are em dashes, never fabricated zeros (#86)", /id="journal-count"[^>]*>\u2014</.test(idx) && /id="journal-bytes"[^>]*>\u2014</.test(idx) && /id="schema-version"[^>]*>\u2014</.test(idx));
 	}
 
 	// -- A2 — status language ----------------------------------------------
@@ -371,6 +374,20 @@ async function main(): Promise<void> {
 		// must not move when a foreign fleet happens to reuse an own worker name.
 		const shadowed = stateMod.buildDashboardState({ graph, events: events.concat([{ seq: 6, kind: "ask", worker: "w4-1", task: "foreign-task", payload: { question: "shadow" } }]), ownSessionPath, nowMs: NOW });
 		check("A3.7 a foreign-fleet ask that reuses an own worker name is NOT counted (attention never crosses fleets)", shadowed.attention.askCount === 2, JSON.stringify({ ask: shadowed.attention.askCount, items: shadowed.attention.items.map((i: any) => i.worker) }));
+		// #83: the mixed case the old check never covered — one kind ZERO while
+		// another kind is non-zero (only the fully-empty graph was tested).
+		const mixed = stateMod.buildDashboardState({ graph, events: events.slice(0, 1), ownSessionPath, nowMs: NOW });
+		const mixedLabels = attentionMod.chipLabels(mixed.attention);
+		check(
+			"A3.8 a zero-count kind never produces a chip (mixed: ask>0, dead=0, degraded=3)",
+			mixed.attention.askCount === 1 && mixed.attention.deadCount === 0 && mixed.attention.degradedCount === 3 && mixedLabels.length === 2 && !mixed.attention.chips.some((c: any) => c.kind === "dead-reboot") && mixedLabels[0] === "1 ask waiting" && mixedLabels[1] === "3 degraded",
+			JSON.stringify(mixedLabels),
+		);
+		const mixedDoc = fakeDoc();
+		const mixedRoot = mixedDoc.createElement("div");
+		attentionMod.renderAttention(mixed, mixedRoot, mixedDoc, {});
+		const mixedChips = byAttr(mixedRoot, "data-attention-chip");
+		check("A3.9 the rendered strip carries no zero-count chip", mixedChips.length === 2 && mixedChips.every((c) => Number(c.attributes["data-count"]) > 0) && !mixedChips.some((c) => c.attributes["data-attention-chip"] === "dead-reboot"), JSON.stringify(mixedChips.map((c) => [c.attributes["data-attention-chip"], c.attributes["data-count"]])));
 	}
 
 	// -- A4 — attention queue overlay + spotlight ---------------------------
@@ -573,7 +590,11 @@ async function main(): Promise<void> {
 		const shell = els["fleet-tree"];
 		check("A10.1 start() mounts the four in-shell regions inside one shell root (the statusbar lives in the static frame)", byAttr(shell, "data-region").length === 4 && app.state !== null);
 		check("A10.2 the rail renders node rows, the canvas renders graph nodes, the detail renders a panel", byAttr(shell, "data-node-id").length > 0 && byAttr(shell, "data-graph-node").length === layoutMod.computeLayout(app.state, { expansion: app.ui.expansion }).nodes.length && byAttr(shell, "data-detail-for").length === 1, JSON.stringify({ rail: byAttr(shell, "data-node-id").length, canvas: byAttr(shell, "data-graph-node").length, detail: byAttr(shell, "data-detail-for").length }));
-		check("A10.3 the attention strip shows the fixture counts", byAttr(shell, "data-attention-chip").length === 3 && byAttr(shell, "data-attention-chip").every((c) => c.attributes["data-count"] !== undefined));
+		// #83: the strip renders the folded counts after the 50 ms render debounce —
+		// and a zero-count kind never produces a chip.
+		await new Promise((r) => setTimeout(r, 80));
+		const chipEls = byAttr(shell, "data-attention-chip");
+		check("A10.3 the attention strip shows exactly the non-zero fixture counts", chipEls.length === 3 && chipEls.every((c) => Number(c.attributes["data-count"]) > 0), JSON.stringify(chipEls.map((c) => [c.attributes["data-attention-chip"], c.attributes["data-count"]])));
 		check("A10.4 the statusbar reflects the journal envelope + schema", els["journal-count"].textContent === "7" && els["journal-bytes"].textContent === "1234" && els["schema-version"].textContent === "1");
 		const beforeCoord = layoutMod.coordinateGolden(layoutMod.computeLayout(app.state, { expansion: app.ui.expansion }));
 		captured.onFrame({ type: "events", after: 0, events: [{ seq: 9, kind: "progress", worker: "w4-1", payload: { phase: "ship", pct: 99 } }] }, "events");
@@ -582,6 +603,72 @@ async function main(): Promise<void> {
 		check("A10.5 an event frame updates the model without a relayout", beforeCoord === afterCoord && app.state.byId.get(W41).progress.phase === "ship", JSON.stringify(app.state.byId.get(W41).progress));
 		app.dispatch({ type: "chip-click", kind: "ask" });
 		check("A10.6 a chip click opens the overlay through the UI reducer", byAttr(shell, "data-attention-overlay").length === 1);
+		app.close();
+	}
+
+	// -- A12 — fleet scope in the chrome + reachable per-fleet views (#82) --
+	{
+		const rootScope = scopeMod.chromeScope({ fleetId: null, fleets: [{ sessionId: "aaa", own: true }, { sessionId: "bbb", own: false }] });
+		const scopedScope = scopeMod.chromeScope({ fleetId: "aaa", fleets: [{ sessionId: "aaa", own: true }, { sessionId: "bbb", own: false }] });
+		check(
+			"A12.1 chromeScope renders the root as 'all fleets' with a per-fleet index and a scoped page with the switch link back",
+			rootScope.key === "all" && rootScope.brandText === "all fleets" && rootScope.show === true && rootScope.entries.some((e: any) => e.href === "/fleets/bbb/") && scopedScope.key === "aaa" && scopedScope.brandText === "aaa" && scopedScope.entries.some((e: any) => e.href === "/"),
+			JSON.stringify({ root: rootScope, scoped: scopedScope }),
+		);
+		const miniGraph = { available: true, sources: { journal: true, manifests: true, liveStatus: true, usage: true }, nodes: [{ kind: "session", id: "s1", role: "orchestrator", isWorker: false, ownsChildren: true, tasks: ["t1"], degraded: [] }], edges: [], orphans: [] };
+		const fetchImpl = async (url: string) => {
+			if (url.includes("/api/swarm/fleets")) return { json: async () => ({ ok: true, fleets: [{ sessionId: "aaa", own: true, tasks: ["t1"] }, { sessionId: "bbb", own: false, tasks: [] }] }) };
+			if (url.includes("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: miniGraph }) };
+			if (url.includes("/api/swarm/events")) return { json: async () => ({ ok: true, events: [], journal: { count: 3, dbSizeBytes: 12 } }) };
+			throw new Error(`unexpected fetch ${url}`);
+		};
+		const rootEls: Record<string, any> = {};
+		const rootDoc = fakeDoc(rootEls);
+		const rootApp = appMod.createFleetApp({ doc: rootDoc, fetch: fetchImpl, storage: null, location: { protocol: "http:", host: "h", pathname: "/", search: "", hash: "" }, stream: () => ({ state: { lastSeq: 0 }, close() {} }), consoleTail: () => ({ close() {} }), ownSessionPath, nowMs: () => NOW });
+		await rootApp.start();
+		check(
+			"A12.2 the root page exposes data-fleet-id='all', the all-fleets brand, the title and a /fleets/<id>/ link",
+			rootEls["fleet-tree"].attributes["data-fleet-id"] === "all" && rootEls["brand-sub"].textContent === "all fleets" && rootDoc.title === "pi-delegate \u2014 fleet dashboard" && byAttr(rootEls["scope-switch"], "data-fleet-link").some((a) => a.attributes.href === "/fleets/bbb/"),
+			JSON.stringify({ key: rootEls["fleet-tree"].attributes["data-fleet-id"], brand: rootEls["brand-sub"].textContent, title: rootDoc.title }),
+		);
+		rootApp.close();
+		const scopedEls: Record<string, any> = {};
+		const scopedDoc = fakeDoc(scopedEls);
+		const scopedApp = appMod.createFleetApp({ doc: scopedDoc, fetch: fetchImpl, storage: null, location: { protocol: "http:", host: "h", pathname: "/fleets/aaa/", search: "", hash: "" }, stream: () => ({ state: { lastSeq: 0 }, close() {} }), consoleTail: () => ({ close() {} }), ownSessionPath, nowMs: () => NOW });
+		await scopedApp.start();
+		check(
+			"A12.3 the /fleets/<id>/ page exposes its scope id, brand, title and the switch link back to all fleets",
+			scopedEls["fleet-tree"].attributes["data-fleet-id"] === "aaa" && scopedEls["brand-sub"].textContent === "aaa" && scopedDoc.title.includes("aaa") && byAttr(scopedEls["scope-switch"], "data-fleet-link").some((a) => a.attributes.href === "/"),
+			JSON.stringify({ key: scopedEls["fleet-tree"].attributes["data-fleet-id"], brand: scopedEls["brand-sub"].textContent, title: scopedDoc.title }),
+		);
+		scopedApp.close();
+	}
+
+	// -- A13 — journal-health footer + time-aware ticker (#86) --------------
+	{
+		const health = statusMod.sourceHealthView({ available: true, sources: { journal: false, manifests: true, liveStatus: true, usage: true } });
+		const journalRow = health.rows.find((r: any) => r.name === "journal");
+		check("A13.1 a false/unavailable source renders the honest 'journal: unavailable' footer state", journalRow.state === "unavailable" && journalRow.text === "journal: unavailable", JSON.stringify(health.rows));
+		check("A13.2 before the first fetch the footer health is an em dash, not a fabricated 0", statusMod.sourceHealthView(null).rows[0].text === "\u2014" && statusMod.sourceHealthView(null).known === false);
+		const fresh = statusMod.tickerView({ kind: "progress", seq: 7, worker: "w4-1", tsMs: NOW - 12_000 }, NOW);
+		const stale = statusMod.tickerView({ kind: "progress", seq: 7, worker: "w4-1", tsMs: NOW - 300_000 }, NOW);
+		check("A13.3 the ticker carries kind/seq/worker + a relative age and dims past the stale threshold", fresh.text === "progress #7 w4-1 \u00b7 12s" && fresh.stale === false && stale.text === "progress #7 w4-1 \u00b7 5m" && stale.stale === true, JSON.stringify({ fresh, stale }));
+		check("A13.4 an empty journal renders the distinct 'no events yet' ticker", statusMod.tickerView(null, NOW).text === "no events yet" && statusMod.tickerView(null, NOW).stale === false);
+		const miniGraph = { available: true, sources: { journal: true, manifests: true, liveStatus: true, usage: true }, nodes: [{ kind: "session", id: "s1", role: "orchestrator", isWorker: false, ownsChildren: true, tasks: ["t1"], degraded: [] }], edges: [], orphans: [] };
+		const staleTs = new Date(NOW - 600_000).toISOString();
+		const fetchImpl = async (url: string) => {
+			if (url.includes("/api/swarm/fleets")) return { json: async () => ({ ok: true, fleets: [{ sessionId: "s1", own: true, tasks: ["t1"] }] }) };
+			if (url.includes("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: miniGraph }) };
+			if (url.includes("/api/swarm/events")) return { json: async () => ({ ok: true, events: [{ seq: 1, kind: "progress", worker: "w1", ts: staleTs, payload: { phase: "build" } }], journal: { count: 0, dbSizeBytes: 0 } }) };
+			throw new Error(`unexpected fetch ${url}`);
+		};
+		const els: Record<string, any> = {};
+		const doc = fakeDoc(els);
+		const app = appMod.createFleetApp({ doc, fetch: fetchImpl, storage: null, location: { protocol: "http:", host: "h", pathname: "/", search: "", hash: "" }, stream: () => ({ state: { lastSeq: 0 }, close() {} }), consoleTail: () => ({ close() {} }), ownSessionPath, nowMs: () => NOW });
+		await app.start();
+		const ticker = els["activity-ticker"];
+		check("A13.5 the live ticker reads '<kind> #<seq> <worker> \u00b7 <age>' and marks the stale stream", ticker.textContent === "progress #1 w1 \u00b7 10m" && ticker.attributes["data-stale"] === "1", JSON.stringify({ text: ticker.textContent, stale: ticker.attributes["data-stale"] }));
+		check("A13.6 the footer renders the read-model source health (all four rows)", byAttr(els["health-sources"], "data-source").length === 4 && byAttr(els["health-sources"], "data-source-state").every((r) => r.attributes["data-source-state"] === "ok"), JSON.stringify(byAttr(els["health-sources"], "data-source-state").map((r) => r.attributes["data-source-state"])));
 		app.close();
 	}
 

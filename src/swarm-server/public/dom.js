@@ -8,6 +8,8 @@
  * them (a fake doc in a check simply does not).
  */
 
+import { degradedGloss, degradedGlyph } from "./degrade.js";
+
 /** Create an element with attributes and optional text (a null attr is skipped). */
 export function el(doc, tag, attrs, text) {
 	const node = doc.createElement(tag);
@@ -43,12 +45,25 @@ export function renderStatusMarker(doc, view) {
 	});
 }
 
-/** Render the degraded chips for one node (flag text verbatim, severity data). */
+/** Render the degraded chips for one node (flag text verbatim, severity data,
+ *  plus the #90 gloss as title/aria-label and the flag's shape glyph). */
 export function renderDegradedChips(doc, degraded) {
 	const chips = [];
 	for (const badge of Array.isArray(degraded) ? degraded : []) {
 		chips.push(
-			el(doc, "span", { class: `${badge.className}`, "data-degraded-flag": badge.flag, "data-severity": badge.severity }, badge.flag),
+			el(
+				doc,
+				"span",
+				{
+					class: `${badge.className}`,
+					"data-degraded-flag": badge.flag,
+					"data-severity": badge.severity,
+					"data-degraded-glyph": degradedGlyph(badge.flag),
+					title: `${badge.flag}: ${degradedGloss(badge.flag)}`,
+					"aria-label": `${badge.flag}: ${degradedGloss(badge.flag)}`,
+				},
+				badge.flag,
+			),
 		);
 	}
 	return chips;

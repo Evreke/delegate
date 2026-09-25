@@ -28,25 +28,33 @@ function statusRow(doc, node, extra) {
 		"data-selected": extra.selected ? "1" : "0",
 	});
 	row.appendChild(renderStatusMarker(doc, node.statusView));
+	// #91: the marker is a visual shape only — a visually-hidden label carries
+	// the same status to screen readers (color+shape never the only channel).
+	row.appendChild(el(doc, "span", { class: "rail-status-label", "data-rail-status-label": "1" }, node.statusView.label));
 	row.appendChild(el(doc, "span", { class: "rail-name", "data-rail-name": "1" }, extra.name));
 	for (const chip of renderDegradedChips(doc, node.degraded)) row.appendChild(chip);
 	if (node.foreign) row.appendChild(el(doc, "span", { class: "rail-readonly", "data-rail-readonly": "1" }, "read-only"));
 	return row;
 }
 
-function renderWorkerRow(doc, task) {
+function renderWorkerRow(doc, task, ctx) {
 	const list = el(doc, "ul", { class: "rail-workers", "data-rail-workers": task.id });
 	for (const w of task.workers || []) {
 		const row = el(doc, "li", {
 			class: "rail-worker",
 			"data-rail-worker": w.name,
+			"data-worker-id": w.id ?? w.name,
 			"data-session-id": w.sessionId,
 			"data-status": w.status,
 			"data-severity": w.severity,
 		});
 		row.appendChild(renderStatusMarker(doc, w.statusView));
+		row.appendChild(el(doc, "span", { class: "rail-status-label", "data-rail-status-label": "1" }, w.statusView.label));
 		row.appendChild(el(doc, "span", { class: "rail-worker-name" }, w.name));
 		for (const chip of renderDegradedChips(doc, w.degraded)) row.appendChild(chip);
+		// #85b: a worker row is a FOCUS affordance, not a display-only label —
+		// tapping it selects the task AND focuses that worker in the detail panel.
+		on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id, focusWorker: w.name, spotlightIds: taskFocusIds(task) }));
 		list.appendChild(row);
 	}
 	return list;
@@ -60,7 +68,7 @@ function renderTask(doc, task, ctx) {
 	on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id }));
 	const box = el(doc, "div", { class: "rail-task-box", "data-rail-task": task.id });
 	box.appendChild(row);
-	if ((task.workers || []).length > 0) box.appendChild(renderWorkerRow(doc, task));
+	if ((task.workers || []).length > 0) box.appendChild(renderWorkerRow(doc, task, ctx));
 	return box;
 }
 

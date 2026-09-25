@@ -7,6 +7,9 @@
  * documented read doors — `GET /api/swarm/snapshot`, the
  * `WS /api/swarm/stream?after=<seq>` cursor stream and the console endpoints;
  * mutations go through `./mutations.js` (optimistic-with-confirmation, #54).
+ * Per-fleet view (#66 scope §7): `/fleets/<sessionId>/` reads the SCOPED
+ * events/stream base and folds only its OWN graph subtree (`./fleet-scope.js`);
+ * the root view keeps the v1 unscoped behavior.
  *
  * The heavy halves live in their own modules: `./state.js` folds the read
  * model, `./layout.js` places the graph, `./ui.js` owns ephemeral UI state,
@@ -21,6 +24,7 @@
 
 import { buildDashboardState } from "./state.js";
 import { bootstrapFragmentToken } from "./auth-bootstrap.js";
+import { scopedUrl, scopeGraphToFleet, servingScope, streamUrlFor } from "./fleet-scope.js";
 import { computeLayout } from "./layout.js";
 import { createUiState, uiReducer } from "./ui.js";
 import { renderAttention } from "./attention.js";
@@ -57,13 +61,6 @@ export function writeCursor(storage, seq) {
 	}
 }
 
-/** The WS URL for the current page origin. */
-export function streamUrlFor(location) {
-	const proto = location && location.protocol === "https:" ? "wss:" : "ws:";
-	const host = location ? location.host : "127.0.0.1:7331";
-	return `${proto}//${host}/api/swarm/stream`;
-}
-
 /** The shell regions, created inside the #fleet-tree shell root. */
 const REGIONS = [
 	["attention", "attention-strip"],
@@ -90,6 +87,8 @@ export function createFleetApp(env = {}) {
 	const fetchImpl = env.fetch || ((...args) => fetch(...args));
 	const storage = env.storage || (typeof sessionStorage !== "undefined" ? sessionStorage : null);
 	const location = env.location || (typeof window !== "undefined" ? window.location : null);
+	// #66 scope §7: `/fleets/<id>/` reads only that fleet (./fleet-scope.js).
+	const { fleetId, base: readBase } = servingScope(location);
 	const streamFactory = env.stream || createSwarmStream;
 	const promptImpl = env.prompt || (typeof window !== "undefined" && typeof window.prompt === "function" ? window.prompt.bind(window) : null);
 	const nowMs = typeof env.nowMs === "function" ? env.nowMs : () => Date.now();
@@ -267,7 +266,8 @@ export function createFleetApp(env = {}) {
 	};
 
 	const rerender = (graph) => {
-		lastSnapshot = graph;
+		// The ONE graph choke point (HTTP snapshot + WS frame): the fleet filter.
+		lastSnapshot = scopeGraphToFleet(graph, fleetId);
 		render();
 	};
 	const scheduleRender = () => {
@@ -308,13 +308,13 @@ export function createFleetApp(env = {}) {
 		const res = await fetchImpl("/api/swarm/snapshot");
 		const body = await res.json();
 		rerender(body.snapshot);
-		for (const node of (body.snapshot && body.snapshot.nodes) || []) {
+		for (const node of (lastSnapshot && lastSnapshot.nodes) || []) {
 			for (const worker of node.workers || []) panels.start(worker);
 		}
 	};
 
 	const refreshJournal = async (after) => {
-		const res = await fetchImpl(`/api/swarm/events?after=${after}`);
+		const res = await fetchImpl(scopedUrl(readBase, `/api/swarm/events?after=${after}`));
 		const body = await res.json();
 		if (countEl) countEl.textContent = String((body.journal && body.journal.count) || 0);
 		if (bytesEl) bytesEl.textContent = String((body.journal && body.journal.dbSizeBytes) || 0);

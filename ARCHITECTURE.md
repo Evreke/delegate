@@ -1005,9 +1005,16 @@ fleet with its `own` flag). `GET /fleets/<sessionId>/api/swarm/events` and
 `WS /fleets/<sessionId>/api/swarm/stream` emit ONLY that fleet's journal rows
 (the per-audience cursor precedent: attention never crosses fleets); the WS
 scope is resolved from the read-model before the 101 handshake, so an unknown
-fleet is a plain 404, never a fabricated stream. Routing decisions read fleet
+fleet is a plain 404, never a fabricated stream. The dashboard client detects
+its serving base (`public/fleet-scope.js`) and consumes ONLY its own fleet:
+under `/fleets/<id>/` it reads the scoped events/stream and narrows every
+graph it folds — the HTTP snapshot and the WS snapshot frame alike — to the
+session node's own `spawned_by` subtree; the root view stays unscoped. The
+snapshot read keeps the ONE protocol-identity route (no per-fleet snapshot
+contract is added, §4.2.2). Routing decisions read fleet
 state ONLY through the read-model (Law 13). The swarm-http route paths are
 frozen surface (§3); the v1 `/api/*` routes keep working unchanged (Law 7). Check:
-`test/swarm-server-lifecycle-check.ts` (L3–L7) and
+`test/swarm-server-lifecycle-check.ts` (L3–L7),
 `test/swarm-http-api-check.ts` (F1–F10) with the additive goldens in
-`test/swarm-http-goldens.ts`.
+`test/swarm-http-goldens.ts`, and `test/fleet-view-scope-check.ts` (R0–R4 — the
+client-side per-fleet view scope).

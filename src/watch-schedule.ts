@@ -4,9 +4,20 @@
  * <p>
  * MODULE_CONTRACT: owns the session's scheduled wakes — one-shot "wake me
  * at/delay T with M" and periodic "wake me every N with M until cancelled or
- * maxRuns". Pure and in-memory: no filesystem, no timers, no transports.
- * Time enters ONLY through the injected ClockPort (src/clock.ts), so every
- * timing regression runs on the VirtualClock (ARCHITECTURE.md Law 10).
+ * maxRuns". The store itself is pure and in-memory: no filesystem, no timers,
+ * no transports. Time enters ONLY through the injected ClockPort
+ * (src/clock.ts), so every timing regression runs on the VirtualClock
+ * (ARCHITECTURE.md Law 10).
+ * <p>
+ * Durability (#12 stage C): the store is the CACHE; the persisted document is
+ * the single source of truth (Law 9). A persistence port is INJECTED
+ * (`SchedulePersistencePort`, implemented by src/watch-schedule-persist.ts) —
+ * at construction the cache is rebuilt from the persisted state (the watcher
+ * mount restore), and after every mutation the full snapshot (schedules +
+ * retired `id#run` delivery keys + the id sequence) is written back. The
+ * store imports no filesystem: with no port injected it is exactly the stage
+ * A/B in-memory store. A corrupt/foreign document contributes nothing (the
+ * port warns); in-memory behavior is unchanged.
  * <p>
  * Delivery key `id#run` (scheduleKey): one run can never wake twice. The
  * store does NOT deliver — dueWakes() is a non-mutating read and only
@@ -25,8 +36,7 @@
  * Limits (anti-spam), all from the `schedule` config section (defaults shared
  * with src/watch-config.ts, Law 9): minDelayMs (floors the one-shot delay AND
  * the periodic interval), maxActive (active schedules per session) and the
- * periodic run cap maxRuns. #12 durable persistence stacks on this shape
- * (`kind`/`run`/`intervalMs`/`maxRuns`); no persistence lives here.
+ * periodic run cap maxRuns.
  * <p>
  * Dependencies: src/clock.ts (the injected clock — a leaf port) and the
  * seam's DelegateErrorCode type (src/host.ts); a leaf module otherwise.
@@ -145,6 +155,36 @@ export interface ScheduleStoreOptions {
 	maxActive?: number;
 	/** Default periodic run cap (#11); a per-schedule maxRuns overrides it. */
 	maxRuns?: number;
+	/** Durable persistence (#12). When present, the store restores its cache
+	 *  from `read()` at construction and writes the full snapshot after every
+	 *  mutation. Absent → the stage A/B in-memory store, byte-identical. */
+	persistence?: SchedulePersistencePort;
+}
+
+/** The full durable state of the session's schedule store (issue #12): the
+ *  pending schedules, the retired `id#run` delivery keys and the id sequence.
+ *  The persisted document is the single source of truth; the in-memory store
+ *  is a cache rebuilt from it (Law 9). */
+export interface PersistedScheduleState {
+	schedules: WakeSchedule[];
+	/** Retired delivery keys (`scheduleKey`) — the durable delivery records: a
+	 *  run recorded here can never wake again, across a watcher remount. */
+	delivered: string[];
+	/** The id sequence (`w<seq>`); persisted so a restored session never reuses
+	 *  an id whose delivery key is already recorded (a reused id would be
+	 *  suppressed forever — the restored store must stay total). */
+	seq: number;
+}
+
+/** The durable half of the schedule store (#12): an injected leaf port so the
+ *  store imports no filesystem. Implemented by src/watch-schedule-persist.ts. */
+export interface SchedulePersistencePort {
+	/** The persisted state for this session; a missing file reads as empty
+	 *  (first run), a corrupt/unreadable/foreign one as empty WITH a warning.
+	 *  Never throws. */
+	read(): PersistedScheduleState;
+	/** Persist the full snapshot (atomic, versioned). Advisory: never throws. */
+	write(state: PersistedScheduleState): void;
 }
 
 export interface ScheduleStore extends SchedulePort {
@@ -229,6 +269,9 @@ function refuse(code: DelegateErrorCode, error: string, hint: string): ScheduleR
  *   - ids are assigned monotonically (`w1`, `w2`, …) and never reused
  *   - schedule() is total: every invalid input returns a structured
  *     E_SCHEDULE refusal with a hint, never a throw
+ *   - with a persistence port: the cache is rebuilt from it at construction,
+ *     every mutation writes the full snapshot through it, and a port failure
+ *     is advisory (never a throw) — the in-memory mutation stands
  * Raises: never
  */
 export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
@@ -238,10 +281,32 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 	const storeMaxRuns = Math.max(1, Math.floor(opts.maxRuns ?? SCHEDULE_DEFAULT_MAX_RUNS));
 	// The pending set lives in insertion order; the read sorts by due time.
 	const active = new Map<string, WakeSchedule>();
-	// Retired delivery keys (`id#run`) — the in-memory dedup. #12 replaces
-	// this with the durable store.
+	// Retired delivery keys (`id#run`). #12 makes the set durable: it is part of
+	// the persisted snapshot, so a remount cannot re-deliver a recorded run.
 	const delivered = new Set<string>();
 	let seq = 0;
+
+	// Mount restore (#12): rebuild the cache from the durable document. The
+	// port is total (a corrupt/foreign/missing document already warned and
+	// contributed nothing), so this cannot break the mount (Law 8, advisory).
+	const persistence = opts.persistence;
+	if (persistence !== undefined) {
+		const restored = persistence.read();
+		for (const s of restored.schedules) active.set(s.id, { ...s });
+		for (const key of restored.delivered) delivered.add(key);
+		let maxId = 0;
+		for (const s of restored.schedules) {
+			const m = /^w(\d+)$/.exec(s.id);
+			if (m !== null) maxId = Math.max(maxId, Number(m[1]));
+		}
+		seq = Math.max(restored.seq, maxId);
+	}
+	/** Write the full snapshot through the injected port (the port is
+	 *  advisory: it never throws, and the in-memory mutation stands either way). */
+	const persist = (): void => {
+		if (persistence === undefined) return;
+		persistence.write({ schedules: [...active.values()].map((s) => ({ ...s })), delivered: [...delivered], seq });
+	};
 
 	const byDue = (a: WakeSchedule, b: WakeSchedule): number =>
 		a.dueAtMs - b.dueAtMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -325,6 +390,7 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 				schedule.maxRuns = input.maxRuns ?? storeMaxRuns;
 			}
 			active.set(schedule.id, schedule);
+			persist();
 			return { ok: true, schedule };
 		},
 
@@ -338,6 +404,7 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 				);
 			}
 			active.delete(id);
+			persist();
 			return { ok: true, schedule: found };
 		},
 
@@ -373,10 +440,14 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 		markDelivered(id: string, run: number): void {
 			delivered.add(scheduleKey(id, run));
 			const found = active.get(id);
-			if (found === undefined) return;
+			if (found === undefined) {
+				persist(); // the delivery key itself is the durable fact
+				return;
+			}
 			if (found.kind !== "periodic") {
 				// One-shot: a matching delivery retires the schedule (stage A).
 				if (found.run === run) active.delete(id);
+				persist();
 				return;
 			}
 			// Periodic (#11): the delivered run advances the next-due past NOW
@@ -385,15 +456,20 @@ export function createScheduleStore(opts: ScheduleStoreOptions): ScheduleStore {
 			// stale/unknown run changes nothing; reaching the cap removes the
 			// schedule. Advancing only HERE (never in dueWakes) keeps the store
 			// the single source of truth for run counts and next-due (Law 9).
-			if (run < found.run) return;
+			if (run < found.run) {
+				persist(); // the key is recorded even when it changes no schedule
+				return;
+			}
 			const nextRun = run + 1;
 			if (found.maxRuns !== undefined && nextRun > found.maxRuns) {
 				active.delete(id);
+				persist();
 				return;
 			}
 			const covered = run - found.run + 1;
 			found.dueAtMs += covered * (found.intervalMs ?? 0);
 			found.run = nextRun;
+			persist();
 		},
 	};
 }

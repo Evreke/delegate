@@ -33,6 +33,8 @@ import { registerMailboxTool } from "./src/mailbox-tool.ts";
 // watcher mount — ONE instance, Law 9/Law 3).
 import { registerWakeTool } from "./src/wake-tool.ts";
 import { createScheduleStore, type ScheduleStore } from "./src/watch-schedule.ts";
+import { createSchedulePersistence } from "./src/watch-schedule-persist.ts";
+import { makeWatcherLogSink } from "./src/watcher.ts";
 import { resolveScheduleConfig } from "./src/watch-config.ts";
 import { systemClock } from "./src/clock.ts";
 // Resume reconciliation (#27, ARCHITECTURE §4.1.4): journal scan + dead-reboot
@@ -254,13 +256,17 @@ export default function (pi: ExtensionAPI) {
 		// created here before the watcher mount — the watcher tick and the
 		// delegate_wake tool share this exact instance. `schedule.*` limits come
 		// from the config; the clock is the production system clock (regressions
-		// inject the VirtualClock at the store/tick seam instead).
+		// inject the VirtualClock at the store/tick seam instead). Stage C (#12):
+		// the store is backed by the durable per-session document at the exchange
+		// root (restored here = the watcher-mount restore; a degraded self-id
+		// disables persistence — fail-closed, no shared "anon" file).
 		const scheduleCfg = resolveScheduleConfig();
 		const schedules = createScheduleStore({
 			clock: systemClock,
 			minDelayMs: scheduleCfg.minDelayMs,
 			maxActive: scheduleCfg.maxActive,
 			maxRuns: scheduleCfg.maxRuns,
+			persistence: createSchedulePersistence({ sessionPath: sessionFile, log: makeWatcherLogSink() }),
 		});
 
 		// Event-driven watcher: the replacement for the

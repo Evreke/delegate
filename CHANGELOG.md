@@ -44,6 +44,24 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   removes itself after its last run; `cancel` stops it mid-cycle. In-memory
   and session-scoped (Law 3); durable persistence is #12.
 
+- **Scheduled wakes, stage C — durable schedules (#12).** Pending scheduled wakes
+  now SURVIVE a watcher remount (extension reload, watcher recreation while the
+  session lives). The store is persisted as ONE versioned JSON document per session
+  at the exchange root (`schedules-<watcherKey>.json`, next to the watcher's cursor
+  satellites; built by `src/expaths.ts`); on mount the store rebuilds its cache from
+  that document (Law 9 — the file is the single source of truth, the in-memory store
+  is a cache) and after every mutation it writes the full snapshot back through a new
+  injected `SchedulePersistencePort` (`src/watch-schedule-persist.ts`), so the store
+  itself stays a filesystem-free leaf. Delivered runs (`id#run`) are part of that
+  snapshot — the same delivery-record mechanism/ordering the event-wake cursor uses
+  (committed only after a real send; a failed send leaves no record so the next tick
+  retries), so a delivered wake is never re-delivered after a restart. Restore is
+  advisory by contract: a missing file is a quiet first run, while a corrupt,
+  unreadable, wrong-`schemaVersion` (Law 7) or foreign-session document (Law 3 — a
+  closed session never resurrects) yields ZERO restored schedules and ONE warning in
+  the watcher log, never a dead watcher. A degraded self-id disables persistence
+  entirely (fail-closed — no shared "anon" file).
+
 - **Dashboard access UX — widget link, fragment auth, one server per machine
   (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`
   stderr line carrying the ACTUAL bound port (an `EADDRINUSE` fallback is

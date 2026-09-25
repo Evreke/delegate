@@ -876,6 +876,7 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 	{ file: "src/swarm/journal-manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the pure replay/diff fold (replayManifest + diffManifestEvents) into a journal-manifest-replay.ts sibling" },
 	{ file: "src/swarm-server/server.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the #51 mutation-response cluster (auth + id/body validation + outcome mapping) into a server-mutation.ts sibling; the #51+#52 merge pushed the route layer over the threshold" },
+	{ file: "src/watch-schedule.ts", owner: "operator", targetRelease: "1.19.0", plan: "#12's durable fold (persistence port + mount restore + snapshot-on-mutation) pushed the store over the threshold; the file/version/identity rules already live in the watch-schedule-persist.ts sibling — remaining: move the pure wake-text formatters (formatScheduleWake/formatDurationMs) into a watch-schedule-text.ts sibling" },
 ];
 
 const sizeOffenders = listTsFiles(resolve(ROOT, "src"))

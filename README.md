@@ -79,7 +79,12 @@ a **validated JSON report** is on disk — never when the agent status says done
   due (`delayMs` relative, or `at` absolute ISO-8601). Use it after handing a long-running
   external process (a build, a compose stack, an install) that leaves no worker behind —
   end your turn instead of sleeping. Wakes are session-scoped, fire exactly once, and can
-  be listed (`action: "list"`) or cancelled by id. Anti-spam limits:
+  be listed (`action: "list"`) or cancelled by id. Pending wakes are **durable**: they are
+  stored in one JSON document per session at the exchange root
+  (`schedules-<key>.json`) and survive a watcher remount (extension reload), so a wake
+  scheduled for 10 minutes out still fires — exactly once — after a reload; delivered runs
+  are recorded before the next tick continues, and a corrupt/unreadable store degrades to
+  "zero restored schedules + a watcher-log warning", never a dead watcher. Anti-spam limits:
   `schedule.minDelayMs` (default 1 s) and `schedule.maxActive` (default 8).
 - **File mailbox.** `q-<name>.json` / `a-<name>.json` — send follow-ups to a running worker
   or answer its questions without respawning it.
@@ -427,8 +432,12 @@ done/idle.
   ISO-8601). Удобно после передачи долгого внешнего процесса (сборка, docker compose,
   установка), за которым не остаётся воркера: завершайте ход вместо `sleep`. Пробуждения
   привязаны к сессии, срабатывают ровно один раз; их можно посмотреть
-  (`action: "list"`) или отменить по id. Антиспам-лимиты: `schedule.minDelayMs`
-  (по умолчанию 1 с) и `schedule.maxActive` (по умолчанию 8).
+  (`action: "list"`) или отменить по id. Ожидающие пробуждения **переживают ремаунт**
+  вотчера (перезагрузку расширения): они хранятся в одном JSON-документе на сессию в
+  корне exchange (`schedules-<key>.json`), доставленные прогоны записываются до того, как
+  тик считается завершённым, а битый/нечитаемый стор деградирует до «ноль восстановленных
+  расписаний + предупреждение в логе вотчера», но не до мёртвого вотчера. Антиспам-лимиты:
+  `schedule.minDelayMs` (по умолчанию 1 с) и `schedule.maxActive` (по умолчанию 8).
 - **Почтовый ящик.** `q-<имя>.json` / `a-<имя>.json` — докидывайте уточнения работающему
   воркеру и отвечайте на его вопросы без пересоздания.
 - **Строгие отчёты.** Критерий завершения — **валидный JSON-отчёт** с evidence

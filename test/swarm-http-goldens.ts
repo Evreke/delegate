@@ -155,11 +155,13 @@ export const HTTP_GOLDENS = {
 	/** Console bad offset (400). */
 	consoleUsage: '{"ok":false,"schemaVersion":1,"error":{"code":"E_CONSOLE_USAGE","message":"invalid ?offset= value","hint":"Pass an integer ?offset=<n> (>= 0; omit for 0). The endpoint refuses non-numeric or negative offsets."}}',
 
-	/** Mutation success (steer; files mode → journal null). */
-	steerOk: '{"ok":true,"schemaVersion":1,"verb":"steer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"nudged":false}',
+	/** Mutation success (steer; files mode → journal null, confirmation
+	 *  "unavailable" — the additive #62 item-1 field; the v1 keys are
+	 *  untouched, Law 7). */
+	steerOk: '{"ok":true,"schemaVersion":1,"verb":"steer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"confirmation":"unavailable","nudged":false}',
 
 	/** Mutation success (answer; the same envelope with verb=answer). */
-	answerOk: '{"ok":true,"schemaVersion":1,"verb":"answer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"nudged":false}',
+	answerOk: '{"ok":true,"schemaVersion":1,"verb":"answer","worker":"w1","via":"http","answerPath":"{{ANSWER_PATH}}","journal":null,"confirmation":"unavailable","nudged":false}',
 
 	/** Mutation auth refusal — missing and wrong token are byte-identical. */
 	authRefused: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_AUTH","message":"missing or invalid operator token","hint":"Every mutation request needs Authorization: Bearer <operator token>; the token is printed on the session\'s stderr at mount."}}',

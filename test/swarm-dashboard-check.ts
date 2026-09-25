@@ -551,7 +551,18 @@ async function main(): Promise<void> {
 		await new Promise((r) => setTimeout(r, 150));
 		check("S7.3 an event batch refreshes the tree without a reload (fresh snapshot, node count grows)", snapshotCalls === 2 && nodeCount() === 2, `calls=${snapshotCalls} nodes=${nodeCount()}`);
 		captured.onState("open");
-		check("S7.4 the connection-state indicator reflects the stream state", els["connection-state"].attributes["data-connection-state"] === "open" && els["connection-state"].textContent === "open");
+		const pill = els["connection-state"];
+		check(
+			"S7.4 the connection-state indicator carries the raw token, the human label and the colour class (#79)",
+			pill.attributes["data-connection-state"] === "open" && pill.textContent === "live" && pill.attributes.class === "conn conn-open",
+			JSON.stringify({ text: pill.textContent, class: pill.attributes.class }),
+		);
+		captured.onState("closed");
+		check(
+			"S7.4b a closed stream flips the pill to 'disconnected' + the closed colour class (never a frozen 'connecting')",
+			pill.attributes["data-connection-state"] === "closed" && pill.textContent === "disconnected" && pill.attributes.class === "conn conn-closed",
+			JSON.stringify({ text: pill.textContent, class: pill.attributes.class }),
+		);
 		appInstance.close();
 	}
 

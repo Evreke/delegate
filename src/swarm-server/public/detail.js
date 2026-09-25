@@ -8,18 +8,24 @@
  * event, the open-question banner and the optimistic steer/answer controls.
  *
  * Honesty rules: `model` and provider are NOT in the read-model — the panel
- * says so instead of inventing a value; brief/report have no v1 endpoint, so
- * those tabs state it rather than showing fake content; a foreign or terminal
- * worker renders its controls DISABLED WITH THE REASON, never hidden (Law 8).
+ * says so instead of inventing a value; a foreign or terminal worker renders
+ * its controls DISABLED WITH THE REASON, never hidden (Law 8).
  * #85 adds the panel header (name + id + task), the per-kind pending lines and
  * the no-session console pane; #93 marks a truncated console and makes ask
- * options fill the answer input. No framework; a pure view over the model +
- * the #54 console/steer views.
+ * options fill the answer input. #87 turns the brief/report tabs into the real
+ * exchange files: when the subject carries a worker id + name + exchange dir
+ * the panel fetches `GET /api/workers/:id/brief|report` and renders the text,
+ * with an honest absent/refused/error state (the console banner's template);
+ * a node with no resolvable worker keeps the unavailable pane.
+ * No framework; a pure view over the model + the #54 console/steer views.
  */
 
-import { el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
+import { clear, el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
 
 const TABS = ["console", "brief", "report"];
+
+/** The exchange-file tab kinds (the server's closed set, #87). */
+export const FILE_KINDS = ["brief", "report"];
 
 /**
  * #85a: the panel NAMES its subject — name, id and task. A stable header is
@@ -123,7 +129,108 @@ function renderConsolePane(doc, view) {
 }
 
 function renderStaticPane(doc, name) {
-	return el(doc, "div", { class: "detail-pane detail-pane-unavailable", "data-pane": name, "data-pane-unavailable": "1" }, `${name}: this server exposes no ${name} endpoint (v1)`);
+	return el(doc, "div", { class: "detail-pane detail-pane-unavailable", "data-pane": name, "data-pane-unavailable": "1" }, `${name}: unavailable \u2014 this node carries no worker exchange dir to read`);
+}
+
+// --- #87 brief/report exchange files ----------------------------------
+
+/** `GET /api/workers/:id/brief|report` — the two read-only file routes. */
+export function exchangeFileUrl(nodeId, kind) {
+	return `/api/workers/${encodeURIComponent(nodeId)}/${kind === "report" ? "report" : "brief"}`;
+}
+
+/** Fold one exchange-file envelope into a pane state (never throws). */
+export function reduceFileFrame(state, frame) {
+	const cur = state && typeof state === "object" ? state : { status: "idle", text: null, error: null };
+	if (!frame || typeof frame !== "object") return cur;
+	if (frame.ok !== true) {
+		const error = frame.error && typeof frame.error === "object" ? frame.error : {};
+		const code = typeof error.code === "string" ? error.code : "E_EXCHANGE_FILE_ERROR";
+		return { status: code === "E_EXCHANGE_FILE_REFUSED" ? "refused" : "error", text: null, error: { code, message: typeof error.message === "string" ? error.message : "exchange-file request failed" } };
+	}
+	if (frame.absent === true) return { status: "absent", text: null, error: null };
+	return { status: "ready", text: typeof frame.text === "string" ? frame.text : "", error: null };
+}
+
+/** One cached GET per (nodeId, kind); an injected `fetch` seam wins. */
+export function createFileStore(opts = {}) {
+	const doFetch = opts.fetch || ((url) => globalThis.fetch(url));
+	const states = new Map();
+	const inflight = new Map();
+	const load = (nodeId, kind) => {
+		const key = `${nodeId}:${kind}`;
+		const cached = states.get(key);
+		if (cached && cached.status !== "loading") return Promise.resolve(cached);
+		if (inflight.has(key)) return inflight.get(key);
+		const promise = (async () => {
+			states.set(key, { status: "loading", text: null, error: null });
+			let next;
+			try {
+				next = reduceFileFrame(states.get(key), await (await doFetch(exchangeFileUrl(nodeId, kind))).json());
+			} catch (err) {
+				next = { status: "error", text: null, error: { code: "E_EXCHANGE_FILE_ERROR", message: String((err && err.message) || err) } };
+			}
+			states.set(key, next);
+			inflight.delete(key);
+			return next;
+		})();
+		inflight.set(key, promise);
+		return promise;
+	};
+	return { load, get: (nodeId, kind) => states.get(`${nodeId}:${kind}`) || null };
+}
+
+const sharedFileStore = { instance: null };
+/** The panel's shared store (an injected `opts.fileStore` wins). */
+function fileStoreFor(opts) {
+	return opts.fileStore || (sharedFileStore.instance ??= createFileStore({ fetch: opts.fetch }));
+}
+
+/** The resolvable worker identity behind a detail subject (id + name + dir). */
+function fileTarget(view) {
+	const node = view && view.subject ? view.subject : null;
+	if (!node) return null;
+	const nodeId = view.workerSessionId || (node.kind === "session" ? node.id : null);
+	const name = view.worker || node.worker || (node.kind === "worker" ? node.name : null);
+	const dir = typeof node.dir === "string" && node.dir.length > 0 ? node.dir : null;
+	return nodeId && name && dir ? { nodeId, name, dir } : null;
+}
+
+/** Repaint one file pane in place (the console tail's patch precedent). */
+function paintFilePane(doc, pane, kind, state) {
+	clear(pane);
+	const s = state && typeof state === "object" ? state : {};
+	const status = typeof s.status === "string" ? s.status : "loading";
+	pane.setAttribute("data-pane-state", status);
+	// `data-pane-unavailable` = "no file content in this pane right now"
+	// (idle/loading/absent/refused/error); `ready` clears it.
+	pane.setAttribute("data-pane-unavailable", status === "ready" ? "0" : "1");
+	const banner = (variant, text) => pane.appendChild(el(doc, "div", { class: `file-banner${variant ? ` file-banner-${variant}` : ""}`, "data-file-banner": variant || status }, text));
+	if (status === "ready") {
+		banner("ready", `${kind}: loaded`);
+		pane.appendChild(el(doc, "pre", { class: "file-text", "data-file-text": "1" }, s.text || ""));
+	} else if (status === "absent") {
+		banner("absent", `${kind}: absent \u2014 this task's exchange dir holds no ${kind} file`);
+	} else if (status === "refused") {
+		banner("refused", `${kind}: refused \u2014 not owned by this session`);
+	} else if (status === "error") {
+		banner("error", `${kind}: ${(s.error && s.error.message) || "read failed"}`);
+	} else {
+		banner("loading", `${kind}: loading\u2026`);
+	}
+}
+
+/** Render (and lazily fetch) one exchange-file pane, or the honest fallback. */
+function renderFilePane(doc, view, kind, ctx) {
+	const target = fileTarget(view);
+	if (!target) return renderStaticPane(doc, kind);
+	const pane = el(doc, "div", { class: "detail-pane file-pane", "data-pane": kind, "data-file-node": target.nodeId });
+	const store = ctx.fileStore;
+	paintFilePane(doc, pane, kind, store ? store.get(target.nodeId, kind) : null);
+	// Repaint THIS element when the fetch lands (a tab render does not survive
+	// the round trip) — the console tail's in-place patch precedent.
+	if (store && typeof store.load === "function") store.load(target.nodeId, kind).then((next) => paintFilePane(doc, pane, kind, next));
+	return pane;
 }
 
 function renderTabs(doc, view, ctx) {
@@ -219,8 +326,10 @@ function findAttr(node, attr, out = []) {
  *   root, doc, opts ({ dispatch, onSend(kind, worker, text), onDraft(key,
  *   text) }). Output — none (root mutated).
  * Guarantees: a degraded/absent usage renders the honest `usage-unavailable`
- *   bar; foreign/terminal controls are disabled WITH their reason; brief and
- *   report state the absent endpoint. Raises: never on a well-formed view.
+ *   bar; foreign/terminal controls are disabled WITH their reason; the
+ *   brief/report tabs render the real exchange file when the subject carries
+ *   a worker id + name + dir, else the honest unavailable pane (#87).
+ *   Raises: never on a well-formed view.
  */
 export function renderDetail(view, root, doc, opts = {}) {
 	while (root.firstChild) root.removeChild(root.firstChild);
@@ -229,7 +338,7 @@ export function renderDetail(view, root, doc, opts = {}) {
 		return;
 	}
 	const node = view.subject;
-	const ctx = { dispatch: opts.dispatch, tab: view.tab || "console", onSend: opts.onSend, onDraft: opts.onDraft };
+	const ctx = { dispatch: opts.dispatch, tab: view.tab || "console", onSend: opts.onSend, onDraft: opts.onDraft, fileStore: fileStoreFor(opts) };
 	const panel = el(doc, "div", {
 		class: "detail-panel",
 		"data-detail": "1",
@@ -248,7 +357,7 @@ export function renderDetail(view, root, doc, opts = {}) {
 	if (ask) panel.appendChild(ask);
 	panel.appendChild(renderTabs(doc, view, ctx));
 	if (ctx.tab === "console") panel.appendChild(renderConsolePane(doc, view));
-	else panel.appendChild(renderStaticPane(doc, ctx.tab));
+	else panel.appendChild(renderFilePane(doc, view, ctx.tab, ctx));
 	const controls = renderControls(doc, view, ctx);
 	if (controls) panel.appendChild(controls);
 	// #93: an ask option fills the answer input (a click, not an inert span).

@@ -39,7 +39,8 @@ function embodimentIndex(graph) {
 		if (node.kind !== "task") continue;
 		for (const w of node.workers ?? []) {
 			if (typeof w.sessionId !== "string" || index.has(w.sessionId)) continue;
-			index.set(w.sessionId, { task: node.id, worker: w });
+			// #87: `dir` is the task's exchange dir — a worker's brief/report fetch key.
+			index.set(w.sessionId, { task: node.id, dir: node.dir ?? null, worker: w });
 		}
 	}
 	return index;
@@ -107,7 +108,7 @@ function buildSessionNode(node, ctx) {
 		kind: "session",
 		name: node.id,
 		worker: workerName,
-		task: ctx.embodiments.get(node.id)?.task ?? (node.tasks ?? [])[0] ?? null,
+		task: ctx.embodiments.get(node.id)?.task ?? (node.tasks ?? [])[0] ?? null, dir: ctx.embodiments.get(node.id)?.dir ?? null,
 		role: node.role,
 		isWorker: node.isWorker === true,
 		ownsChildren: node.ownsChildren === true,
@@ -150,7 +151,7 @@ function buildTaskNode(node, ctx) {
 		return {
 			// #85a: a stable id + kind so a worker row is never an anonymous subject.
 			id: `${node.id}/${w.name ?? "worker"}`, kind: "worker", name: w.name, run: w.run ?? null,
-			sessionId: w.sessionId ?? null, task: node.id, role: null, depth: typeof node.depth === "number" ? node.depth : null,
+			sessionId: w.sessionId ?? null, task: node.id, dir: node.dir ?? null, role: null, depth: typeof node.depth === "number" ? node.depth : null,
 			liveStatus: w.liveStatus ?? null,
 			status,
 			statusView: statusView(status),
@@ -191,7 +192,7 @@ function buildTaskNode(node, ctx) {
 		id: node.id,
 		kind: "task",
 		name: node.id,
-		worker: null,
+		worker: null, dir: node.dir ?? null,
 		depth: typeof node.depth === "number" ? node.depth : null,
 		status,
 		statusView: statusView(status),

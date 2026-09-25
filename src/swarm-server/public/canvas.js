@@ -3,9 +3,10 @@
  *
  * SVG-only rendering of the swarm graph: depth columns, curved bezier
  * `spawned_by` edges, status-language nodes (marker LEFT of the name,
- * one-line sub, context micro-bar, degraded ⚠N marker, dotted border for
- * foreign nodes) and adaptive-collapse aggregates. No physics, no
- * drag-to-rearrange, no canvas/WebGL — node counts are tens.
+ * one-line sub, context micro-bar, ONE per-flag degradation badge per flag
+ * with a tooltip listing them verbatim, dotted border for foreign nodes) and
+ * adaptive-collapse aggregates. No physics, no drag-to-rearrange, no
+ * canvas/WebGL — node counts are tens.
  *
  * `renderCanvas` paints the layout once; `patchCanvas` updates status/progress
  * text and severity attributes IN PLACE, leaving every `transform` untouched —
@@ -42,12 +43,22 @@ function svgEl(doc, tag, attrs, text) {
 
 const SHAPE_TAGS = { dot: "circle", "dot-hollow": "circle", square: "rect", "square-hollow": "rect", ring: "circle", "ring-dashed": "circle", "ring-solid": "circle", diamond: "rect" };
 
-/** The marker geometry for one status (color + shape, LEFT of the name). */
+/** Status classes drawn DASHED (#84): `unknown` shares `idle`'s `dot-hollow`
+ *  shape in status.js (not ours to edit), so the canvas recovers the CSS
+ *  `.status-unknown` dashed border from the class NAME. */
+const DASHED_STATUS_CLASSES = new Set(["status-unknown", "status-no-live-status"]);
+
+/** Marker geometry for one status: `{ r|half, hollow, dashed, strokeWidth }`.
+ *  #84: `unknown` is dashed where `idle` is solid, and `done`/`collected`
+ *  keep the status.css 2px/1.5px pair — no two statuses share a
+ *  geometry+stroke pair. Input is a status view ({ shape, className }). */
 export function markerGeometry(view) {
-	if (view.shape === "dot" || view.shape === "dot-hollow") return { r: 5, hollow: view.shape === "dot-hollow" };
-	if (view.shape === "ring" || view.shape === "ring-dashed" || view.shape === "ring-solid") return { r: 5.5, hollow: true, dashed: view.shape === "ring-dashed" };
-	if (view.shape === "diamond") return { half: 6, rotated: true };
-	return { half: 5, hollow: view.shape === "square-hollow" };
+	const dashed = DASHED_STATUS_CLASSES.has(view?.className);
+	const shape = view.shape;
+	if (shape === "dot" || shape === "dot-hollow") return { r: 5, hollow: shape === "dot-hollow", dashed, strokeWidth: 1.5 };
+	if (shape === "ring" || shape === "ring-dashed" || shape === "ring-solid") return { r: 5.5, hollow: true, dashed: shape === "ring-dashed", strokeWidth: shape === "ring-solid" ? 2 : 1.5 };
+	if (shape === "diamond") return { half: 6, rotated: true, hollow: false, dashed: false, strokeWidth: 1.5 };
+	return { half: 5, hollow: shape === "square-hollow", dashed: false, strokeWidth: 1.5 };
 }
 
 function renderSvgMarker(doc, view, cx, cy) {
@@ -55,10 +66,10 @@ function renderSvgMarker(doc, view, cx, cy) {
 	const geo = markerGeometry(view);
 	const attrs = { class: `graph-marker ${view.className}${view.pulse ? " status-pulse" : ""}`, "data-status-marker": view.shape, "data-shape": view.shape };
 	if (tag === "circle") {
-		Object.assign(attrs, { cx, cy, r: geo.r, "fill": geo.hollow ? "none" : "currentColor", "stroke": "currentColor", "stroke-width": 1.5 });
+		Object.assign(attrs, { cx, cy, r: geo.r, "fill": geo.hollow ? "none" : "currentColor", "stroke": "currentColor", "stroke-width": geo.strokeWidth });
 		if (geo.dashed) attrs["stroke-dasharray"] = "3 2";
 	} else {
-		Object.assign(attrs, { x: cx - geo.half, y: cy - geo.half, width: geo.half * 2, height: geo.half * 2, "fill": geo.hollow ? "none" : "currentColor", "stroke": "currentColor", "stroke-width": 1.5, rx: 1 });
+		Object.assign(attrs, { x: cx - geo.half, y: cy - geo.half, width: geo.half * 2, height: geo.half * 2, "fill": geo.hollow ? "none" : "currentColor", "stroke": "currentColor", "stroke-width": geo.strokeWidth, rx: 1 });
 		if (geo.rotated) attrs.transform = `rotate(45 ${cx} ${cy})`;
 	}
 	return svgEl(doc, tag, attrs);
@@ -125,9 +136,26 @@ function paintNodeContent(doc, group, node) {
 		group.appendChild(svgEl(doc, "rect", { class: "graph-ctxbar", "data-context-microbar": "1", "data-context-pct": pct, x: NODE_W - 46, y: NODE_H - 12, width: 36, height: 4, rx: 2 }));
 		group.appendChild(svgEl(doc, "rect", { class: "graph-ctxbar-fill", x: NODE_W - 46, y: NODE_H - 12, width: (36 * pct) / 100, height: 4, rx: 2 }));
 	}
-	if (node.kind !== "aggregate" && (node.degraded || []).length > 0) {
-		group.appendChild(svgEl(doc, "text", { class: "graph-degraded", "data-degraded-count": node.degraded.length, x: NODE_W - 10, y: 18, "text-anchor": "end" }, `\u26a0${node.degraded.length}`));
-	}
+	if (node.kind !== "aggregate" && (node.degraded || []).length > 0) group.appendChild(renderDegradedBadges(doc, node.degraded));
+}
+
+/** One canvas glyph per degradation flag (#84): the SVG half of degrade.js's
+ *  four-flag vocabulary (an unknown flag keeps the honest `⚠`, never dropped). */
+export const DEGRADED_GLYPHS = Object.freeze({ "no-session-path": "\u2298", "no-live-status": "\u25cc", "legacy-orphan": "\u2691", "usage-unavailable": "\u25a4" });
+
+/** The #84 canvas degradation marker: one badge per flag carrying the flag's
+ *  own degrade class + severity and a distinct glyph, plus a `<title>` listing
+ *  the flags verbatim (tooltip) — never one severity-blind `⚠N` counter. */
+export function renderDegradedBadges(doc, badges) {
+	const cluster = svgEl(doc, "g", { class: "graph-degraded-cluster", "data-degraded-count": badges.length });
+	cluster.appendChild(svgEl(doc, "title", {}, `degraded: ${badges.map((b) => b.flag).join(", ")}`));
+	badges.forEach((badge, i) => {
+		const glyph = DEGRADED_GLYPHS[badge.flag] || "\u26a0";
+		cluster.appendChild(
+			svgEl(doc, "text", { class: `graph-degraded-flag ${badge.className}`, "data-degraded-flag": badge.flag, "data-flag-severity": badge.severity, "data-degraded-glyph": glyph, x: NODE_W - 10 - i * 12, y: 18, "text-anchor": "end" }, glyph),
+		);
+	});
+	return cluster;
 }
 
 /** The canvas one-line sub: `status · elapsed · progress`, honestly sparse. */
@@ -250,10 +278,31 @@ export function sameView(a, b) {
 	return !!a && !!b && Math.abs(a.zoom - b.zoom) < 1e-9 && Math.abs(a.panX - b.panX) < 1e-9 && Math.abs(a.panY - b.panY) < 1e-9;
 }
 
+/** Parse an SVG `viewBox` ("minX minY width height") — null when malformed. */
+export function parseViewBox(value) {
+	const parts = String(value ?? "").trim().split(/[\s,]+/).map(Number);
+	return parts.length === 4 && parts.every(Number.isFinite) ? { x: parts[0], y: parts[1], width: parts[2], height: parts[3] } : null;
+}
+
+/** Convert a CSS-pixel pointer offset into the viewBox USER units (#92): scale
+ *  by the viewBox ratio and remove the `xMidYMid meet` letterbox gutters.
+ *  Identity when the viewBox IS the element box; degenerate input never NaNs. */
+export function cursorToUser(offsetX, offsetY, viewBox, box) {
+	const ox = Number.isFinite(offsetX) ? offsetX : 0;
+	const oy = Number.isFinite(offsetY) ? offsetY : 0;
+	const vbW = Math.max(1, Number(viewBox?.width) || 0) || 1;
+	const vbH = Math.max(1, Number(viewBox?.height) || 0) || 1;
+	const boxW = Math.max(1, Number(box?.width) || 0) || vbW;
+	const boxH = Math.max(1, Number(box?.height) || 0) || vbH;
+	if (boxW === vbW && boxH === vbH) return { x: ox, y: oy };
+	const scale = Math.min(boxW / vbW, boxH / vbH);
+	return { x: (ox - (boxW - vbW * scale) / 2) / scale, y: (oy - (boxH - vbH * scale) / 2) / scale };
+}
+
 /**
  * Wire the documented interactions onto a rendered canvas: wheel zoom
- * (0.5×–2×, cursor-anchored), drag pan, and the fit affordance. A fake DOM
- * without listeners is a no-op (the pure helpers stay checkable).
+ * (0.5×–2×, cursor-anchored IN USER UNITS), drag pan, and the fit affordance. A
+ * fake DOM without listeners is a no-op (the pure helpers stay checkable).
  * FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
  *   ({ getView, onView, viewport }). Output — none. Never throws.
  */
@@ -280,7 +329,12 @@ export function attachCanvasControls(index, doc, opts = {}) {
 	on(svg, "wheel", (event) => {
 		event?.preventDefault?.();
 		const factor = event && event.deltaY < 0 ? 1.1 : 0.9;
-		opts.onView?.(zoomAt(getView(), factor, event?.offsetX ?? 0, event?.offsetY ?? 0));
+		// #92: offsetX/offsetY are CSS pixels; zoomAt anchors in USER units.
+		// Convert through the live viewBox + measured box before anchoring.
+		const box = viewportOf(opts, svg, root);
+		const vb = parseViewBox(typeof svg.getAttribute === "function" ? svg.getAttribute("viewBox") : null) ?? { x: 0, y: 0, width: box.width, height: box.height };
+		const cursor = cursorToUser(event?.offsetX ?? 0, event?.offsetY ?? 0, vb, box);
+		opts.onView?.(zoomAt(getView(), factor, cursor.x, cursor.y));
 	});
 	let dragging = null;
 	on(svg, "pointerdown", (event) => {

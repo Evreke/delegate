@@ -15,6 +15,11 @@
  * viewBox. Fit/zoom math stays pure (no DOM) because the fake seam without a
  * box yields no measurement.
  *
+ * #84 adds the canvas degradation vocabulary (one badge per flag + tooltip)
+ * and the status-marker stroke contract (unknown dashed vs idle solid, done
+ * 2px vs collected 1.5px). #92 adds cursor-in-user-units wheel zoom and the
+ * removal of the dead `ui.toggled` field.
+ *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
  */
@@ -182,6 +187,9 @@ function productionShapedState() {
 async function main(): Promise<void> {
 	const layoutMod = (await import(publicUrl("layout.js"))) as any;
 	const canvasMod = (await import(publicUrl("canvas.js"))) as any;
+	const statusMod = (await import(publicUrl("status.js"))) as any;
+	const degradeMod = (await import(publicUrl("degrade.js"))) as any;
+	const uiMod = (await import(publicUrl("ui.js"))) as any;
 
 	// -- B1 — #80: columns come from BFS over spawned_by, never node.depth ---
 	{
@@ -294,6 +302,140 @@ async function main(): Promise<void> {
 		check("B3.1 canvas.css styles the fit toolbar (.canvas-toolbar + .canvas-fit rules exist)", /\.canvas-toolbar\s*\{/.test(canvasCss) && /\.canvas-fit\s*\{/.test(canvasCss));
 		check("B3.2 the toolbar is absolutely positioned top-right over the SVG (never steals the 100%-height SVG's layout height)", /\.canvas-toolbar\s*\{[^}]*position:\s*absolute/.test(canvasCss) && /\.canvas-toolbar\s*\{[^}]*background:/.test(canvasCss));
 		check("B3.3 the SVG is inset:0 in the region box, so the toolbar cannot clip its bottom", /\.graph-canvas\s*\{[^}]*position:\s*absolute/.test(canvasCss) && /\.graph-canvas\s*\{[^}]*inset:\s*0/.test(canvasCss));
+	}
+
+	// -- B4 — #84a: one canvas badge per degradation flag + verbatim tooltip -
+	{
+		const state = productionShapedState();
+		const target = state.byId.get("s:a1")!;
+		target.degraded = degradeMod.degradeViews([...degradeMod.DEGRADED_FLAGS]);
+		const layout = layoutMod.computeLayout(state, { expansion: [] });
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
+		const badges = byAttr(root, "data-degraded-flag");
+		const flags = badges.map((b) => b.attributes["data-degraded-flag"]);
+		check(
+			"B4.1 every degradation flag renders its own canvas badge (never one severity-blind ⚠N counter)",
+			badges.length === 4 && flags.join(",") === degradeMod.DEGRADED_FLAGS.join(","),
+			JSON.stringify(flags),
+		);
+		check(
+			"B4.2 each badge carries the flag's own degrade class + unified severity",
+			badges.every((b, i) => b.attributes.class.includes(degradeMod.degradeClass(flags[i])) && b.attributes["data-flag-severity"] === degradeMod.severityFor(flags[i])),
+			JSON.stringify(badges.map((b) => [b.attributes.class, b.attributes["data-flag-severity"]])),
+		);
+		check(
+			"B4.3 the four badges use four distinct glyphs (colour is not the only signal)",
+			new Set(badges.map((b) => b.attributes["data-degraded-glyph"])).size === 4 && badges.every((b) => b.textContent === b.attributes["data-degraded-glyph"]),
+			JSON.stringify(badges.map((b) => b.attributes["data-degraded-glyph"])),
+		);
+		const title = walk(root).find((e) => e instanceof FakeEl && e.tagName === "title");
+		check(
+			"B4.4 the badge cluster carries a tooltip listing the flags verbatim",
+			!!title && degradeMod.DEGRADED_FLAGS.every((f: string) => title.textContent.includes(f)),
+			JSON.stringify(title?.textContent),
+		);
+		const canvasJs = readAsset("canvas.js");
+		check(
+			"B4.5 the severity-blind single `graph-degraded` marker is gone from canvas.js",
+			canvasJs.includes("renderDegradedBadges") && !canvasJs.includes('"graph-degraded"'),
+		);
+		const canvasCss = readAsset("canvas.css");
+		check(
+			"B4.6 canvas.css gives every known flag its own fill rule (four distinct paint states)",
+			degradeMod.DEGRADED_FLAGS.every((f: string) => canvasCss.includes(`[data-degraded-flag="${f}"]`)) && /data-flag-severity="warn"/.test(canvasCss),
+		);
+	}
+
+	// -- B5 — #84b: markers keep the CSS shape vocabulary in SVG -------------
+	{
+		const idle = canvasMod.markerGeometry(statusMod.statusView("idle"));
+		const unknown = canvasMod.markerGeometry(statusMod.statusView("unknown"));
+		check("B5.1 unknown is dashed where idle is solid (the colorblind contract survives the SVG)", unknown.dashed === true && !idle.dashed);
+		check(
+			"B5.2 done is a 2px ring where collected is 1.5px (the status.css stroke-width pair is restored)",
+			canvasMod.markerGeometry(statusMod.statusView("done")).strokeWidth === 2 && canvasMod.markerGeometry(statusMod.statusView("collected")).strokeWidth === 1.5,
+		);
+		const names = Object.keys(statusMod.STATUS_LANGUAGE);
+		const tagOf = (shape: string) => (shape.startsWith("dot") || shape.startsWith("ring") ? "circle" : "rect");
+		const signatures = names.map((s: string) => {
+			const view = statusMod.statusView(s);
+			const g = canvasMod.markerGeometry(view);
+			return [tagOf(view.shape), g.r ?? g.half, g.hollow, !!g.dashed, g.strokeWidth, !!g.rotated].join("|");
+		});
+		check("B5.3 no two statuses share an SVG geometry+stroke pair", new Set(signatures).size === names.length, JSON.stringify(names.map((n, i) => `${n}:${signatures[i]}`)));
+
+		// End to end: the rendered circle carries the dash for unknown, not idle.
+		const state = productionShapedState();
+		const idleNode = state.byId.get("s:a1")!;
+		const unknownNode = state.byId.get("s:a2")!;
+		idleNode.status = "idle";
+		idleNode.statusView = statusMod.statusView("idle");
+		unknownNode.status = "unknown";
+		unknownNode.statusView = statusMod.statusView("unknown");
+		const layout = layoutMod.computeLayout(state, { expansion: [] });
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
+		const markerOf = (id: string) => byAttr(root, "data-graph-node").find((g) => g.attributes["data-graph-node"] === id).childNodes.find((c: any) => c.getAttribute && c.getAttribute("data-status-marker") !== null);
+		check(
+			"B5.4 the rendered idle circle is solid and the unknown circle is stroke-dasharray 3 2",
+			markerOf("s:a1").attributes["stroke-dasharray"] === undefined && markerOf("s:a2").attributes["stroke-dasharray"] === "3 2",
+			JSON.stringify({ idle: markerOf("s:a1").attributes, unknown: markerOf("s:a2").attributes }),
+		);
+	}
+
+	// -- B6 — #92a: wheel zoom anchors in USER units -------------------------
+	{
+		const identity = canvasMod.cursorToUser(120, 80, { width: 900, height: 600 }, { width: 900, height: 600 });
+		check("B6.1 cursorToUser is the identity when the viewBox IS the element box", identity.x === 120 && identity.y === 80, JSON.stringify(identity));
+		const scaled = canvasMod.cursorToUser(200, 100, { width: 900, height: 600 }, { width: 1800, height: 1200 });
+		check("B6.2 cursorToUser divides by the viewBox scale (2x element box → half the offset)", Math.abs(scaled.x - 100) < 1e-9 && Math.abs(scaled.y - 50) < 1e-9, JSON.stringify(scaled));
+		const letterboxed = canvasMod.cursorToUser(100, 200, { width: 900, height: 600 }, { width: 900, height: 900 });
+		check("B6.3 cursorToUser removes the xMidYMid meet letterbox gutters", Math.abs(letterboxed.x - 100) < 1e-9 && Math.abs(letterboxed.y - 50) < 1e-9, JSON.stringify(letterboxed));
+		check(
+			"B6.4 a malformed viewBox parses to null so the measured box is the fallback",
+			canvasMod.parseViewBox("0 0 900") === null && canvasMod.parseViewBox("garbage") === null && canvasMod.parseViewBox("0 0 900 600")?.width === 900,
+		);
+
+		// End to end: a wheel event whose element box is 2x the viewBox must
+		// anchor the USER-space point, not the raw CSS-pixel offset.
+		const state = productionShapedState();
+		const layout = layoutMod.computeLayout(state, { expansion: [] });
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		root.rect = { width: 900, height: 600 };
+		const start = { zoom: 1.5, panX: 12, panY: -8 };
+		const onView: any[] = [];
+		const index = canvasMod.renderCanvas(state, layout, root, doc, { view: start, viewport: () => ({ width: 900, height: 600 }), onView: (v: any) => onView.push(v) });
+		canvasMod.attachCanvasControls(index, doc, { getView: () => start, onView: (v: any) => onView.push(v) });
+		index.svg.rect = { width: 1800, height: 1200 };
+		index.svg.setAttribute("viewBox", "0 0 900 600");
+		index.svg.dispatch("wheel", { deltaY: -1, offsetX: 200, offsetY: 100, preventDefault() {} });
+		const out = onView[onView.length - 1];
+		const worldUnder = (v: any, x: number, y: number) => ({ x: (x - v.panX) / v.zoom, y: (y - v.panY) / v.zoom });
+		const before = worldUnder(start, 100, 50);
+		const after = worldUnder(out, 100, 50);
+		check(
+			"B6.5 wheel zoom holds the USER-space point under the cursor (offset converted through the viewBox scale)",
+			Math.abs(after.x - before.x) < 1e-9 && Math.abs(after.y - before.y) < 1e-9,
+			JSON.stringify({ out, before, after }),
+		);
+		const naive = worldUnder(out, 200, 100);
+		check(
+			"B6.6 the raw CSS-pixel interpretation would NOT hold (the conversion is real, not cosmetic)",
+			Math.abs(naive.x - before.x) > 1e-6 || Math.abs(naive.y - before.y) > 1e-6,
+			JSON.stringify(naive),
+		);
+	}
+
+	// -- B7 — #92b: the dead ui.toggled field is gone ------------------------
+	{
+		const ui0 = uiMod.createUiState();
+		const ui1 = uiMod.uiReducer(ui0, { type: "toggle-collapse", leadId: "L1" });
+		check("B7.1 createUiState carries no dead `toggled` field and the toggle still expands", !("toggled" in ui0) && ui1.toggled === undefined && ui1.expansion.has("L1"), JSON.stringify(Object.keys(ui0)));
+		check("B7.2 ui.js source has no `toggled` writer or reader left", !/\btoggled\b/.test(readAsset("ui.js")));
 	}
 
 	console.log(failures === 0 ? "\nALL DASHBOARD LAYOUT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

@@ -66,12 +66,42 @@
 	font-size: 9px;
 }
 
-.graph-degraded {
-	fill: var(--sev-warn);
+/* One badge per degradation flag (issue #84): the flag's own flag attribute
+   picks a distinct fill (the four-flag vocabulary degrade.js owns as class
+   names), `data-flag-severity` is the ladder fallback for unknown flags, and
+   the glyph comes from canvas.js DEGRADED_GLYPHS. */
+.graph-degraded-flag {
 	font-family: var(--font-mono);
 	font-size: 10px;
+	fill: var(--sev-info);
 }
 
+/* severity fallback (unknown flags keep the honest ladder colour) */
+.graph-degraded-flag[data-flag-severity="warn"] {
+	fill: var(--sev-warn);
+}
+
+.graph-degraded-flag[data-flag-severity="info"] {
+	fill: var(--sev-info);
+}
+
+/* the four known flags: distinct colours, after the fallback so they win */
+.graph-degraded-flag[data-degraded-flag="no-session-path"] {
+	fill: #7d838c;
+}
+
+.graph-degraded-flag[data-degraded-flag="no-live-status"] {
+	fill: #8b93a0;
+	opacity: 0.55;
+}
+
+.graph-degraded-flag[data-degraded-flag="legacy-orphan"] {
+	fill: var(--sev-warn);
+}
+
+.graph-degraded-flag[data-degraded-flag="usage-unavailable"] {
+	fill: var(--sev-info);
+}
 .graph-marker {
 	color: var(--muted);
 }

@@ -10,6 +10,14 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Mutation routes accept both id spellings — name-first (#62/#70).**
+  `POST /api/workers/:id/steer` and `POST /api/asks/:id/answer` resolve `:id` as a
+  canonical worker name when it matches `WORKER_NAME_RE`, otherwise as a SwarmGraph
+  session node id through the one shared read-model lookup; ambiguity resolves
+  deterministically name-first, and ownership stays fail-closed (a foreign worker's
+  node id refuses with the uniform `403 E_SWARM_FORBIDDEN`). No `/by-name/` route is
+  added — the v1 routes keep working unchanged.
+
 - **Scheduled wakes, stage A — `delegate_wake` (#10).** An orchestrator can now
   schedule a ONE-SHOT wake for its own session: `delegate_wake` action
   `schedule` takes a free-form `text` plus exactly one of `delayMs` (relative)

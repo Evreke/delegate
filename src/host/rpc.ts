@@ -285,6 +285,14 @@ export interface RpcAgentState {
 	exited: { code: number | null; signal: string | null } | null;
 	/** Last assistant text (probe verdict / readConsole body). */
 	lastAssistantText: string;
+	/** Issue #74 — at least one assistant message_end was observed (empty or
+	 *  not). Optional so hand-built test states stay valid; absent reads as
+	 *  false (no observed turn → not an empty provider). */
+	assistantTurnSeen?: boolean;
+	/** Issue #74 — at least one assistant message_end carried non-empty text
+	 *  (the "ANY non-empty assistant output" latch). Optional; absent reads as
+	 *  false, and isProviderEmpty only consults it once a turn was seen. */
+	assistantOutputSeen?: boolean;
 	/** stopReason of the last assistant message_end (issue #14). */
 	lastStopReason?: string;
 	/** Verbatim provider error text of the last assistant message_end
@@ -708,6 +716,10 @@ export class RpcWorkerHost implements Transport {
 			name,
 			status: mapAgentStatus(state),
 			placementRef: state.placement.placementRef,
+			// Issue #74 — the zero-output fact rides the advisory status (rpc is
+			// the one backend that can observe it: its stdout pump sees assistant
+			// turns). Always a boolean here; non-rpc backends omit the field.
+			providerEmpty: isProviderEmpty(state),
 		};
 	}
 
@@ -718,6 +730,7 @@ export class RpcWorkerHost implements Transport {
 				name: state.name,
 				status: mapAgentStatus(state),
 				placementRef: state.placement.placementRef,
+				providerEmpty: isProviderEmpty(state), // issue #74 — see getStatus
 			});
 		}
 		return out;
@@ -1153,6 +1166,13 @@ export function applyRpcEvent(state: RpcAgentState, ev: RpcEvent): void {
 				| undefined;
 			if (msg?.role === "assistant") {
 				const text = extractText(msg.content);
+				// Issue #74 — the ANY-output latch: a turn was observed, and non-empty
+				// text (when present) forever marks the provider as having produced
+				// content. isProviderEmpty reads the pair at settle time. Whitespace-
+				// only turns count as EMPTY output (the incident was exactly the
+				// provider returning blank/whitespace turns).
+				state.assistantTurnSeen = true;
+				if (text.trim().length > 0) state.assistantOutputSeen = true;
 				if (text) {
 					state.lastAssistantText = text;
 					pushConsoleLine(state, `assistant: ${text.slice(0, 500)}`);
@@ -1308,4 +1328,23 @@ export function createRpcTransport(opts?: {
 	spawnProcess?: SpawnProcessFn;
 }): Transport & { resumeAgent(req: ResumeReq): Promise<StartResult> } {
 	return new RpcWorkerHost(opts);
+}
+
+/**
+ * Issue #74 — the zero-output provider verdict for one worker: true iff at
+ * least one assistant turn was OBSERVED and none carried non-empty text.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: state — the tracked rpc agent state (the pump is its single writer)
+ * Output: true when the provider was invoked but returned no content
+ * Guarantees:
+ *   - no assistant turn observed → false (a prompt that was never consumed is
+ *     NOT an empty provider; E_PROMPT_STALLED remains its classification)
+ *   - any non-empty assistant text observed → false, even if later turns are
+ *     empty (ANY output is enough — the issue's "ANY non-empty" latch)
+ *   - pure read; never throws
+ * Raises: never
+ */
+export function isProviderEmpty(state: RpcAgentState): boolean {
+	return (state.assistantTurnSeen ?? false) && !(state.assistantOutputSeen ?? false);
 }

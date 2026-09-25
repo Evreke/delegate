@@ -86,6 +86,13 @@ export type WatchEventKind =
 	| "grill-deck"
 	| "context-critical"
 	| "worker-dead"
+	/** provider-empty (issue #74): the worker SETTLED (done/idle) with no
+	 *  report AND the adapter observed zero non-empty assistant output — the
+	 *  provider was invoked and returned no content. DISTINCT from worker-dead
+	 *  (a generic failed spawn): the retry action is provider/model switching,
+	 *  not console archaeology. Uses the same launch-stamp episode fingerprint
+	 *  as worker-dead (one wake per launch). */
+	| "provider-empty"
 	| "worker-stale"
 	/** fleet-in-flight (1.17.0): the worker SETTLED (done/idle) with no report
 	 *  but its OWN fleet — other snapshot entries it spawned (their
@@ -154,6 +161,11 @@ export interface WatchWorker {
 	startedAtMs?: number;
 	/** True when herdr currently knows this agent (status ≠ unknown). */
 	live: boolean;
+	/** Issue #74 — the adapter's zero-output verdict for this worker (advisory,
+	 *  absent for backends that cannot observe assistant output): true iff the
+	 *  provider was invoked and produced zero non-empty content. Readers treat
+	 *  absent/false as "not provider-empty" (the generic worker-dead path). */
+	providerEmpty?: boolean;
 	/** Placement kind (probe dirs are tabs by construction). */
 	kind: "worktree" | "tab";
 	/** This very session IS that worker (self-event filter, §21). */
@@ -297,6 +309,14 @@ export function workersFromManifests(
 			.filter((s) => s && typeof s?.name === "string")
 			.map((s) => [s.name as string, s.status]),
 	);
+	// Issue #74: the zero-output verdict rides the same advisory status read;
+	// only adapters that explicitly publish a boolean are consulted (absent →
+	// the generic classification, backward-identical).
+	const providerEmptyByName = new Map(
+		(statuses ?? [])
+			.filter((s) => s && typeof s?.name === "string" && typeof s.providerEmpty === "boolean")
+			.map((s) => [s.name as string, s.providerEmpty as boolean]),
+	);
 	const workers: WatchWorker[] = [];
 	for (const manifest of manifests) {
 		// Migration stage 3 (audit steps 6/10): the watcher's stamps (retirableSince
@@ -331,6 +351,7 @@ export function workersFromManifests(
 				...(typeof w.model === "string" && w.model.length > 0 ? { model: w.model } : {}),
 				...(Number.isFinite(startedAtMs) ? { startedAtMs } : {}),
 				live: liveNames.has(w.name),
+				...(providerEmptyByName.has(w.name) ? { providerEmpty: providerEmptyByName.get(w.name) } : {}),
 				kind: w.placement?.kind === "tab" ? "tab" : "worktree",
 				self: isSelf,
 				probe: isProbeDir(manifest.dir),
@@ -799,6 +820,22 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 					// collectedAt), prefixed by the launch stamp so a NEW run of the
 					// worker is a new episode (the worker-dead episode rule).
 					`${deathEpisodeFingerprint(w)}@${liveNames}`,
+				),
+			);
+		} else if (w.providerEmpty === true) {
+			// Issue #74: the adapter SAW the provider run (≥1 assistant turn) and
+			// saw ZERO non-empty content, then the worker settled with no report.
+			// Surface the DISTINCT, retry-actionable classification instead of the
+			// generic settle-without-report — an orchestrator can auto-switch
+			// provider/model on retry without reading raw session JSONL. Same
+			// launch-stamp episode fingerprint as worker-dead (one wake per run).
+			events.push(
+				mk(
+					"provider-empty",
+					`E_PROVIDER_EMPTY — settled (${w.status}) with no report at ${w.reportPath}, and the provider ` +
+						"returned NO content (zero non-empty assistant output observed). Treat as a failed spawn: retry with a " +
+						"DIFFERENT provider/model (diagnosed retry, never verbatim); the console shows only empty turns.",
+					deathEpisodeFingerprint(w),
 				),
 			);
 		} else {

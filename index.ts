@@ -260,6 +260,7 @@ export default function (pi: ExtensionAPI) {
 			clock: systemClock,
 			minDelayMs: scheduleCfg.minDelayMs,
 			maxActive: scheduleCfg.maxActive,
+			maxRuns: scheduleCfg.maxRuns,
 		});
 
 		// Event-driven watcher: the replacement for the

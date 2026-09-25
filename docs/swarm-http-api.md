@@ -11,8 +11,13 @@ a golden disagree, the golden wins.
 
 - The server is hosted by a pi session (`src/swarm-server/mount.ts`, called at
   `session_start`), **OFF by default** (`swarm.server.enabled: false`;
-  port `swarm.server.port`, default 7331, `0` = OS-assigned). Two sessions
-  are two independent servers.
+  port `swarm.server.port`, default 7331, `0` = OS-assigned). **One server per
+  machine (D1, #65):** the first session to bind the configured port is the
+  **primary**; a later session that sees the primary mounts **no listener**
+  and becomes a **secondary** whose fleets the primary serves read-only. A
+  port held by a non-delegate process falls back to an OS-assigned port. When
+  the primary dies, a surviving session takes the configured port over
+  (advisory, bounded backoff — the OS arbitrates).
 - It binds **`127.0.0.1` only** — a code constant, not a config knob.
 - The **read** surface (GET + WS) has **no auth** beyond the loopback bind:
   every process on the machine may read it. That is the documented boundary.
@@ -59,10 +64,14 @@ a golden disagree, the golden wins.
 | GET | `/api/version` | frozen identity envelope (§2) | 405 |
 | GET | `/api/swarm/snapshot` | `{ok,verb:"snapshot",snapshot}` ‡ | 405 |
 | GET | `/api/swarm/events?after=<seq>` | `{ok,verb:"events",schemaVersion,after,events,journal}` | 400, 405 |
+| GET | `/api/swarm/fleets` | `{ok,schemaVersion,self,fleets:[{sessionId,sessionPath,own,tasks}]}` | 405 |
+| GET | `/fleets/<sessionId>/` | the fleet view (the dashboard SPA) | 404 |
+| GET | `/fleets/<sessionId>/api/swarm/events?after=<seq>` | the events envelope restricted to that fleet's rows | 400, 404 |
+| WS | `/fleets/<sessionId>/api/swarm/stream?after=<seq>` | the stream frames restricted to that fleet's rows | 404 (plain refusal) |
 | GET | `/api/workers/:id/console?offset=<n>` | one console frame (§6) | 400, 404 |
 | POST | `/api/workers/:id/steer` | mutation envelope (§7) | 400, 401, 403, 404, 500 |
 | POST | `/api/asks/:id/answer` | mutation envelope (§7) | 400, 401, 403, 404, 500 |
-| GET | `/` and `/<asset>` | dashboard SPA assets (`src/swarm-server/public/`) | 404 |
+| GET | `/` and `/<asset>` | dashboard SPA assets (`src/swarm-server/public/`); `/` redirects to the single fleet view (302), else serves the fleet index | 404 |
 
 Anything else: `404 E_SWARM_NOT_FOUND`; a served path with the wrong method:
 `405 E_SWARM_USAGE`. Requests are one-per-connection (`Connection: close`).
@@ -183,7 +192,52 @@ Success envelope:
 advisory journal append failed; a successful HTTP mutation carries `{seq}`
 and `"confirmed"` in BOTH storage modes.)
 
-## 8. Error taxonomy
+## 8. Dashboard access: link, fragment token, one server per machine (#65)
+
+**The dashboard link.** A successful mount emits exactly ONE structured
+stderr line `{component:"swarm-server",event:"dashboard",url,link}` whose
+`url` names the **actual bound port** (an `EADDRINUSE` fallback is reflected,
+never the configured port) and whose `link` is
+`http://127.0.0.1:<bound-port>/#t=<operator token>`. The token is generated
+per mount; a secondary session's link names the canonical primary port.
+
+**The fragment token.** The operator token travels in the URL **fragment**
+(`#t=`), which a browser never sends to the server — so it can never appear
+in a request line, a server log, the journal or a response body. The
+shipped dashboard reads it on load (`public/auth-bootstrap.js`), moves it into
+the existing `sessionStorage` store (`steer.js` `TOKEN_KEY` — the ONE token
+store) and strips the address bar with `history.replaceState` before any
+request. The mutation routes still read the token ONLY from the
+`Authorization: Bearer` header. A bookmark without a fragment bootstraps
+nothing and the manual prompt (bounded 401 re-prompt) stays the fallback.
+
+**D1 — one server per machine.** Roles: **primary** (holds the configured
+port), **secondary** (no listener; its fleets are served read-only through
+the primary — the shared journal already makes every fleet visible, no new
+store), **fallback** (a non-delegate process held the port → OS-assigned
+port, fail-open for single-session). Mutations are strictly same-session: a
+server steers only the fleets its hosting session owns, so a foreign fleet
+refuses with the uniform `403 E_SWARM_FORBIDDEN`, and each session keeps its
+own operator token (a token authenticates the operator to a session, not to
+a port).
+
+**Takeover.** Every non-primary session runs an advisory primary watch
+(`src/swarm-server/primary-watch.ts`): a bounded probe of the configured
+port plus a bind attempt with multiplicative backoff. When the primary dies,
+the first survivor's bind succeeds (the OS is the arbiter — no election
+protocol). The canonical URL keeps serving; after takeover the URL requires
+the NEW primary's token; a second kill with no survivors leaves the port
+free (graceful degradation).
+
+**Per-fleet URLs.** `GET /fleets/<sessionId>/` serves one fleet's view
+(`<sessionId>` is a SwarmGraph SESSION node id; unknown → structured 404).
+`GET /api/swarm/fleets` enumerates the fleets (`own` marks the hosting
+session's own fleet). The fleet-scoped events route and WS stream carry ONLY
+that fleet's journal rows (the per-audience cursor precedent — attention
+never crosses fleets); the WS scope is resolved from the read-model before
+the 101 handshake, so an unknown fleet is a plain `404 E_SWARM_NOT_FOUND`.
+
+## 9. Error taxonomy
 
 | Code | HTTP | Meaning |
 | --- | --- | --- |
@@ -196,7 +250,7 @@ and `"confirmed"` in BOTH storage modes.)
 | `E_CONSOLE_WORKER_REFUSED` | 404 | Unknown/non-worker/foreign console id. |
 | `E_CONSOLE_UNAVAILABLE` | 200 (in-frame) | Backend exposes no console stream. |
 
-## 9. Checks
+## 10. Checks
 
 - `test/swarm-http-api-check.ts` — golden envelope suite: every endpoint's
   success and error shapes, fixture fleets (empty journal, multi-fleet, all
@@ -210,3 +264,13 @@ and `"confirmed"` in BOTH storage modes.)
   tolerance, unsupported-version ignore.
 - `test/swarm-http-e2e-check.ts` — the full loop: snapshot → stream →
   steer (journal-confirmed) → console.
+- `test/swarm-server-lifecycle-check.ts` — the mount lifecycle plus the D1
+  roles and takeover: one primary + one secondary on a shared configured
+  port, survivor takeover within a bounded time, graceful second kill, the
+  exactly-one-winner race, and new-primary-token continuity (L3–L7).
+- `test/swarm-http-api-check.ts` also pins the #65 fleet contract: `/`
+  redirect/index, `/api/swarm/fleets`, the fleet view and the fleet-scoped
+  events/stream with the two-fleet no-cross-traffic leg (F1–F10).
+- `test/swarm-dashboard-steer-check.ts` pins the `#t=` fragment bootstrap
+  (P5.9–P5.11); `test/static-check.ts` carries the greppable token-hygiene
+  pins (T1.24b, T1.29).

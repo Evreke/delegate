@@ -66,6 +66,28 @@ async function get(port: number, path: string): Promise<{ ok: boolean; status: n
 	}
 }
 
+/** One token-gated POST (the mutation auth gate probe). */
+async function post(port: number, path: string, token: string): Promise<{ status: number; body: string }> {
+	try {
+		const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+			body: JSON.stringify({ text: "takeover probe" }),
+			signal: AbortSignal.timeout(4_000),
+		});
+		return { status: res.status, body: await res.text() };
+	} catch {
+		return { status: 0, body: "" };
+	}
+}
+
+/** Poll a predicate with a bounded deadline (fail-fast: every wait has one). */
+async function waitFor(cond: () => boolean, timeoutMs = 4_000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 40));
+	return cond();
+}
+
 type Handle = { stop(): void; port: number };
 
 async function main(): Promise<void> {
@@ -126,28 +148,66 @@ async function main(): Promise<void> {
 		);
 		b1?.stop();
 
-		// L3 + L4: two parallel sessions, same requested port → different ports;
-		// stopping A leaves B serving.
+		// L3 + L4 (issue #65 item 3 D1): two parallel sessions on the SAME
+		// configured port → ONE primary (the port holder) + ONE secondary (no
+		// listener; the primary serves its fleets read-only). Stopping the
+		// primary hands the canonical port to the survivor (item 3b takeover:
+		// the OS is the arbiter — no election protocol, no new store).
 		const P3 = 17851;
-		const s1 = await mountSwarmServer({ sessionFile: "/sessions/lc-s1.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P3) }) });
-		const s2 = await mountSwarmServer({ sessionFile: "/sessions/lc-s2.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P3) }) });
+		const watchFast = { intervalMs: 60, maxIntervalMs: 240 };
+		const s1 = await mountSwarmServer({ sessionFile: "/sessions/lc-s1.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P3) }), primaryWatch: watchFast });
+		const s2 = await mountSwarmServer({ sessionFile: "/sessions/lc-s2.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P3) }), primaryWatch: watchFast });
 		check(
-			"L3 two parallel sessions mount two independent servers on DIFFERENT ports (EADDRINUSE → OS-assigned)",
-			s1 !== null && s2 !== null && s1.port !== s2.port && s1.port === P3 && s2.port !== P3,
-			`s1=${s1 && s1.port} s2=${s2 && s2.port}`,
+			"L3 D1: two sessions on one configured port → ONE primary on the canonical port + ONE secondary with NO listener",
+			s1 !== null && s2 !== null && s1.role === "primary" && s1.port === P3 && s2.role === "secondary" && s2.port === P3,
+			`s1=${s1?.role}:${s1?.port} s2=${s2?.role}:${s2?.port}`,
 		);
 		if (s1 && s2) {
-			const both = await Promise.all([get(s1.port, "/api/version"), get(s2.port, "/api/version")]);
-			check("L3b both parallel servers serve", both.every((r) => r.ok && r.status === 200));
+			const served = await get(s1.port, "/api/version");
+			check("L3b the primary serves on the canonical loopback port", served.ok && served.status === 200);
+			// L4 — takeover: kill the primary; the survivor binds the canonical port.
 			s1.stop();
-			const aGone = await get(s1.port, "/api/version");
-			const bAlive = await get(s2.port, "/api/version");
+			const promoted = await waitFor(() => s2.role === "primary");
+			const canon = await get(P3, "/api/version");
 			check(
-				"L4 shutdown isolation: stopping A's handle refuses A and leaves B serving",
-				!aGone.ok && bAlive.ok && bAlive.status === 200,
-				`aGone=${aGone.ok} bAlive=${bAlive.ok}`,
+				"L4 takeover: the survivor binds the canonical port within a bounded time and the canonical URL keeps serving",
+				promoted && s2.port === P3 && canon.ok && canon.status === 200,
+				`role=${s2.role} port=${s2.port} canon=${canon.status}`,
 			);
 			s2.stop();
+			const dead = await get(P3, "/api/version");
+			check("L4b a second kill with no survivors degrades gracefully (the canonical port is free — no crash, no phantom listener)", !dead.ok);
+		}
+
+		// L6 + L7 (item 3b): exactly ONE survivor wins the canonical-port race,
+		// and the canonical URL then requires the NEW primary's token.
+		const P6 = 17852;
+		const prim = await mountSwarmServer({ sessionFile: "/sessions/lc-prim.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P6) }), operatorToken: "alpha-token", primaryWatch: watchFast });
+		const r1 = await mountSwarmServer({ sessionFile: "/sessions/lc-r1.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P6) }), operatorToken: "beta-token", primaryWatch: watchFast });
+		const r2 = await mountSwarmServer({ sessionFile: "/sessions/lc-r2.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P6) }), operatorToken: "gamma-token", primaryWatch: watchFast });
+		check("L6.0 three sessions: one primary + two secondaries before the kill", prim?.role === "primary" && r1?.role === "secondary" && r2?.role === "secondary", `${prim?.role}/${r1?.role}/${r2?.role}`);
+		if (prim && r1 && r2) {
+			prim.stop();
+			const won = await waitFor(() => [r1, r2].filter((h) => h.role === "primary").length === 1);
+			const winners = [r1, r2].filter((h) => h.role === "primary");
+			const survivor = winners[0];
+			check(
+				"L6 exactly ONE survivor takes over the canonical port (the OS arbitrates; the loser stays secondary)",
+				won && winners.length === 1 && survivor.port === P6 && (await get(P6, "/api/version")).ok,
+				`winners=${winners.length}`,
+			);
+			if (survivor) {
+				const oldToken = await post(P6, "/api/workers/lc-w1/steer", "alpha-token");
+				const winnerToken = survivor === r1 ? "beta-token" : "gamma-token";
+				const newToken = await post(P6, "/api/workers/lc-w1/steer", winnerToken);
+				check(
+					"L7 token continuity: the canonical URL now requires the NEW primary's token (the dead primary's token is refused)",
+					oldToken.status === 401 && newToken.status !== 401,
+					`old=${oldToken.status} new=${newToken.status}`,
+				);
+			}
+			r1.stop();
+			r2.stop();
 		}
 
 		// L5: unkeyed sessions share the cwd registry key — the second refuses.

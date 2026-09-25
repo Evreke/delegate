@@ -20,6 +20,7 @@
  */
 
 import { buildDashboardState } from "./state.js";
+import { bootstrapFragmentToken } from "./auth-bootstrap.js";
 import { computeLayout } from "./layout.js";
 import { createUiState, uiReducer } from "./ui.js";
 import { renderAttention } from "./attention.js";
@@ -92,6 +93,9 @@ export function createFleetApp(env = {}) {
 	const streamFactory = env.stream || createSwarmStream;
 	const promptImpl = env.prompt || (typeof window !== "undefined" && typeof window.prompt === "function" ? window.prompt.bind(window) : null);
 	const nowMs = typeof env.nowMs === "function" ? env.nowMs : () => Date.now();
+	// #65 item 2: a `#t=<token>` link fragment bootstraps the operator token
+	// (sessionStorage) and is stripped from the address bar before any request.
+	bootstrapFragmentToken({ location, history: env.history || (typeof window !== "undefined" ? window.history : null), storage });
 
 	let ui = createUiState();
 	let dash = null;

@@ -1804,6 +1804,7 @@ function listDashboardAssets(root: string): string[] {
 		[
 			"index.html",
 			"app.js",
+			"auth-bootstrap.js",
 			"app.css",
 			"status.css",
 			"canvas.css",
@@ -1867,6 +1868,45 @@ function listDashboardAssets(root: string): string[] {
 			JSON.stringify({ noTokenShape, appDelegates: !appJs.includes("method: \"POST\"") }),
 		);
 	}
+}
+
+	// #65 fragment-token pin: the operator token reaches the page ONLY through
+	// the `#t=` fragment reader (auth-bootstrap.js), which moves it to the
+	// sessionStorage store and strips the address bar. No `?token=`, no query
+	// token, and no second token store anywhere in the asset set.
+	{
+		const bootstrap = readFileSync(resolve(DASHBOARD_PUBLIC_DIR, "auth-bootstrap.js"), "utf8");
+		const queryToken = listDashboardAssets(ROOT).filter((f) => /[?&]t(oken)?=/.test(stripComments(readFileSync(f, "utf8"))));
+		const appJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
+		check(
+			"T1.24b the dashboard token arrives ONLY via the `#t=` fragment reader (auth-bootstrap.js), moved to sessionStorage and stripped; never a `?token=` query",
+			bootstrap.includes("FRAGMENT_TOKEN_KEY") &&
+				/\#t=/.test(bootstrap) &&
+				bootstrap.includes("history.replaceState") &&
+				bootstrap.includes('from "./steer.js"') &&
+				appJs.includes("bootstrapFragmentToken") &&
+				queryToken.length === 0,
+			queryToken.join(", "),
+		);
+	}
+
+// #65 token hygiene pin (Law 11, greppable): the token travels ONLY as an
+// Authorization header, in the `#t=` FRAGMENT and in the one structured
+// stderr line. No server module may build a `?token=`/`?t=` query URL, and
+// the dashboard link composer is the ONE place the fragment is spelled.
+{
+	const serverDir = resolve(ROOT, "src", "swarm-server");
+	const serverSources = readdirSync(serverDir)
+		.filter((n) => n.endsWith(".ts"))
+		.map((n) => ({ name: `src/swarm-server/${n}`, src: readFileSync(resolve(serverDir, n), "utf8") }));
+	const queryToken = serverSources.filter(({ src }) => /[?&](token|t)=/i.test(src)).map(({ name }) => name);
+	const mountSrc = readFileSync(resolve(serverDir, "mount.ts"), "utf8");
+	const linkSrc = readFileSync(resolve(serverDir, "dashboard-link.ts"), "utf8");
+	check(
+		"T1.29 the dashboard link has ONE spelling (token in the `#t=` fragment, never a query): dashboard-link.ts composes it, the mount emits it, and no server module builds a token query URL",
+		linkSrc.includes("#t=") && linkSrc.includes('event: "dashboard"') && mountSrc.includes("logDashboard") && queryToken.length === 0,
+		queryToken.join(", "),
+	);
 }
 
 check(

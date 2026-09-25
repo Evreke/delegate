@@ -370,6 +370,35 @@ async function main(): Promise<void> {
 		check("P5.7 a 403 is structured and also flagged for re-prompt", forbidden.ok === false && forbidden.authRequired === true && forbidden.envelope.error.code === "E_SWARM_FORBIDDEN");
 		const down = await steer.postMutation({ fetch: async () => { throw new Error("offline"); }, token: "t0k", kind: "steer", id: "n1", text: "go" });
 		check("P5.8 a network failure is total (never throws)", down.ok === false && down.status === 0);
+
+		// -- #65 item 2: the `#t=<token>` fragment bootstrap ------------------
+		const bootstrap = (await import(publicUrl("auth-bootstrap.js"))) as any;
+		const fStorage = fakeStorage();
+		const stripped: string[] = [];
+		const loc = { hash: "#t=frag-token-65", pathname: "/fleets/sess-54/", search: "" };
+		const hist = {
+			replaceState: (_s: unknown, _t: string, url: string) => {
+				stripped.push(url);
+				loc.hash = "";
+			},
+		};
+		const moved = bootstrap.bootstrapFragmentToken({ location: loc, history: hist, storage: fStorage });
+		check(
+			"P5.9 a `#t=` fragment moves the token to the sessionStorage store and strips the address bar",
+			moved === "frag-token-65" && steer.readToken(fStorage) === "frag-token-65" && stripped.length === 1 && stripped[0] === "/fleets/sess-54/",
+			JSON.stringify({ moved, stripped }),
+		);
+		check(
+			"P5.10 a bookmark WITHOUT a fragment bootstraps nothing (the manual prompt stays the fallback)",
+			bootstrap.bootstrapFragmentToken({ location: { hash: "" }, history: hist, storage: fakeStorage() }) === null &&
+				bootstrap.parseFragmentToken("#x=1") === null &&
+				bootstrap.parseFragmentToken("#t=") === null,
+		);
+		check(
+			"P5.11 the fragment reader is total: a throwing storage / missing seams never break page start",
+			bootstrap.bootstrapFragmentToken({}) === null &&
+				bootstrap.bootstrapFragmentToken({ location: { hash: "#t=x" }, history: null, storage: { setItem() { throw new Error("private mode"); } } }) === "x",
+		);
 	}
 
 	// -- P6 — controls honesty ---------------------------------------------

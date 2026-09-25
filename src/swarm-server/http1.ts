@@ -46,6 +46,11 @@ export const SWARM_SERVER_BIND_HOST = "127.0.0.1";
  *  ONE spelling — Law 9 — with no circular imports. */
 export const SWARM_HTTP_SCHEMA_VERSION = 1;
 
+/** The fleet-unknown refusal hint (issue #65 item 3, Law 9): the routes and
+ *  the scoped WS hub share ONE spelling on this leaf (no cycle). */
+export const SWARM_FLEET_NOT_FOUND_HINT =
+	"The fleet path takes a SwarmGraph session node id; enumerate them with GET /api/swarm/fleets.";
+
 /** One parsed HTTP/1.1 request: the head plus, when the request declared
  *  one, the body bytes decoded as UTF-8 (empty string when no body). */
 export interface Http1Request {
@@ -66,6 +71,8 @@ export interface Http1Response {
 	status: number;
 	body?: string;
 	contentType?: string;
+	/** Extra response headers (issue #65: the `Location` of a redirect). */
+	headers?: Record<string, string>;
 }
 
 export interface Http1ServerHandle {
@@ -100,6 +107,8 @@ function statusText(status: number): string {
 	switch (status) {
 		case 200:
 			return "OK";
+		case 302:
+			return "Found";
 		case 400:
 			return "Bad Request";
 		case 404:
@@ -132,10 +141,14 @@ function badRequestBody(message: string, hint: string): string {
 /** Serialize + send one plain response, then half-close the socket. */
 export function writeHttp1Response(socket: Socket, res: Http1Response): void {
 	const body = res.body ?? "";
+	const extra = Object.entries(res.headers ?? {})
+		.map(([k, v]) => `${k}: ${v}\r\n`)
+		.join("");
 	const head =
 		`HTTP/1.1 ${res.status} ${statusText(res.status)}\r\n` +
 		`Content-Type: ${res.contentType ?? "application/json"}\r\n` +
 		`Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n` +
+		extra +
 		`Connection: close\r\n\r\n`;
 	socket.write(head + body, "utf8", () => {
 		socket.end();

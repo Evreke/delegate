@@ -10,6 +10,40 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Dashboard access UX — widget link, fragment auth, one server per machine
+  (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`
+  stderr line carrying the ACTUAL bound port (an `EADDRINUSE` fallback is
+  reflected) and the link `http://127.0.0.1:<port>/#t=<operator token>`; the
+  token rides in the URL FRAGMENT, so it never reaches the server, a log or
+  the journal. The dashboard reads the fragment on load
+  (`public/auth-bootstrap.js`), moves the token into the existing
+  `sessionStorage` store and strips the address bar before any request; a
+  bookmark without a fragment still prompts. **D1 resolved:** one server per
+  machine — the first session to bind the configured port is the primary,
+  later sessions run as secondaries with NO listener (the primary serves
+  their fleets read-only; mutations stay strictly same-session and a foreign
+  mutation refuses with the uniform `403 E_SWARM_FORBIDDEN`), a non-delegate
+  occupant falls back to an OS-assigned port, and a surviving session takes
+  the configured port over when the primary dies (advisory watch, bounded
+  backoff — the OS arbitrates; the canonical URL survives and then requires
+  the new primary's token). Per-fleet URLs land by addition: `GET
+  /api/swarm/fleets`, `GET /fleets/<sessionId>/`, and fleet-scoped
+  events/stream routes that carry ONLY that fleet's rows (attention never
+  crosses fleets). All v1 routes keep working (Law 7); the swarm-http route
+  paths join the frozen surface.
+
+- **Dashboard v1 — the merged one-screen fleet shell (#66, ARCHITECTURE
+  §4.2.6/§4.2.7).** The read-only dashboard is one screen: an attention
+  strip, a left rail, a center SVG graph canvas (depth-column layout with
+  adaptive collapse) and a right detail panel, inside the static frame with
+  the connection/token/journal statusbar. The rail/tree/canvas/detail all
+  render from the read-model graph; status is the six-token language
+  (`running`/`idle`/`ask`/`collected`/`retired`/`dead`), attention aggregates
+  cover OWN fleets only, and stream frames patch status/progress IN PLACE
+  without relayout. SVG-only rendering, system font stacks, a
+  CSS-variable palette/type scale, no build step and zero external network
+  calls. New static pins T1.25–T1.28.
+
 - **Dashboard console panel + steering controls (#54, ARCHITECTURE §4.2.7).**
   The fleet dashboard SPA now streams each worker's console and steers it from
   the page. Per worker card: a monospace console panel preloads the backlog via

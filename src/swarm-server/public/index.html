@@ -11,17 +11,20 @@
 </head>
 <body>
 	<header class="topbar">
-		<h1 class="brand">pi-delegate <span class="brand-sub">fleet dashboard</span></h1>
-		<span id="connection-state" data-connection-state="connecting" class="conn conn-connecting">connecting</span>
+		<h1 class="brand">pi-delegate <span class="brand-sub" id="brand-sub">all fleets</span></h1>
+		<span id="scope-switch" class="scope-switch" data-scope-switch hidden></span>
+		<span id="connection-state" data-connection-state="connecting" class="conn conn-connecting" role="status" aria-live="polite">connecting</span>
 		<span id="token-state" data-token-state="absent" class="token">token: absent</span>
 	</header>
 	<div id="error" class="error" hidden></div>
 	<div id="fleet-tree" class="shell" aria-label="Fleet dashboard"></div>
 	<footer class="statusbar">
-		<span class="journal">journal: <span id="journal-count" data-journal-count>0</span> events</span>
-		<span class="journal">db: <span id="journal-bytes" data-journal-bytes>0</span> bytes</span>
-		<span class="journal">schema: <span id="schema-version" data-schema-version>1</span></span>
-		<span class="ticker" id="activity-ticker" data-activity-ticker>—</span>
+		<span class="journal">journal: <span id="journal-count" data-journal-count>—</span> events</span>
+		<span class="journal">db: <span id="journal-bytes" data-journal-bytes>—</span> bytes</span>
+		<span class="journal">schema: <span id="schema-version" data-schema-version>—</span></span>
+		<span class="journal" id="health-sources" data-health-sources>—</span>
+		<span class="journal" id="journal-updated" data-journal-updated>—</span>
+		<span class="ticker" id="activity-ticker" data-activity-ticker>no events yet</span>
 	</footer>
 	<script type="module" src="/app.js"></script>
 </body>

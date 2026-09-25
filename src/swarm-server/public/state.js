@@ -374,13 +374,15 @@ function buildAttention(nodes, journal, expansion) {
 	const deadCount = items.filter((i) => i.kind === "dead-reboot").length;
 	const degradedCount = items.filter((i) => i.kind === "degraded").length;
 	const clear = items.length === 0;
+	// #83: a chip exists ONLY when its kind has a non-zero count — the strip is
+	// the "what needs me?" answer and a red `0 dead-reboot` reads as a death.
 	const chips = clear
 		? [{ kind: "clear", label: "all clear", count: 0 }]
 		: [
 				{ kind: "ask", label: `${askCount} ask${askCount === 1 ? "" : "s"} waiting`, count: askCount },
 				{ kind: "dead-reboot", label: `${deadCount} dead-reboot`, count: deadCount },
 				{ kind: "degraded", label: `${degradedCount} degraded`, count: degradedCount },
-			];
+			].filter((chip) => chip.count > 0);
 	return { items, chips, clear, askCount, deadCount, degradedCount, expansion: expansion ?? null };
 }
 

@@ -32,8 +32,10 @@
  *     server process (Law 8 — the server is advisory to the pipeline);
  *   - every plain response carries Content-Length + Connection: close and
  *     the socket closes after the write drains;
- *   - an upgrade hook that returns false gets a 400 response and a closed
- *     socket (the WS module owns everything after a true return).
+ *   - an upgrade hook that returns false gets a generic 400 response and a
+ *     closed socket; an UpgradeRefusal outcome carries the caller's
+ *     cause-specific hint (issue #94) — the WS module owns everything after a
+ *     true return.
  */
 
 import { createServer, type Server, type Socket } from "node:net";
@@ -93,14 +95,24 @@ const IDLE_TIMEOUT_MS = 30_000;
 /** Request-body cap: a bigger declared body is a 413 + close (no buffer risk). */
 const MAX_BODY_BYTES = 64 * 1024;
 
+/** A cause-specific upgrade refusal the hook may return instead of plain
+ *  `false`: the caller knows WHY the upgrade was refused (unknown path, a
+ *  missing Sec-WebSocket-Key, a bad `?after`), the core only formats it. */
+export interface UpgradeRefusal {
+	message: string;
+	hint: string;
+}
+
 export interface Http1ServerOptions {
 	/** Requested port; 0 = OS-assigned. */
 	port: number;
 	/** Plain-request router (sync or async; every response is JSON-shaped). */
 	onRequest: (req: Http1Request) => Http1Response | Promise<Http1Response>;
 	/** Upgrade hook: return true when the socket was taken over (WS); false
-	 *  → the core writes a 400 and closes. Absent → every upgrade 400s. */
-	onUpgrade?: (req: Http1Request, socket: Socket, head: Buffer) => boolean;
+	 *  → the core writes a generic 400 and closes; an `UpgradeRefusal` → the
+	 *  core writes that cause-specific 400 and closes. Absent → every upgrade
+	 *  400s. */
+	onUpgrade?: (req: Http1Request, socket: Socket, head: Buffer) => boolean | UpgradeRefusal;
 }
 
 function statusText(status: number): string {
@@ -296,9 +308,15 @@ export function startHttp1Server(opts: Http1ServerOptions): Promise<Http1ServerH
 				(req.headers.connection ?? "").toLowerCase().includes("upgrade");
 			if (wantsUpgrade) {
 				socket.removeListener("data", onData);
-				const taken = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
-				if (!taken) {
-					writeHttp1Response(socket, { status: 400, body: badRequestBody("websocket upgrade refused", "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests.") });
+				const outcome = opts.onUpgrade ? opts.onUpgrade(req, socket, rest) : false;
+				if (outcome !== true) {
+					// An object outcome is the hook's cause-specific refusal (issue
+					// #94); plain false keeps the generic fallback.
+					const refusal = typeof outcome === "object" ? outcome : undefined;
+					writeHttp1Response(socket, {
+						status: 400,
+						body: badRequestBody(refusal?.message ?? "websocket upgrade refused", refusal?.hint ?? "Only /api/swarm/stream speaks WebSocket; other paths are plain JSON requests."),
+					});
 				}
 				return;
 			}

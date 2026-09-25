@@ -264,6 +264,12 @@ async function main(): Promise<void> {
 			steer.status === 200 && steer.json?.ok === true && steer.json?.schemaVersion === 1 && steer.json?.worker === "w1",
 			`${steer.status} ${steer.body}`,
 		);
+		check(
+			"M3.1b journal mode → the envelope confirms (confirmation:\"confirmed\" + a durable seq) — the #62 item-1 additive field",
+			steer.json?.confirmation === "confirmed" &&
+				typeof (steer.json?.journal as { seq?: unknown } | null)?.seq === "number",
+			`${steer.body}`,
+		);
 		const aPath = join(ALPHA, "a-w1.json");
 		check("M3.2 the mailbox envelope a-w1.json is written next to the brief", existsSync(aPath));
 		const raw = existsSync(aPath) ? readFileSync(aPath, "utf8") : "";

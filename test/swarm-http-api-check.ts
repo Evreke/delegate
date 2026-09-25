@@ -37,6 +37,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EXTENSION_VERSION } from "../src/version.ts";
+import { sessionIdFor } from "../src/swarm/nodes.ts";
 import type { AgentStatusName } from "../src/host.ts";
 import type { ExchangeManifest } from "../src/manifest-store.ts";
 import { additiveViolations, fixtureAnswerPath, fixtureConsoleGraph, fixtureConsoleWorkerId, fixtureForeignWorkerId, HTTP_GOLDENS, HTTP_STREAM_GOLDENS, render } from "./swarm-http-goldens.ts";
@@ -541,6 +542,46 @@ async function main(): Promise<void> {
 				`${refused.status} ${refused.body.slice(0, 120)}`,
 			);
 		}
+	}
+
+	// --- X: worker exchange files (#87, additive routes) ------------------
+	// The brief/report read surface over the SAME main mount: an owned worker's
+	// real file, the honest absent state, and the fail-closed foreign/unknown
+	// refusals. (Non-golden legs: the frozen goldens live in the not-owned
+	// ./swarm-http-goldens.ts — these assert the contract directly.)
+	{
+		const w1Node = sessionIdFor("/sessions/w1.jsonl");
+		const foreignNode = sessionIdFor("/sessions/foreign1.jsonl");
+		const briefBody = "# brief w1\n\ncarry on\n";
+		writeFileSync(join(EX, "alpha-fleet", "brief-w1.md"), briefBody, "utf8");
+		const brief = await get(h.port, `/api/workers/${w1Node}/brief`);
+		const briefJson = JSON.parse(brief.body) as { ok?: boolean; kind?: string; worker?: string; absent?: boolean; text?: string };
+		check(
+			"X1 GET /api/workers/:id/brief → 200 with the owned worker's real exchange file",
+			brief.status === 200 && briefJson.ok === true && briefJson.kind === "brief" && briefJson.worker === "w1" && briefJson.absent === false && briefJson.text === briefBody,
+			brief.body,
+		);
+		const absent = await get(h.port, `/api/workers/${w1Node}/report`);
+		const absentJson = JSON.parse(absent.body) as { ok?: boolean; absent?: boolean; text?: unknown };
+		check(
+			"X2 a missing report file → 200 absent:true (honest absent, never fabricated content)",
+			absent.status === 200 && absentJson.ok === true && absentJson.absent === true && absentJson.text === null,
+			absent.body,
+		);
+		const foreign = await get(h.port, `/api/workers/${foreignNode}/brief`);
+		const foreignJson = JSON.parse(foreign.body) as { error?: { code?: string } };
+		check(
+			"X3 a foreign worker id → 404 E_EXCHANGE_FILE_REFUSED (fail-closed)",
+			foreign.status === 404 && foreignJson.error?.code === "E_EXCHANGE_FILE_REFUSED",
+			foreign.body,
+		);
+		const unknownFile = await get(h.port, "/api/workers/deadbeef/report");
+		const unknownJson = JSON.parse(unknownFile.body) as { error?: { code?: string } };
+		check(
+			"X4 an unknown id → 404 E_EXCHANGE_FILE_REFUSED (no existence oracle)",
+			unknownFile.status === 404 && unknownJson.error?.code === "E_EXCHANGE_FILE_REFUSED",
+			unknownFile.body,
+		);
 	}
 
 	// --- C: console (separate mounts with injected fixture graphs) --------

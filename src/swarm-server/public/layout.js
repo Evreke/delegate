@@ -9,11 +9,12 @@
  * the expansion set produces a byte-identical layout (the in-place-update
  * rule).
  *
- * Column-by-depth comes from the read-model's own `depth` when present; a
- * missing depth falls back to BFS distance from the node's root, so the
- * layout never invents a column the graph does not imply. Node order inside
- * a column is the model's deterministic order (id-sorted), never insertion
- * order.
+ * Column-by-depth comes from BFS over the `spawned_by` edges (child = from,
+ * parent = to): the wire's `depth` is the authority TIER (0/1), not tree
+ * depth (issue #80 — the live snapshot carries depth 0 on every node), so it
+ * is kept on the node as a decorative attribute and never read as a column.
+ * Node order inside a column is the model's deterministic order (id-sorted),
+ * never insertion order.
  *
  * Pan/zoom/fit are the documented interaction range: wheel zoom 0.5×–2×,
  * cursor-anchored; pan by scroll/drag; `fit` resolves the whole graph into
@@ -111,29 +112,57 @@ export function visibleNodes(state, expansion) {
 	return { nodes, edges };
 }
 
-/** Resolve each node's column: the model depth, else BFS distance from root. */
+/**
+ * Resolve each node's COLUMN by BFS over the `spawned_by` edges (child = from,
+ * parent = to). Issue #80: the wire's `node.depth` is the authority tier
+ * (manifestDepthFor returns 0 for a root orchestrator's workers), NOT tree
+ * depth — trusting it collapses the whole graph into one strip. `node.depth`
+ * is kept as a decorative attribute and used only as the fallback column for a
+ * node unreachable from any root (a pure cycle).
+ * <p>
+ * FUNCTION_CONTRACT: Input — state (buildDashboardState output). Output — a
+ *   Map(id → column). Guarantees: deterministic (roots and children visited
+ *   in id order); a node whose parent chain reaches a root gets its distance
+ *   from that root; never throws. Raises: never
+ */
 export function resolveDepths(state) {
+	const nodes = state?.nodes ?? [];
+	const ids = new Set(nodes.map((n) => n.id));
+	// parent[child] = parent (the first spawned_by edge that spawns the child).
 	const parent = new Map();
-	for (const e of state.edges) {
-		if (e.kind === "spawned_by" && !parent.has(e.from)) parent.set(e.from, e.to);
+	for (const e of state?.edges ?? []) {
+		if (e.kind !== "spawned_by") continue;
+		if (e.from === e.to || !ids.has(e.from) || !ids.has(e.to)) continue;
+		if (!parent.has(e.from)) parent.set(e.from, e.to);
 	}
+	const children = new Map();
+	for (const [child, par] of parent) {
+		if (!children.has(par)) children.set(par, []);
+		children.get(par).push(child);
+	}
+	for (const list of children.values()) list.sort();
+
 	const depths = new Map();
-	for (const node of state.nodes) {
-		if (typeof node.depth === "number") {
-			depths.set(node.id, node.depth);
-			continue;
+	const queue = [];
+	// Roots: no parent, visited in id order (deterministic BFS).
+	for (const id of [...ids].sort()) {
+		if (parent.has(id)) continue;
+		depths.set(id, 0);
+		queue.push(id);
+	}
+	for (let head = 0; head < queue.length; head++) {
+		const cur = queue[head];
+		const d = depths.get(cur);
+		for (const child of children.get(cur) ?? []) {
+			if (depths.has(child)) continue;
+			depths.set(child, d + 1);
+			queue.push(child);
 		}
-		let cur = node.id;
-		const seen = new Set([cur]);
-		let depth = 0;
-		for (;;) {
-			const next = parent.get(cur);
-			if (next === undefined || seen.has(next)) break;
-			seen.add(next);
-			cur = next;
-			depth += 1;
-		}
-		depths.set(node.id, depth);
+	}
+	// A pure cycle has no root: keep determinism via the decorative depth.
+	for (const node of nodes) {
+		if (depths.has(node.id)) continue;
+		depths.set(node.id, typeof node.depth === "number" ? node.depth : 0);
 	}
 	return depths;
 }
@@ -152,16 +181,19 @@ export function resolveDepths(state) {
 export function computeLayout(state, opts = {}) {
 	const { nodes, edges } = visibleNodes(state, opts.expansion);
 	const depths = resolveDepths(state);
+	// A hidden subtree's aggregate sits one column right of its lead — it has no
+	// spawned_by edge of its own, so it is placed by the lead's BFS column.
+	const colOf = (node) => (node.kind === "aggregate" ? (depths.get(node.leadId) ?? 0) + 1 : (depths.get(node.id) ?? 0));
 	const sorted = [...nodes].sort((a, b) => {
-		const ad = depths.get(a.id) ?? 0;
-		const bd = depths.get(b.id) ?? 0;
+		const ad = colOf(a);
+		const bd = colOf(b);
 		if (ad !== bd) return ad - bd;
 		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 	});
 	const columns = new Map();
 	const positions = {};
 	for (const node of sorted) {
-		const col = depths.get(node.id) ?? 0;
+		const col = colOf(node);
 		if (!columns.has(col)) columns.set(col, []);
 		const row = columns.get(col).length;
 		columns.get(col).push(node.id);

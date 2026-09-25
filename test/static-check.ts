@@ -57,13 +57,17 @@
  *      no src/swarm-server/** file may make a direct mailbox write (the
  *      server delegates to the core — it cannot publish an envelope without
  *      the journal row); and the mount wires the core (runOrchestratorVerb).
- *  12. fleet-dashboard static pins (#53/#54, Law 6/§4.2): the dashboard SPA
- *      under src/swarm-server/public/ is a static asset set (no build step,
- *      no framework/bundler, no external network) whose sessionStorage holds
- *      only the reconnect cursor (app.js) and the operator token (steer.js).
- *      The TWO documented mutation routes live only in steer.js (#54);
- *      T1.20–T1.24 pin the asset set, the forbidden shapes, the cursor/token
- *      scope, the mutation surface and the absence of build artifacts.
+ *  12. fleet-dashboard static pins (#53/#54/#66, Law 6/§4.2): the dashboard
+ *      SPA under src/swarm-server/public/ is a static asset set (no build
+ *      step, no framework/bundler, no external network) whose sessionStorage
+ *      holds only the reconnect cursor (app.js) and the operator token
+ *      (steer.js). The TWO documented mutation routes live only in steer.js
+ *      (#54); T1.20–T1.24 pin the asset set, the forbidden shapes, the
+ *      cursor/token scope, the mutation surface and the absence of build
+ *      artifacts. T1.25–T1.28 pin the #66 v1 shell: SVG-only rendering, the
+ *      single-screen regions (no mode switcher), system-only font stacks with
+ *      the palette/type scale as CSS custom properties, and the status
+ *      language's marker-left contract.
  *
  * Exit 0 only if all checks pass.
  */
@@ -1760,10 +1764,15 @@ export type DashboardAssetRule =
 
 /** Pure scan of one dashboard asset (JS/HTML/CSS) for forbidden runtime
  *  shapes. Comments are stripped first so prose (docs in the module header)
- *  never trips a rule. Input: the raw file text. Output: one entry per match. */
+ *  never trips a rule. Input: the raw file text. Output: one entry per match.
+ *
+ *  The W3C SVG namespace literal (`http://www.w3.org/2000/svg`) is NOT an
+ *  external call — it is the createElementNS namespace constant, fetched by
+ *  nothing. It is the ONE documented exception (T1.21d pins it live); every
+ *  other http(s) URL still fires. */
 export function scanDashboardAsset(code: string): Array<{ rule: DashboardAssetRule; match: string }> {
 	const out: Array<{ rule: DashboardAssetRule; match: string }> = [];
-	const stripped = stripComments(code);
+	const stripped = stripComments(code).replaceAll("http://www.w3.org/2000/svg", "");
 	const push = (rule: DashboardAssetRule, m: RegExpMatchArray | null) => {
 		if (m) out.push({ rule, match: m[0].replace(/\s+/g, " ").trim() });
 	};
@@ -1792,7 +1801,31 @@ function listDashboardAssets(root: string): string[] {
 	const assets = listDashboardAssets(ROOT).map((f) => relative(ROOT, f).replaceAll("\\", "/"));
 	check(
 		"T1.20 the dashboard assets exist (index.html + one file per module)",
-		["index.html", "app.js", "app.css", "tree.js", "stream.js", "degrade.js", "console.js", "steer.js"].every((n) => assets.includes(`src/swarm-server/public/${n}`)),
+		[
+			"index.html",
+			"app.js",
+			"app.css",
+			"status.css",
+			"canvas.css",
+			"detail.css",
+			"tree.js",
+			"stream.js",
+			"degrade.js",
+			"console.js",
+			"steer.js",
+			"status.js",
+			"state.js",
+			"journal.js",
+			"layout.js",
+			"ui.js",
+			"dom.js",
+			"rail.js",
+			"canvas.js",
+			"detail.js",
+			"attention.js",
+			"panels.js",
+			"mutations.js",
+		].every((n) => assets.includes(`src/swarm-server/public/${n}`)),
 		assets.join(", "),
 	);
 
@@ -1878,9 +1911,11 @@ check(
 		'const res = await fetch("/api/swarm/snapshot");',
 		'import { buildTreeView } from "./tree.js";',
 		'sessionStorage.setItem("swarm.dashboard.lastSeq", String(seq));',
+		// The createElementNS namespace constant is not a network call (T1.21d).
+		'const svg = doc.createElementNS("http://www.w3.org/2000/svg", "svg");',
 	];
 	const falsePositives = clean.filter((code) => scanDashboardAsset(code).length > 0);
-	check("T1.23c the pin is PRECISE: relative fetches, relative imports and the cursor write stay clean", falsePositives.length === 0, falsePositives.join(" | "));
+	check("T1.23c the pin is PRECISE: relative fetches, relative imports, the cursor write and the SVG namespace stay clean", falsePositives.length === 0, falsePositives.join(" | "));
 
 	// Seeded-file probe: a fixture tree walked by the real scanner goes red.
 	const seed = mkdtempSync(resolve(tmpdir(), "dashboard-pin-probe-"));
@@ -1894,6 +1929,83 @@ check(
 		seeded.join(" | "),
 	);
 	rmSync(seed, { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// 12b. v1 dashboard shell pins (#66). The one-screen layout is a static set:
+//      SVG-only rendering, the four in-shell regions plus the static frame,
+//      system-only font stacks and a CSS-variable palette/type scale. Each
+//      pin carries a canary so a vacuous pin self-fails.
+// ---------------------------------------------------------------------------
+{
+	const assetText = (name: string): string => {
+		try {
+			return readFileSync(resolve(DASHBOARD_PUBLIC_DIR, name), "utf8");
+		} catch {
+			return "";
+		}
+	};
+	const assetNames = readdirSync(DASHBOARD_PUBLIC_DIR, { withFileTypes: true })
+		.filter((e) => e.isFile() && /\.(js|html|css)$/.test(e.name))
+		.map((e) => e.name);
+
+	// T1.25 — SVG only: no canvas element, no 2D/WebGL context acquisition.
+	const canvasShapes = assetNames.filter((n) => /\bgetContext\s*\(|<canvas\b|createElement\(\s*["']canvas["']/i.test(stripComments(assetText(n))));
+	check(
+		"T1.25 the dashboard renders SVG only — no <canvas>, no getContext()/WebGL anywhere in the asset set (#66)",
+		canvasShapes.length === 0,
+		canvasShapes.join(", "),
+	);
+	{
+		const bites = ['const c = document.createElement("canvas"); c.getContext("2d");'].filter((c) => !/\bgetContext\s*\(|<canvas\b|createElement\(\s*["']canvas["']/i.test(stripComments(c))).length;
+		const precise = !/\bgetContext\s*\(|<canvas\b|createElement\(\s*["']canvas["']/i.test(stripComments('doc.createElementNS("http://www.w3.org/2000/svg", "g");'));
+		check("T1.25b the SVG-only pin bites and stays precise (a canvas context fires; the SVG namespace does not)", bites === 0 && precise);
+	}
+
+	// T1.26 — one screen, no tabs/modes: the frame + the four in-shell regions.
+	{
+		const idx = assetText("index.html");
+		const appSrc = assetText("app.js");
+		const frameIds = ["connection-state", "token-state", "journal-count", "journal-bytes", "schema-version", "activity-ticker", "fleet-tree"];
+		const regions = ["attention-strip", "rail", "center-canvas", "detail"];
+		check(
+			"T1.26 the v1 shell is ONE screen: the static frame carries the statusbar/data slots and app.js mounts the four regions with no mode switcher",
+			indexExists(idx, frameIds) && !/data-mode|data-screen|role="tablist"/.test(idx) && regions.every((r) => appSrc.includes(`"${r}"`)) && /data-region/.test(appSrc),
+			JSON.stringify({ frame: idx.length, regions: regions.filter((r) => !appSrc.includes(`"${r}"`)) }),
+		);
+		check(
+			"T1.26b the pin is LIVE: index.html links every split stylesheet and the module entry (no build step)",
+			["app.css", "status.css", "canvas.css", "detail.css"].every((css) => idx.includes(`/${css}`)) && idx.includes('type="module"') && idx.includes("/app.js"),
+		);
+	}
+
+	// T1.27 — system-only font stacks, palette/type scale as custom properties.
+	{
+		const css = [assetText("app.css"), assetText("status.css"), assetText("canvas.css"), assetText("detail.css")].join("\n");
+		const fontFiles = assetNames.filter((n) => /@font-face|\.woff2?|fonts\.googleapis/.test(assetText(n)));
+		check(
+			"T1.27 fonts are SYSTEM FALLBACK STACKS ONLY (no @font-face, no woff, no font CDN) and the palette/type scale are CSS custom properties",
+			fontFiles.length === 0 && /--font-prose:\s*Inter[^;]*system-ui/.test(css) && /--font-mono:\s*"JetBrains Mono"[^;]*ui-monospace/.test(css) && /--sev-info/.test(css) && /--type-md/.test(css),
+			fontFiles.join(", "),
+		);
+	}
+
+	// T1.28 — the status language: the six canonical statuses, each a distinct class.
+	{
+		const statusSrc = assetText("status.js");
+		const statusCss = assetText("status.css");
+		const canonical = ["running", "idle", "ask", "collected", "retired", "dead"];
+		check(
+			"T1.28 the six canonical statuses each carry a distinct visual (status.js table + status.css classes) and the marker renders LEFT of the name",
+			canonical.every((s) => statusSrc.includes(`${s}:`) || statusSrc.includes(`"${s}"`)) && canonical.every((s) => statusCss.includes(`.status-${s}`)) && /STATUS_MARKER_POSITION\s*=\s*"left"/.test(statusSrc),
+			canonical.filter((s) => !statusCss.includes(`.status-${s}`)).join(", "),
+		);
+	}
+}
+
+/** Every frame id appears in the static shell (a small helper for T1.26). */
+function indexExists(idx: string, ids: ReadonlyArray<string>): boolean {
+	return ids.every((id) => idx.includes(`id="${id}"`));
 }
 
 console.log(failures === 0 ? "\nALL STATIC CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

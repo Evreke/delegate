@@ -11,6 +11,15 @@
  * text and severity attributes IN PLACE, leaving every `transform` untouched —
  * a status or progress event never relayouts. Spotlight (from the attention
  * queue) is an input contract: non-affected nodes are dimmed, never hidden.
+ *
+ * ONE coordinate space (issue #78): the SVG viewBox is the ELEMENT PIXEL BOX
+ * (`0 0 width height`, measured from the element itself) and the inner
+ * `<g data-view>` transform owns pan/zoom. `fitView`/`zoomAt` therefore work
+ * in element pixels end to end — the injected `viewport` seam is used only as
+ * a fallback when the element cannot be measured (headless), and the
+ * hardcoded 1200x720 "fantasy" viewport is ignored whenever a real
+ * measurement is available. The old double-fit (viewBox = layout bounds AND
+ * an inner fit transform) is gone.
  */
 
 import { el, on } from "./dom.js";
@@ -138,11 +147,13 @@ export function subLineFor(node) {
  */
 export function renderCanvas(state, layout, root, doc, opts = {}) {
 	while (root.firstChild) root.removeChild(root.firstChild);
+	// The viewBox is the element pixel box; measure the region before the SVG
+	// exists (the SVG fills it), then remeasure the SVG itself on attach.
+	const vp = viewportOf(opts, null, root);
 	const svg = svgEl(doc, "svg", {
 		class: "graph-canvas",
 		"data-graph": "1",
-		viewport: `${layout.bounds.minX} ${layout.bounds.minY} ${layout.bounds.width} ${layout.bounds.height}`,
-		viewBox: `${layout.bounds.minX} ${layout.bounds.minY} ${layout.bounds.width} ${layout.bounds.height}`,
+		viewBox: `0 0 ${vp.width} ${vp.height}`,
 		preserveAspectRatio: "xMidYMid meet",
 	});
 	const edgeLayer = svgEl(doc, "g", { class: "graph-layer graph-edges", "data-graph-layer": "edges" });
@@ -167,11 +178,11 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	svg.appendChild(view);
 	const toolbar = el(doc, "div", { class: "canvas-toolbar", "data-canvas-toolbar": "1" });
 	const fit = el(doc, "button", { class: "canvas-fit", "data-canvas-fit": "1", type: "button" }, "fit");
-	on(fit, "click", () => opts.onView?.(fitView(layout.bounds, viewportOf(opts))));
+	on(fit, "click", () => opts.onView?.(fitView(layout.bounds, viewportOf(opts, svg, root))));
 	toolbar.appendChild(fit);
 	root.appendChild(toolbar);
 	root.appendChild(svg);
-	return { svg, nodes, layout, view };
+	return { svg, nodes, layout, view, root };
 }
 
 /** The view transform string for the SVG `<g data-view>` wrapper. */
@@ -180,10 +191,63 @@ export function viewTransform(view) {
 	return `translate(${v.panX} ${v.panY}) scale(${v.zoom})`;
 }
 
-/** The viewport size (from the injected seam, else a documented default). */
-function viewportOf(opts) {
-	if (typeof opts.viewport === "function") return opts.viewport();
-	return { width: 1200, height: 720 };
+/** The viewport box a stale hardcoded app.js seam reports (never authoritative). */
+export const FANTASY_VIEWPORT = Object.freeze({ width: 1200, height: 720 });
+
+/** True for the hardcoded 1200x720 "fantasy" viewport app.js still injects. */
+export function isFantasyViewport(vp) {
+	return !!vp && vp.width === FANTASY_VIEWPORT.width && vp.height === FANTASY_VIEWPORT.height;
+}
+
+/**
+ * Measure a real element's pixel box. Guarded: a fake/headless seam without
+ * layout has no `getBoundingClientRect`/`clientWidth` and yields null, so the
+ * pure fit/zoom math stays checkable without a DOM.
+ */
+export function measureViewport(element) {
+	if (!element) return null;
+	let width = 0;
+	let height = 0;
+	if (typeof element.getBoundingClientRect === "function") {
+		const rect = element.getBoundingClientRect();
+		width = rect?.width ?? 0;
+		height = rect?.height ?? 0;
+	}
+	if ((!width || !height) && typeof element.clientWidth === "number") {
+		width = element.clientWidth;
+		height = element.clientHeight;
+	}
+	if (!width || !height) return null;
+	return { width, height };
+}
+
+/**
+ * The ONE authoritative viewport for fit/zoom math (issue #78).
+ * <p>
+ * FUNCTION_CONTRACT: Input — opts ({ viewport }), element (the SVG), fallback
+ *   element (the region). Output — { width, height }. Guarantees: a real
+ *   measured element box wins; the injected seam is consulted only when the
+ *   element cannot be measured AND is not the hardcoded 1200x720 fantasy;
+ *   the last resort is the same 1200x720 box. Raises: never.
+ */
+export function viewportOf(opts = {}, element = null, fallbackElement = null) {
+	const measured = measureViewport(element) ?? measureViewport(fallbackElement);
+	if (measured) return measured;
+	if (typeof opts.viewport === "function") {
+		const external = opts.viewport();
+		if (external && external.width > 0 && external.height > 0 && !isFantasyViewport(external)) return { width: external.width, height: external.height };
+	}
+	return { ...FANTASY_VIEWPORT };
+}
+
+/** True for the untouched `initialView()` — the only state an auto-fit may replace. */
+function isInitialView(view) {
+	return !!view && view.zoom === 1 && view.panX === 0 && view.panY === 0;
+}
+
+/** Epsilon view equality (auto-fit re-entry guard — never loops). */
+export function sameView(a, b) {
+	return !!a && !!b && Math.abs(a.zoom - b.zoom) < 1e-9 && Math.abs(a.panX - b.panX) < 1e-9 && Math.abs(a.panY - b.panY) < 1e-9;
 }
 
 /**
@@ -196,7 +260,23 @@ function viewportOf(opts) {
 export function attachCanvasControls(index, doc, opts = {}) {
 	if (!index || !index.svg || typeof index.svg.addEventListener !== "function") return;
 	const svg = index.svg;
+	const root = index.root ?? null;
 	const getView = opts.getView || (() => initialViewFallback());
+	// Remeasure on every attach: the element box is the authoritative viewBox
+	// (resize is picked up here), and a fresh SVG re-attaches after every render.
+	const applyViewport = () => {
+		const vp = viewportOf(opts, svg, root);
+		if (typeof svg.setAttribute === "function") svg.setAttribute("viewBox", `0 0 ${vp.width} ${vp.height}`);
+		return vp;
+	};
+	const vp = applyViewport();
+	// First measured attach: the identity ui.view is not a frame in element
+	// pixel space, so fit once and let onView persist it in ui state (only when
+	// the view is untouched AND the fit actually changes it — never a loop).
+	if (measureViewport(svg) && isInitialView(getView())) {
+		const fitted = fitView(index.layout.bounds, vp);
+		if (!sameView(fitted, getView())) opts.onView?.(fitted);
+	}
 	on(svg, "wheel", (event) => {
 		event?.preventDefault?.();
 		const factor = event && event.deltaY < 0 ? 1.1 : 0.9;
@@ -215,7 +295,7 @@ export function attachCanvasControls(index, doc, opts = {}) {
 	on(svg, "pointerup", () => {
 		dragging = null;
 	});
-	on(svg, "dblclick", () => opts.onView?.(fitView(index.layout.bounds, viewportOf(opts))));
+	on(svg, "dblclick", () => opts.onView?.(fitView(index.layout.bounds, applyViewport())));
 }
 
 /** A defensive default view (the app always passes getView). */

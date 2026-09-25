@@ -11,15 +11,12 @@
  * events/stream base and folds only its OWN graph subtree (`./fleet-scope.js`);
  * the root view keeps the v1 unscoped behavior.
  *
- * The heavy halves live in their own modules: `./state.js` folds the read
- * model, `./layout.js` places the graph, `./ui.js` owns ephemeral UI state,
- * `./panels.js` owns the console registry, `./mutations.js` owns steering.
- * A snapshot frame re-renders; an event frame patches node status/progress IN
- * PLACE (positions are stable for stable topology).
- *
- * Ownership: a fleet is own unless the console gate refuses its session
- * (`refused`) or `env.ownSessionPath` / `env.foreignSessionIds` say otherwise
- * — the server's ownership verdict is the authority, never a guess.
+ * The heavy halves live in their own modules: `./state.js` folds the read model,
+ * `./layout.js` places the graph, `./ui.js` owns UI state, `./panels.js` the
+ * console registry, `./mutations.js` steering. A snapshot frame re-renders; an
+ * event frame patches status/progress IN PLACE. Ownership: a fleet is own unless
+ * the console gate refuses its session (`refused`) or `env.ownSessionPath` /
+ * `env.foreignSessionIds` say otherwise — the server's verdict is the authority.
  */
 
 import { buildDashboardState } from "./state.js";
@@ -178,6 +175,8 @@ export function createFleetApp(env = {}) {
 			events: journalEvents,
 			ownSessionPath: env.ownSessionPath ?? null,
 			foreignSessionIds: ids,
+			// #92: the read model accepts the UI's expansion Set (it used to drop it).
+			expansion: ui.expansion,
 			nowMs: nowMs(),
 		});
 		layout = computeLayout(dash, { expansion: ui.expansion });
@@ -194,6 +193,7 @@ export function createFleetApp(env = {}) {
 		const sessionId = worker ? worker.sessionId : subject.kind === "session" ? subject.id : null;
 		const consoleState = sessionId && panels ? panels.get(sessionId) : null;
 		const ask = (worker && worker.ask) || subject.ask || null;
+		// #85: a non-worker node keeps a VISIBLE controls box with its disabled reason.
 		const ctl = worker
 			? controlsView({
 					worker: workerName,
@@ -201,7 +201,7 @@ export function createFleetApp(env = {}) {
 					hasSession: Boolean(sessionId),
 					pendingAsk: ask ? { worker: workerName, question: ask.question } : null,
 				})
-			: null;
+			: { disabled: true, reasonCode: "not-a-worker", reason: "disabled: this node is not a steerable worker", pendingAsk: ask };
 		return {
 			subject,
 			worker: workerName,
@@ -209,11 +209,31 @@ export function createFleetApp(env = {}) {
 			console: consoleState && sessionId ? { ...consoleBanner(consoleState), worker: workerName, nodeId: sessionId } : null,
 			controls: ctl,
 			pending: workerName ? mutations.latestPending(workerName, "steer") : null,
+			answerPending: workerName ? mutations.latestPending(workerName, "answer") : null,
 			ask,
 			draft: workerName ? drafts.get(workerName) || "" : "",
+			answerDraft: workerName ? drafts.get(`${workerName}:answer`) || "" : "",
 			tab: ui.detailTab,
 		};
 	};
+
+	// #85c/#93: the panel talks back through these seams (no post-render DOM query).
+	const sendMutation = (kind, worker, text) => (kind === "answer" ? mutations.sendAnswer(worker, text) : mutations.sendSteer(worker, text));
+	const detailOpts = () => ({ dispatch, onSend: sendMutation, onDraft: (key, text) => drafts.set(key, text) });
+
+	// #91: the queue overlay is a modal dialog — focus on open, restore on close, Escape closes.
+	let restoreFocus = null;
+	const syncFocus = () => {
+		const overlay = ui.overlay && regions.attention && typeof doc.querySelector === "function" ? doc.querySelector("[data-attention-overlay]") : null;
+		if (!overlay) {
+			if (restoreFocus) { restoreFocus.focus?.(); restoreFocus = null; }
+			return;
+		}
+		if (!restoreFocus && doc.activeElement && doc.activeElement !== doc.body) restoreFocus = doc.activeElement;
+		overlay.focus?.();
+	};
+	const onKeydown = (event) => { if (event && event.key === "Escape" && ui.overlay) dispatch({ type: "dismiss-overlay" }); };
+	if (doc && typeof doc.addEventListener === "function") doc.addEventListener("keydown", onKeydown);
 
 	const viewport = () => ({ width: 1200, height: 720 });
 	const onView = (view) => {
@@ -226,14 +246,14 @@ export function createFleetApp(env = {}) {
 			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView });
 			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
 		}
-		if (regions.detail) renderDetail(detailView(), regions.detail, doc, { dispatch });
+		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
+		syncFocus();
 	};
 	const render = () => {
 		refreshModel();
 		if (!dash) return;
 		renderRegions();
-		wireControls();
 		updateStatusbar();
 	};
 
@@ -243,9 +263,9 @@ export function createFleetApp(env = {}) {
 		if (!dash) return;
 		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight });
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
-		if (regions.detail) renderDetail(detailView(), regions.detail, doc, { dispatch });
+		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
-		wireControls();
+		syncFocus();
 		updateStatusbar();
 	};
 
@@ -260,20 +280,6 @@ export function createFleetApp(env = {}) {
 			renderTimer = null;
 			render();
 		}, 50);
-	};
-
-	const wireControls = () => {
-		if (!doc || typeof doc.querySelectorAll !== "function") return;
-		for (const el of doc.querySelectorAll("[data-steer-worker]")) {
-			const name = el.getAttribute("data-steer-worker");
-			const input = el.querySelector("[data-steer-input]");
-			const send = el.querySelector("[data-steer-send]");
-			if (input && typeof input.addEventListener === "function") input.addEventListener("input", () => drafts.set(name, input.value));
-			if (send && typeof send.addEventListener === "function") send.addEventListener("click", () => void mutations.sendSteer(name, input ? input.value : ""));
-			const aInput = el.querySelector("[data-answer-input]");
-			const aSend = el.querySelector("[data-answer-send]");
-			if (aSend && typeof aSend.addEventListener === "function") aSend.addEventListener("click", () => void mutations.sendAnswer(name, aInput ? aInput.value : ""));
-		}
 	};
 
 	// --- journal -----------------------------------------------------------
@@ -376,6 +382,7 @@ export function createFleetApp(env = {}) {
 			if (renderTimer !== null) clearTimeout(renderTimer);
 			if (panels) panels.close();
 			if (stream) stream.close();
+			if (doc && typeof doc.removeEventListener === "function") doc.removeEventListener("keydown", onKeydown);
 			chrome.close();
 		},
 	};

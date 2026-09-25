@@ -32,6 +32,9 @@ export const MAX_AUTH_RETRIES = 3;
  *   sendAnswer(w,t) }
  * Guarantees: never throws out of sendSteer/sendAnswer; the token stays in
  *   sessionStorage only; a cap reached is an honest terminal `rejected`.
+ *   sendSteer/sendAnswer return a STRUCTURED outcome ({ sent, reason }) — a
+ *   dismissed/empty token prompt emits an `aborted` marker ("no token —
+ *   nothing sent"), never a silent no-op (#93).
  */
 export function createMutations(opts) {
 	const fetchImpl = opts.fetch;
@@ -105,11 +108,22 @@ export function createMutations(opts) {
 		return res;
 	};
 
+	// #93: the prompt was cancelled/empty — record the honest terminal marker so
+	// the panel shows "no token — nothing sent" instead of a silent no-op.
+	const abort = (kind, worker, text) => {
+		pendingList = [...pendingList, { ...newPending(kind, worker, text, currentSeq()), status: "aborted", error: "no token \u2014 nothing sent" }];
+		onChange();
+	};
+
 	const send = async (kind, worker, text) => {
-		if (typeof text !== "string" || text.trim().length === 0) return null;
+		if (typeof text !== "string" || text.trim().length === 0) return { sent: false, reason: "empty" };
 		const token = ensureToken();
-		if (!token) return null;
-		return submit(kind, worker, text, token);
+		if (!token) {
+			abort(kind, worker, text);
+			return { sent: false, reason: "no-token" };
+		}
+		const res = await submit(kind, worker, text, token);
+		return { sent: res.ok, reason: res.ok ? "sent" : "rejected", status: res.status, authRequired: res.authRequired };
 	};
 
 	return {

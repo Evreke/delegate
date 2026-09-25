@@ -317,3 +317,59 @@
 	color: var(--muted);
 	font-style: italic;
 }
+
+/* --- #91 visually-hidden labels (the a11y text channel) --------------- */
+
+.rail-status-label {
+	position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden;
+	clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* --- #85 detail panel header (name + id + task) ------------------------ */
+
+.detail-header {
+	display: flex; flex-wrap: wrap; gap: 0.35rem 0.6rem; align-items: baseline;
+	border-bottom: 1px solid var(--border); padding-bottom: 0.25rem;
+}
+
+.detail-name { color: var(--fg); font-size: var(--type-md); font-weight: 600; }
+
+.detail-id,
+.detail-task { color: var(--muted); font-family: var(--font-mono); font-size: var(--type-xs); }
+
+/* --- #90 flag shape channel: a distinct left-border accent + glyph ------- */
+
+.degraded-flag-no-session-path { border-left: 3px solid #7d838c; }
+.degraded-flag-no-live-status { border-left: 3px solid #8b93a0; }
+.degraded-flag-legacy-orphan { border-left: 3px solid var(--sev-warn); }
+.degraded-flag-usage-unavailable { border-left: 3px solid var(--sev-info); }
+
+.degraded-flag-no-session-path::before { content: "\2205"; margin-right: 0.25rem; }
+.degraded-flag-no-live-status::before { content: "\25cb"; margin-right: 0.25rem; }
+.degraded-flag-legacy-orphan::before { content: "\2691"; margin-right: 0.25rem; }
+.degraded-flag-usage-unavailable::before { content: "\25d4"; margin-right: 0.25rem; }
+
+/* --- #90 attention overlay flag legend ---------------------------------- */
+
+.attention-legend {
+	display: flex; flex-wrap: wrap; gap: 0.3rem 0.7rem; color: var(--muted);
+	border-top: 1px solid var(--border); margin-top: 0.4rem; padding-top: 0.35rem;
+	font-size: var(--type-xs);
+}
+
+.attention-legend-title { text-transform: uppercase; letter-spacing: 0.04em; }
+
+.attention-legend-item { padding-left: 0.35rem; }
+
+/* --- #93 truncation marker + clickable ask option ----------------------- */
+
+.console-truncated {
+	padding: 0.1rem 0.5rem; color: var(--amber);
+	font-size: var(--type-xs); font-style: italic;
+}
+
+.ask-option {
+	background: transparent; color: var(--muted); border: 1px solid var(--border);
+	border-radius: 3px; padding: 0 0.3rem; cursor: pointer; font: inherit;
+	font-family: var(--font-mono); font-size: var(--type-xs);
+}

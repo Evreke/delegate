@@ -102,6 +102,10 @@ Every agent in this repo (workers and orchestrators alike) follows these rules. 
   bug class has had zero relevant hits for two consecutive releases may be
   retired with operator sign-off, recorded in CHANGELOG. Gates may shrink,
   not only grow.
+- **Merge gate — one command.** A PR merges only via `gh pr merge --squash --auto`
+  (it waits for the required checks) or after `gh pr checks --watch` shows green —
+  never a bare merge against pending CI; the `main` ruleset enforces strict
+  `CI / test`, so a red or pending PR cannot be merged.
 - **Dogfooding.** This repository builds the tool that builds this
   repository: all multi-agent work runs through pi-delegate itself (briefs in
   the exchange tree, strict JSON reports, budget caps, evidence in every

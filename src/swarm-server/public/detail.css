@@ -1,0 +1,319 @@
+/*
+ * detail.css — the right detail panel, degraded chips, severity ladder and
+ * the console/steering surface (issues #54/#66). Split from app.css.
+ */
+
+/* --- detail panel ------------------------------------------------------ */
+
+.detail-panel {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+	font-size: var(--type-sm);
+}
+
+.detail-status {
+	display: flex;
+	gap: 0.4rem;
+	align-items: center;
+	font-size: var(--type-md);
+}
+
+.detail-readonly {
+	margin-left: auto;
+	color: var(--muted);
+	text-transform: uppercase;
+	font-size: var(--type-xs);
+}
+
+.detail-fields {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.7rem;
+	color: var(--muted);
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+}
+
+.detail-field-unavailable {
+	font-style: italic;
+}
+
+.context-bar {
+	position: relative;
+	height: 16px;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--panel-2);
+}
+
+.context-bar-fill {
+	position: absolute;
+	inset: 0 auto 0 0;
+	background: var(--accent);
+	opacity: 0.45;
+}
+
+.context-label {
+	position: relative;
+	padding: 0 0.35rem;
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+	line-height: 14px;
+}
+
+.context-bar-unavailable {
+	color: var(--muted);
+	font-size: var(--type-xs);
+	font-style: italic;
+	padding: 0 0.35rem;
+	line-height: 14px;
+}
+
+.last-progress {
+	display: flex;
+	gap: 0.5rem;
+	align-items: baseline;
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+	color: var(--muted);
+}
+
+.progress-label {
+	color: var(--fg);
+}
+
+.progress-none {
+	font-style: italic;
+}
+
+.ask-banner {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	align-items: baseline;
+	border: 1px solid #6b5a3f;
+	background: #241f18;
+	border-radius: 4px;
+	padding: 0.3rem 0.5rem;
+	font-size: var(--type-sm);
+}
+
+.ask-question {
+	color: var(--amber);
+}
+
+.ask-option {
+	color: var(--muted);
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+}
+
+.detail-tabs {
+	display: flex;
+	gap: 0.25rem;
+	border-bottom: 1px solid var(--border);
+}
+
+.detail-tab {
+	background: transparent;
+	color: var(--muted);
+	border: none;
+	border-bottom: 2px solid transparent;
+	padding: 0.2rem 0.5rem;
+	cursor: pointer;
+	font: inherit;
+	font-size: var(--type-sm);
+}
+
+.detail-tab[data-active="1"] {
+	color: var(--fg);
+	border-bottom-color: var(--accent);
+}
+
+.detail-pane-unavailable {
+	color: var(--muted);
+	font-style: italic;
+	font-size: var(--type-sm);
+	padding: 0.4rem 0;
+}
+
+/* --- degradation chips + severity ladder ------------------------------- */
+
+.degraded {
+	display: inline-block;
+	margin: 0.05rem 0.2rem 0.05rem 0;
+	padding: 0 0.35rem;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	font-size: var(--type-xs);
+	font-family: var(--font-mono);
+}
+
+/* four distinct visual states (the flag name is always the chip text) */
+.degraded-grey {
+	color: #7d838c;
+	background: #23262c;
+	border-color: #33373f;
+}
+
+.degraded-ghost {
+	color: #8b93a0;
+	background: transparent;
+	border-color: #3a3f49;
+	opacity: 0.55;
+	font-style: italic;
+}
+
+.degraded-badge {
+	background: #2c2620;
+}
+
+.degraded-badge-orphan {
+	color: var(--sev-warn);
+	border-color: #6b5a3f;
+}
+
+.degraded-badge-usage {
+	color: var(--sev-info);
+	border-color: #3f5f58;
+}
+
+.severity {
+	display: inline-block;
+	padding: 0 0.3rem;
+	border-radius: 3px;
+	border: 1px solid var(--border);
+	font-size: var(--type-xs);
+	font-family: var(--font-mono);
+	text-transform: uppercase;
+}
+
+.severity-info {
+	color: var(--sev-info);
+	border-color: #3f5f58;
+}
+
+.severity-warn {
+	color: var(--sev-warn);
+	border-color: #6b5a3f;
+}
+
+.severity-crit {
+	color: var(--sev-crit);
+	border-color: #6b3f3f;
+}
+
+/* --- console panel + controls (from #54) -------------------------------- */
+
+.console {
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	background: #14171c;
+}
+
+.console-banner {
+	padding: 0.1rem 0.5rem;
+	font-size: var(--type-xs);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--sev-info);
+	border-bottom: 1px solid var(--border);
+}
+
+.console[data-console-state="ended"] .console-banner,
+.console[data-console-state="ended-with-retained-backlog"] .console-banner {
+	color: var(--amber);
+}
+
+.console[data-console-state="unavailable"] .console-banner,
+.console[data-console-state="refused"] .console-banner,
+.console[data-console-state="error"] .console-banner {
+	color: var(--muted);
+}
+
+.console-detail {
+	padding: 0.1rem 0.5rem;
+	font-size: var(--type-xs);
+	color: var(--muted);
+	font-style: italic;
+}
+
+.console-tail {
+	margin: 0;
+	padding: 0.3rem 0.5rem;
+	max-height: 14rem;
+	overflow: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+	line-height: 1.35;
+	color: #cfd6e0;
+}
+
+.controls {
+	margin-top: 0.35rem;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	align-items: center;
+}
+
+.controls .reason {
+	color: var(--amber);
+	font-size: var(--type-xs);
+}
+
+.controls input {
+	flex: 1 1 10rem;
+	background: #14171c;
+	color: inherit;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	padding: 0.15rem 0.35rem;
+	font-family: var(--font-mono);
+	font-size: var(--type-xs);
+}
+
+.controls button {
+	background: #222831;
+	color: inherit;
+	border: 1px solid var(--border);
+	border-radius: 3px;
+	padding: 0.15rem 0.6rem;
+	cursor: pointer;
+	font-size: var(--type-xs);
+}
+
+.controls button[disabled],
+.controls input[disabled] {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.pending {
+	font-size: var(--type-xs);
+	color: var(--sev-info);
+}
+
+.pending-failed {
+	color: var(--amber);
+}
+
+.pending-confirmed {
+	color: var(--mint);
+}
+
+.answer {
+	flex: 1 1 100%;
+	display: flex;
+	gap: 0.35rem;
+	align-items: center;
+}
+
+.detail-empty {
+	color: var(--muted);
+	font-style: italic;
+}

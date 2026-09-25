@@ -1,0 +1,95 @@
+/*
+ * status.css — the status language markers (issue #66): color + shape,
+ * rendered LEFT of the name. Split from app.css (Law 5).
+ */
+
+/* --- status language: color + shape, LEFT of the name ------------------ */
+
+.status-marker {
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	flex: 0 0 9px;
+	color: var(--muted);
+	background: currentColor;
+}
+
+.status-running {
+	color: var(--mint);
+	border-radius: 50%;
+}
+
+.status-idle {
+	color: var(--cyan);
+	background: transparent;
+	border: 1.5px solid currentColor;
+	border-radius: 50%;
+}
+
+.status-ask {
+	color: var(--amber);
+	border-radius: 1px;
+}
+
+.status-collected {
+	color: var(--grey);
+	background: transparent;
+	border: 1.5px solid currentColor;
+	border-radius: 50%;
+}
+
+.status-retired {
+	color: var(--grey);
+	background: transparent;
+	border: 1.5px dashed currentColor;
+	border-radius: 50%;
+}
+
+.status-dead {
+	color: var(--red);
+	transform: rotate(45deg);
+	border-radius: 1px;
+}
+
+.status-blocked {
+	color: var(--amber);
+	background: transparent;
+	border: 1.5px solid currentColor;
+	border-radius: 1px;
+}
+
+.status-done {
+	color: var(--mint);
+	background: transparent;
+	border: 2px solid currentColor;
+	border-radius: 50%;
+}
+
+.status-unknown,
+.status-no-live-status {
+	color: var(--muted);
+	background: transparent;
+	border: 1.5px dashed currentColor;
+	border-radius: 50%;
+}
+
+.status-pulse {
+	animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.status-pulse {
+		animation: none;
+	}
+}
+

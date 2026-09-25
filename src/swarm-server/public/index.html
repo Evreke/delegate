@@ -5,21 +5,23 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>pi-delegate — fleet dashboard</title>
 	<link rel="stylesheet" href="/app.css">
+	<link rel="stylesheet" href="/status.css">
+	<link rel="stylesheet" href="/canvas.css">
+	<link rel="stylesheet" href="/detail.css">
 </head>
 <body>
 	<header class="topbar">
-		<h1>Fleet dashboard</h1>
+		<h1 class="brand">pi-delegate <span class="brand-sub">fleet dashboard</span></h1>
 		<span id="connection-state" data-connection-state="connecting" class="conn conn-connecting">connecting</span>
 		<span id="token-state" data-token-state="absent" class="token">token: absent</span>
 	</header>
-	<main>
-		<div id="error" class="error" hidden></div>
-		<section id="fleet-tree" class="fleet-tree" aria-label="Fleet tree"></section>
-	</main>
+	<div id="error" class="error" hidden></div>
+	<div id="fleet-tree" class="shell" aria-label="Fleet dashboard"></div>
 	<footer class="statusbar">
 		<span class="journal">journal: <span id="journal-count" data-journal-count>0</span> events</span>
 		<span class="journal">db: <span id="journal-bytes" data-journal-bytes>0</span> bytes</span>
-		<span class="readonly">read-only</span>
+		<span class="journal">schema: <span id="schema-version" data-schema-version>1</span></span>
+		<span class="ticker" id="activity-ticker" data-activity-ticker>—</span>
 	</footer>
 	<script type="module" src="/app.js"></script>
 </body>

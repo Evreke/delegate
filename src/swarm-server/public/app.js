@@ -1,32 +1,40 @@
 /**
- * app.js — the dashboard bootstrap (issues #53 + #54).
+ * app.js — the v1 dashboard bootstrap (issues #53, #54, #66).
  *
- * Wires the pure modules into a page: fetch the snapshot and render the tree,
- * preload each worker's console (REST) then live-tail it (WS), fetch the
- * journal for the footer + the pending-ask / mutation-confirmation graph, then
- * open the swarm WS stream and apply frames live (snapshot frames re-render
- * the tree; event frames advance the cursor, confirm pending mutations and
- * refresh the tree — a refresh, never a page reload).
+ * ONE screen, no tabs and no mode switchers: the shell mounts the attention
+ * strip, the left rail, the center SVG canvas and the right detail panel
+ * inside `#fleet-tree`, then keeps them live. Data enters ONLY through the
+ * documented read doors — `GET /api/swarm/snapshot`, the
+ * `WS /api/swarm/stream?after=<seq>` cursor stream and the console endpoints;
+ * mutations go through `./mutations.js` (optimistic-with-confirmation, #54).
  *
- * Steering (#54) is OPTIMISTIC-WITH-CONFIRMATION: a POST creates a pending
- * marker confirmed only when the matching journal `steer`/`answer` event
- * arrives over the read stream; a structured 401/403 re-prompts for the
- * operator token (sessionStorage only — never localStorage, a URL or a log).
+ * The heavy halves live in their own modules: `./state.js` folds the read
+ * model, `./layout.js` places the graph, `./ui.js` owns ephemeral UI state,
+ * `./panels.js` owns the console registry, `./mutations.js` owns steering.
+ * A snapshot frame re-renders; an event frame patches node status/progress IN
+ * PLACE (positions are stable for stable topology).
  *
- * `createFleetApp(env)` takes its browser seams (doc/fetch/storage/location/
- * stream/prompt) so the wiring is testable headlessly; the module also
- * self-starts when a document is present.
+ * Ownership: a fleet is own unless the console gate refuses its session
+ * (`refused`) or `env.ownSessionPath` / `env.foreignSessionIds` say otherwise
+ * — the server's ownership verdict is the authority, never a guess.
  */
 
-import { buildTreeView, renderTree } from "./tree.js";
+import { buildDashboardState } from "./state.js";
+import { computeLayout } from "./layout.js";
+import { createUiState, uiReducer } from "./ui.js";
+import { renderAttention } from "./attention.js";
+import { renderRail } from "./rail.js";
+import { renderCanvas, patchCanvas, attachCanvasControls } from "./canvas.js";
+import { renderDetail, resolveDetailSubject, pickWorker } from "./detail.js";
 import { createSwarmStream } from "./stream.js";
-import { consoleBanner, consoleRestUrl, consoleStreamUrlFor, createConsoleTail, initialConsoleState, isTerminalConsoleStatus, reduceConsoleFrame } from "./console.js";
-import { clearToken, controlsView, failPending, newPending, pendingAsks, pendingView, postMutation, readToken, reducePending, writeToken } from "./steer.js";
+import { consoleBanner, createConsoleTail } from "./console.js";
+import { createPanels } from "./panels.js";
+import { createMutations, MAX_AUTH_RETRIES } from "./mutations.js";
+import { controlsView } from "./steer.js";
+
+export { MAX_AUTH_RETRIES };
 
 const STORAGE_KEY = "swarm.dashboard.lastSeq";
-
-/** Re-prompt cap for a rejected operator token (no infinite 401 recursion). */
-export const MAX_AUTH_RETRIES = 3;
 
 /** Read the persisted cursor (sessionStorage only — the documented store). */
 export function readCursor(storage) {
@@ -55,19 +63,25 @@ export function streamUrlFor(location) {
 	return `${proto}//${host}/api/swarm/stream`;
 }
 
+/** The shell regions, created inside the #fleet-tree shell root. */
+const REGIONS = [
+	["attention", "attention-strip"],
+	["rail", "rail"],
+	["canvas", "center-canvas"],
+	["detail", "detail"],
+];
+
 /**
  * Build the dashboard app over injectable browser seams.
  * <p>
  * FUNCTION_CONTRACT:
  * Input: env — { doc, fetch, storage, location, stream, consoleTail, prompt,
- *   delayMs } overrides (all default to the browser globals)
- * Output: { start(), close(), get view(), get lastSeq(), sendSteer(),
- *   sendAnswer(), get pending() }
+ *   delayMs, ownSessionPath, nowMs } overrides
+ * Output: { start(), close(), get state(), get ui(), get lastSeq(),
+ *   sendSteer(), sendAnswer(), get pending(), dispatch() }
  * Guarantees: a fetch/render failure is surfaced in #error and never throws
- *   out of start(); the tree re-renders from a fresh snapshot on every event
- *   batch (no page reload); a mutation without a token prompts, and a
- *   structured 401/403 clears + re-prompts; the token never leaves
- *   sessionStorage except in the Authorization header.
+ *   out of start(); the shell renders one screen with no mode switcher; an
+ *   event frame patches the canvas without relayout.
  * Raises: never
  */
 export function createFleetApp(env = {}) {
@@ -76,85 +90,178 @@ export function createFleetApp(env = {}) {
 	const storage = env.storage || (typeof sessionStorage !== "undefined" ? sessionStorage : null);
 	const location = env.location || (typeof window !== "undefined" ? window.location : null);
 	const streamFactory = env.stream || createSwarmStream;
-	const consoleTailFactory = env.consoleTail || createConsoleTail;
 	const promptImpl = env.prompt || (typeof window !== "undefined" && typeof window.prompt === "function" ? window.prompt.bind(window) : null);
+	const nowMs = typeof env.nowMs === "function" ? env.nowMs : () => Date.now();
 
-	const treeEl = doc ? doc.getElementById("fleet-tree") : null;
-	const connEl = doc ? doc.getElementById("connection-state") : null;
-	const countEl = doc ? doc.getElementById("journal-count") : null;
-	const bytesEl = doc ? doc.getElementById("journal-bytes") : null;
-	const errorEl = doc ? doc.getElementById("error") : null;
-	const tokenEl = doc ? doc.getElementById("token-state") : null;
-
-	let view = null;
+	let ui = createUiState();
+	let dash = null;
+	let layout = null;
+	let canvasIndex = null;
+	let lastSnapshot = null;
 	let stream = null;
 	let refreshTimer = null;
 	let renderTimer = null;
-	const consoles = new Map(); // graph session node id → console panel state
-	const tails = new Map(); // graph session node id → live-tail handle
+	let stateVersion = 1;
+	let activity = "";
 	let journalEvents = [];
-	let pendingList = [];
-	let asks = [];
-	const drafts = new Map(); // worker name → unsent steer draft
+	const drafts = new Map();
+
+	// --- shell ------------------------------------------------------------
+	const shell = doc ? doc.getElementById("fleet-tree") : null;
+	const regions = {};
+	if (shell) {
+		while (shell.firstChild) shell.removeChild(shell.firstChild);
+		for (const [name, cls] of REGIONS) {
+			const node = doc.createElement("div");
+			node.setAttribute("class", `region region-${cls}`);
+			node.setAttribute("data-region", name);
+			shell.appendChild(node);
+			regions[name] = node;
+		}
+	}
+	const byId = (id) => (doc && typeof doc.getElementById === "function" ? doc.getElementById(id) : null);
+	const connectionEl = byId("connection-state");
+	const tokenEl = byId("token-state");
+	const countEl = byId("journal-count");
+	const bytesEl = byId("journal-bytes");
+	const schemaEl = byId("schema-version");
+	const tickerEl = byId("activity-ticker");
+	const errorEl = byId("error");
 
 	const setConnection = (state) => {
-		if (!connEl) return;
-		connEl.setAttribute("data-connection-state", state);
-		connEl.textContent = state;
+		if (!connectionEl) return;
+		connectionEl.setAttribute("data-connection-state", state);
+		connectionEl.textContent = state;
 	};
-
-	const showError = (err) => {
-		if (!errorEl) return;
-		errorEl.removeAttribute("hidden");
-		errorEl.textContent = String((err && err.message) || err);
-	};
-
 	const setTokenState = (state) => {
 		if (!tokenEl) return;
 		tokenEl.setAttribute("data-token-state", state);
 		tokenEl.textContent = `token: ${state}`;
 	};
-
-	const currentSeq = () => (stream ? stream.state.lastSeq : journalEvents.reduce((m, e) => Math.max(m, e.seq), 0));
-
-	const panelFor = (worker) => {
-		const state = consoles.get(worker.sessionId);
-		if (!state) return null;
-		return { ...consoleBanner(state), worker: worker.name, nodeId: worker.sessionId };
+	const showError = (err) => {
+		if (!errorEl) return;
+		errorEl.removeAttribute("hidden");
+		errorEl.textContent = String((err && err.message) || err);
+	};
+	const dispatch = (action) => {
+		ui = uiReducer(ui, action);
+		render();
 	};
 
-	const controlsFor = (worker) => {
-		const state = consoles.get(worker.sessionId);
-		const pending = [...pendingList].reverse().find((p) => p.kind === "steer" && p.worker === worker.name);
-		const ctl = controlsView({
-			worker: worker.name,
-			consoleStatus: state ? state.status : undefined,
-			hasSession: Boolean(worker.sessionId),
-			pendingAsk: asks.find((a) => a.worker === worker.name) || null,
+	// --- panels + mutations ------------------------------------------------
+	let panels = null;
+	const mutations = createMutations({
+		fetch: fetchImpl,
+		storage,
+		prompt: promptImpl,
+		currentSeq: () => (stream ? stream.state.lastSeq : journalEvents.reduce((m, e) => Math.max(m, e.seq), 0)),
+		onTokenState: setTokenState,
+		onChange: () => scheduleRender(),
+		onError: showError,
+	});
+	panels = createPanels({
+		fetch: fetchImpl,
+		location,
+		consoleTail: env.consoleTail || createConsoleTail,
+		doc,
+		delayMs: env.delayMs,
+		onError: showError,
+		onChange: (nodeId, prev, next) => {
+			if (next.status !== prev.status) scheduleRender();
+			else panels.patchTail(nodeId);
+		},
+	});
+	setTokenState(mutations.tokenState);
+
+	// --- model + render ----------------------------------------------------
+	const foreignSessionIds = () => {
+		const ids = new Set(env.foreignSessionIds || []);
+		if (panels) for (const id of panels.foreignIds()) ids.add(id);
+		return ids;
+	};
+
+	const refreshModel = () => {
+		if (!lastSnapshot) return;
+		const ids = foreignSessionIds();
+		dash = buildDashboardState({
+			graph: lastSnapshot,
+			events: journalEvents,
+			ownSessionPath: env.ownSessionPath ?? null,
+			foreignSessionIds: ids,
+			nowMs: nowMs(),
 		});
-		return { ...ctl, draft: drafts.get(worker.name) || "", pending: pending ? pendingView(pending) : null };
+		layout = computeLayout(dash, { expansion: ui.expansion });
+		stateVersion = Number.isFinite(lastSnapshot.schemaVersion) ? lastSnapshot.schemaVersion : 1;
 	};
 
-	const wireControls = () => {
-		if (!doc || typeof doc.querySelectorAll !== "function") return;
-		for (const el of doc.querySelectorAll("[data-steer-worker]")) {
-			const name = el.getAttribute("data-steer-worker");
-			const input = el.querySelector("[data-steer-input]");
-			const send = el.querySelector("[data-steer-send]");
-			if (input && typeof input.addEventListener === "function") input.addEventListener("input", () => drafts.set(name, input.value));
-			if (send && typeof send.addEventListener === "function") send.addEventListener("click", () => void sendSteer(name, input ? input.value : ""));
-			const aInput = el.querySelector("[data-answer-input]");
-			const aSend = el.querySelector("[data-answer-send]");
-			if (aSend && typeof aSend.addEventListener === "function") aSend.addEventListener("click", () => void sendAnswer(name, aInput ? aInput.value : ""));
+	const updateStatusbar = () => {
+		if (schemaEl) schemaEl.textContent = String(stateVersion);
+		if (tickerEl) tickerEl.textContent = activity || "\u2014";
+	};
+
+	const detailView = () => {
+		const subject = resolveDetailSubject(dash, ui);
+		if (!subject) return null;
+		const worker = pickWorker(subject, ui);
+		const workerName = worker ? worker.name : null;
+		const sessionId = worker ? worker.sessionId : subject.kind === "session" ? subject.id : null;
+		const consoleState = sessionId && panels ? panels.get(sessionId) : null;
+		const ask = (worker && worker.ask) || subject.ask || null;
+		const ctl = worker
+			? controlsView({
+					worker: workerName,
+					consoleStatus: consoleState ? consoleState.status : undefined,
+					hasSession: Boolean(sessionId),
+					pendingAsk: ask ? { worker: workerName, question: ask.question } : null,
+				})
+			: null;
+		return {
+			subject,
+			worker: workerName,
+			workerSessionId: sessionId,
+			console: consoleState && sessionId ? { ...consoleBanner(consoleState), worker: workerName, nodeId: sessionId } : null,
+			controls: ctl,
+			pending: workerName ? mutations.latestPending(workerName, "steer") : null,
+			ask,
+			draft: workerName ? drafts.get(workerName) || "" : "",
+			tab: ui.detailTab,
+		};
+	};
+
+	const viewport = () => ({ width: 1200, height: 720 });
+	const onView = (view) => {
+		ui = uiReducer(ui, { type: "view", view });
+		renderRegions();
+	};
+	const renderRegions = () => {
+		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
+		if (regions.canvas) {
+			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView });
+			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
 		}
+		if (regions.detail) renderDetail(detailView(), regions.detail, doc, { dispatch });
+		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
+	};
+	const render = () => {
+		refreshModel();
+		if (!dash) return;
+		renderRegions();
+		wireControls();
+		updateStatusbar();
 	};
 
-	const render = () => {
-		view = buildTreeView(lastSnapshot);
-		if (treeEl) renderTree(view, treeEl, doc, { panelOf: panelFor, controlsOf: controlsFor });
+	/** An event frame patches status/progress in place — no relayout, no canvas rebuild. */
+	const renderLive = () => {
+		refreshModel();
+		if (!dash) return;
+		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight });
+		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
+		if (regions.detail) renderDetail(detailView(), regions.detail, doc, { dispatch });
+		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay });
 		wireControls();
+		updateStatusbar();
 	};
-	let lastSnapshot = null;
+
 	const rerender = (graph) => {
 		lastSnapshot = graph;
 		render();
@@ -167,67 +274,29 @@ export function createFleetApp(env = {}) {
 		}, 50);
 	};
 
-	// ------------------------------------------------------------------
-	// Console panels
-	// ------------------------------------------------------------------
-
-	const applyConsole = (nodeId, frame) => {
-		const prev = consoles.get(nodeId) || initialConsoleState(0);
-		const next = reduceConsoleFrame(prev, frame);
-		consoles.set(nodeId, next);
-		if (next.status !== prev.status) scheduleRender();
-		else if (doc && typeof doc.querySelector === "function") patchConsoleTail(nodeId, next);
-	};
-
-	const patchConsoleTail = (nodeId, state) => {
-		const panel = doc.querySelector(`[data-console-node="${nodeId}"]`);
-		if (!panel) return;
-		const banner = consoleBanner(state);
-		const tail = panel.querySelector("[data-console-tail]");
-		if (tail) tail.textContent = banner.text;
-	};
-
-	const startConsole = (worker) => {
-		if (!worker.sessionId || consoles.has(worker.sessionId) || tails.has(worker.sessionId)) return;
-		consoles.set(worker.sessionId, initialConsoleState(0));
-		void preloadConsole(worker);
-	};
-
-	const preloadConsole = async (worker) => {
-		const nodeId = worker.sessionId;
-		try {
-			const res = await fetchImpl(consoleRestUrl(nodeId, 0));
-			const body = await res.json();
-			applyConsole(nodeId, body);
-		} catch (err) {
-			applyConsole(nodeId, { ok: false, error: { code: "E_CONSOLE_ERROR", message: String((err && err.message) || err) } });
-		}
-		const state = consoles.get(nodeId) || initialConsoleState(0);
-		if (isTerminalConsoleStatus(state.status)) return;
-		try {
-			const tail = consoleTailFactory({
-				url: consoleStreamUrlFor(location, nodeId, state.nextOffset),
-				offset: state.nextOffset,
-				delayMs: env.delayMs,
-				onFrame: (frame) => applyConsole(nodeId, frame),
-			});
-			tails.set(nodeId, tail);
-		} catch (err) {
-			showError(err);
+	const wireControls = () => {
+		if (!doc || typeof doc.querySelectorAll !== "function") return;
+		for (const el of doc.querySelectorAll("[data-steer-worker]")) {
+			const name = el.getAttribute("data-steer-worker");
+			const input = el.querySelector("[data-steer-input]");
+			const send = el.querySelector("[data-steer-send]");
+			if (input && typeof input.addEventListener === "function") input.addEventListener("input", () => drafts.set(name, input.value));
+			if (send && typeof send.addEventListener === "function") send.addEventListener("click", () => void mutations.sendSteer(name, input ? input.value : ""));
+			const aInput = el.querySelector("[data-answer-input]");
+			const aSend = el.querySelector("[data-answer-send]");
+			if (aSend && typeof aSend.addEventListener === "function") aSend.addEventListener("click", () => void mutations.sendAnswer(name, aInput ? aInput.value : ""));
 		}
 	};
 
-	// ------------------------------------------------------------------
-	// Journal + optimistic mutations
-	// ------------------------------------------------------------------
-
+	// --- journal -----------------------------------------------------------
 	const foldEvents = (rows) => {
 		if (!Array.isArray(rows) || rows.length === 0) return;
 		const merged = new Map(journalEvents.map((e) => [e.seq, e]));
 		for (const e of rows) if (e && typeof e.seq === "number") merged.set(e.seq, e);
 		journalEvents = [...merged.values()].sort((a, b) => a.seq - b.seq);
-		asks = pendingAsks(journalEvents);
-		pendingList = reducePending(pendingList, journalEvents);
+		mutations.fold(journalEvents);
+		const newest = journalEvents[journalEvents.length - 1];
+		if (newest) activity = `${newest.kind} #${newest.seq}${newest.worker ? ` ${newest.worker}` : ""}`;
 		scheduleRender();
 	};
 
@@ -236,7 +305,7 @@ export function createFleetApp(env = {}) {
 		const body = await res.json();
 		rerender(body.snapshot);
 		for (const node of (body.snapshot && body.snapshot.nodes) || []) {
-			for (const worker of node.workers || []) startConsole(worker);
+			for (const worker of node.workers || []) panels.start(worker);
 		}
 	};
 
@@ -256,80 +325,23 @@ export function createFleetApp(env = {}) {
 		}, 50);
 	};
 
-	// ------------------------------------------------------------------
-	// Token + mutations
-	// ------------------------------------------------------------------
-
-	const ensureToken = (reason) => {
-		const existing = readToken(storage);
-		if (existing) {
-			setTokenState("set");
-			return existing;
-		}
-		if (!promptImpl) return null;
-		const answer = promptImpl(reason || "operator token (printed on the session's stderr at mount):");
-		if (typeof answer !== "string" || answer.trim().length === 0) return null;
-		writeToken(storage, answer.trim());
-		setTokenState("set");
-		return answer.trim();
-	};
-
-	const errorText = (res) => (res && res.envelope && res.envelope.error ? `${res.envelope.error.code}: ${res.envelope.error.message}` : "mutation failed");
-
-	const submit = async (kind, worker, text, token, attempt = 0) => {
-		// Dedup: an auth re-prompt recurses with the SAME text — reuse the one
-		// outstanding marker instead of stacking a second pending row.
-		let pending = pendingList.find((p) => p.status === "pending" && p.kind === kind && p.worker === worker && p.text === text);
-		if (!pending) {
-			pending = newPending(kind, worker, text, currentSeq());
-			pendingList = [...pendingList, pending];
-			scheduleRender();
-		}
-		const res = await postMutation({ fetch: fetchImpl, token, kind, id: worker, text });
-		if (!res.ok) {
-			if (res.authRequired) {
-				clearToken(storage);
-				if (attempt < MAX_AUTH_RETRIES) {
-					setTokenState("re-prompt");
-					const fresh = ensureToken("operator token rejected — re-enter it:");
-					if (fresh) return submit(kind, worker, text, fresh, attempt + 1);
-				}
-				// Cap reached: an honest terminal state, never an infinite prompt loop.
-				setTokenState("rejected");
-			}
-			pendingList = pendingList.map((p) => (p === pending ? failPending(p, errorText(res)) : p));
-			scheduleRender();
-		}
-		return res;
-	};
-
-	const sendSteer = async (worker, text) => {
-		if (typeof text !== "string" || text.trim().length === 0) return null;
-		const token = ensureToken();
-		if (!token) return null;
-		drafts.delete(worker);
-		return submit("steer", worker, text, token);
-	};
-
-	const sendAnswer = async (worker, text) => {
-		if (typeof text !== "string" || text.trim().length === 0) return null;
-		const token = ensureToken();
-		if (!token) return null;
-		return submit("answer", worker, text, token);
-	};
-
-	setTokenState(readToken(storage) ? "set" : "absent");
-
 	return {
+		get state() {
+			return dash;
+		},
+		get ui() {
+			return ui;
+		},
 		get view() {
-			return view;
+			return dash;
 		},
 		get lastSeq() {
 			return stream ? stream.state.lastSeq : readCursor(storage);
 		},
 		get pending() {
-			return pendingList.map(pendingView);
+			return mutations.pending;
 		},
+		dispatch,
 		async start() {
 			const cursor = readCursor(storage);
 			setConnection("connecting");
@@ -350,28 +362,22 @@ export function createFleetApp(env = {}) {
 						return;
 					}
 					if (kind === "events") {
-						// B1: the stream advances lastSeq BEFORE calling onFrame and
-						// /api/swarm/events?after is EXCLUSIVE, so a REST refetch at this
-						// cursor can never re-read the row that arrived on the frame.
-						// Fold the frame's own rows first (the steer/answer confirmation),
-						// then refresh for anything appended after it (footer counts).
 						foldEvents(frame.events);
-						const seq = stream ? stream.state.lastSeq : cursor;
-						writeCursor(storage, seq);
-						refreshJournal(seq).catch(showError);
+						renderLive();
+						writeCursor(storage, stream ? stream.state.lastSeq : cursor);
+						refreshJournal(stream ? stream.state.lastSeq : cursor).catch(showError);
 						scheduleRefresh();
 					}
 				},
 			});
 			return this;
 		},
-		sendSteer,
-		sendAnswer,
+		sendSteer: (worker, text) => mutations.sendSteer(worker, text),
+		sendAnswer: (worker, text) => mutations.sendAnswer(worker, text),
 		close() {
 			if (refreshTimer !== null) clearTimeout(refreshTimer);
 			if (renderTimer !== null) clearTimeout(renderTimer);
-			for (const tail of tails.values()) tail.close();
-			tails.clear();
+			if (panels) panels.close();
 			if (stream) stream.close();
 		},
 	};

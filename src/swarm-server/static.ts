@@ -4,8 +4,8 @@
  *
  * MODULE_CONTRACT — maps dashboard GET paths to files under
  * `src/swarm-server/public/`: `/` (and any extension-less path) serves
- * `index.html`; `/app.js`, `/tree.js`, `/stream.js`, `/degrade.js`,
- * `/app.css` serve the flat ES-module/CSS assets next to it. This is the
+ * `index.html`; `/app.js`, `/stream.js`, `/degrade.js`, `/app.css` serve the
+ * flat ES-module/CSS assets next to it. This is the
  * server-side half of the "static SPA, no build step" constraint: the assets
  * are served verbatim as source — no bundler, no framework, no runtime
  * transforms. Only html/js/css are served (the dashboard's closed asset set);

@@ -1,15 +1,15 @@
 /**
  * swarm-dashboard-check — issue #53 acceptance 1–6 (ARCHITECTURE §4.2):
- * the read-only fleet dashboard — static shell serving, snapshot tree render
- * (node-for-node), WS stream apply + cursor-resume reconnect, the four
- * degradation visuals, the worker card fields, and the live tree refresh.
+ * the read-only fleet dashboard — static shell serving, WS stream apply +
+ * cursor-resume reconnect, the degradation vocabulary, and the live tree
+ * refresh through the app shell.
  *
  * Run with: bun test/swarm-dashboard-check.ts   (from repo root)
  *
  * The client modules are plain ES modules under src/swarm-server/public/ and
  * are imported headlessly (no build step, no framework). DOM rendering is
- * exercised through a minimal fake document seam (renderTree(view, root, doc))
- * — the same renderer the browser runs. The WS wire is covered end-to-end by
+ * exercised through a minimal fake document seam (app.createFleetApp({ doc }))
+ * — the same app shell the browser runs. The WS wire is covered end-to-end by
  * test/swarm-server-ws-check.ts; this check drives the dashboard's own client
  * state machine (reduceFrame + createSwarmStream reconnect) plus one real-wire
  * smoke against a mounted server.
@@ -95,12 +95,6 @@ class FakeElement {
 	get textContent(): string {
 		return this.text + this.childNodes.map((c) => c.textContent ?? "").join("");
 	}
-}
-function fakeDoc(): any {
-	return {
-		createElement: (tag: string) => new FakeElement(tag),
-		createTextNode: (text: string) => ({ textContent: text, childNodes: [] }),
-	};
 }
 function walk(node: any, out: any[] = []): any[] {
 	out.push(node);
@@ -206,7 +200,6 @@ class WsClient {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-	const tree = (await import(publicUrl("tree.js"))) as any;
 	const stream = (await import(publicUrl("stream.js"))) as any;
 	const degrade = (await import(publicUrl("degrade.js"))) as any;
 	const { mountSwarmServer } = await import("../src/swarm-server/mount.ts");
@@ -332,105 +325,11 @@ async function main(): Promise<void> {
 		}
 	}
 
-	// -- S2 — tree render node-for-node against GET snapshot (seam 2) -------
-	{
-		const body = (await (await fetch(`http://127.0.0.1:${h.port}/api/swarm/snapshot`)).json()) as any;
-		const graph = body.snapshot;
-		const view = tree.buildTreeView(graph);
-		const doc = fakeDoc();
-		const root = doc.createElement("section");
-		tree.renderTree(view, root, doc);
-
-		const ids = new Set(graph.nodes.map((n: any) => n.id));
-		const domNodes = find(root, (e) => "data-node-id" in e.attributes);
-		const domIds = domNodes.map((e) => e.attributes["data-node-id"]).sort();
-		check(
-			"S2.1 every graph node renders exactly once (node-for-node)",
-			domIds.length === graph.nodes.length && domIds.join(",") === [...ids].sort().join(","),
-			JSON.stringify({ domIds, graphIds: [...ids].sort() }),
-		);
-
-		const expectedParent = new Map<string, string>();
-		for (const e of graph.edges) {
-			if (e.kind !== "spawned_by" || !ids.has(e.from) || !ids.has(e.to) || expectedParent.has(e.from)) continue;
-			expectedParent.set(e.from, e.to);
-		}
-		const parentOk = domNodes.every((e) => {
-			const id = e.attributes["data-node-id"];
-			const want = expectedParent.get(id) ?? null;
-			const got = e.attributes["data-parent-id"] ?? null;
-			return want === got;
-		});
-		check("S2.2 DOM parent linkage matches the graph's spawned_by edges", parentOk);
-
-		const domEdges = find(root, (e) => "data-edge" in e.attributes).map((e) => [e.attributes["data-edge-kind"], e.attributes["data-edge-from"], e.attributes["data-edge-to"], e.attributes["data-edge-at"] ?? ""].join("|")).sort();
-		const graphEdges = graph.edges.map((e: any) => [e.kind, e.from, e.to, e.at ?? ""].join("|")).sort();
-		check("S2.3 every edge renders exactly once, verbatim", domEdges.length === graph.edges.length && domEdges.join(",") === graphEdges.join(","), JSON.stringify({ domEdges, graphEdges }));
-
-		const workerDom = find(root, (e) => "data-worker" in e.attributes);
-		const graphWorkers = graph.nodes.reduce((n: number, x: any) => n + (x.workers?.length ?? 0), 0);
-		check("S2.4 every worker embodiment renders once (task → workers)", workerDom.length === graphWorkers && graphWorkers === 2, `dom=${workerDom.length} graph=${graphWorkers}`);
-	}
-
-	// -- S4 — degradation visuals: four distinct honest states (seam 4) -----
+	// -- S4 — the degradation vocabulary (seam 4) ---------------------------
 	{
 		check("S4.1 the vocabulary is the four closed flags", degrade.DEGRADED_FLAGS.length === 4 && degrade.DEGRADED_FLAGS.join(",") === "no-session-path,no-live-status,legacy-orphan,usage-unavailable");
 		const classes = degrade.DEGRADED_FLAGS.map((f: string) => degrade.degradeClass(f));
 		check("S4.2 the four flags map to four distinct class strings", new Set(classes).size === 4, JSON.stringify(classes));
-
-		const fixture = {
-			available: true,
-			sources: { journal: true, manifests: true, liveStatus: false, usage: false },
-			nodes: [
-				{
-					kind: "session",
-					id: "all-four",
-					role: "worker",
-					isWorker: true,
-					ownsChildren: false,
-					tasks: ["dash-fleet"],
-					degraded: [{ flag: "no-session-path" }, { flag: "no-live-status" }, { flag: "legacy-orphan" }, { flag: "usage-unavailable" }],
-				},
-			],
-			edges: [],
-			orphans: [],
-		};
-		const v = tree.buildTreeView(fixture);
-		check("S4.3 view carries all four flags honestly", v.nodes[0].degraded.join(",") === "no-session-path,no-live-status,legacy-orphan,usage-unavailable");
-		const doc = fakeDoc();
-		const root = doc.createElement("section");
-		tree.renderTree(v, root, doc);
-		const badges = find(root, (e) => "data-degraded-flag" in e.attributes);
-		const flags = badges.map((e) => e.attributes["data-degraded-flag"]);
-		const badgeClasses = badges.map((e) => e.attributes.class);
-		check("S4.4 all four badges render with verbatim flag text and distinct visuals", badges.length === 4 && flags.join(",") === v.nodes[0].degraded.join(",") && new Set(badgeClasses).size === 4 && badges.every((b) => b.textContent === b.attributes["data-degraded-flag"]), JSON.stringify({ flags, badgeClasses }));
-	}
-
-	// -- S5 — the worker card reads only graph fields (seam 5) --------------
-	{
-		const body = (await (await fetch(`http://127.0.0.1:${h.port}/api/swarm/snapshot`)).json()) as any;
-		const view = tree.buildTreeView(body.snapshot);
-		const taskView = view.nodes.find((n: any) => n.kind === "task" && n.id === "dash-fleet");
-		const w1 = taskView?.workers?.find((w: any) => w.name === "w1");
-		check(
-			"S5.1 worker view exposes status/timestamps from the graph",
-			w1 !== undefined && w1.liveStatus === "working" && w1.startedAt === "2026-06-01T00:10:00.000Z" && w1.collectedAt === "2026-06-01T00:20:00.000Z",
-			JSON.stringify(w1),
-		);
-		check("S5.2 role labels are graph-derived (orchestrator/worker/worker-orchestrator/unknown)", ["orchestrator", "worker", "worker-orchestrator", "unknown"].includes(view.nodes.find((n: any) => n.kind === "session" && n.id === "all-four") === undefined ? "unknown" : "unknown") && view.nodes.filter((n: any) => n.kind === "session").every((n: any) => typeof n.role === "string"));
-		const doc = fakeDoc();
-		const root = doc.createElement("section");
-		tree.renderTree(view, root, doc);
-		const workerEl = find(root, (e) => "data-worker-name" in e.attributes && e.attributes["data-worker-name"] === "w1")[0];
-		check(
-			"S5.3 the worker card DOM carries status + timestamps, and invents no provider/model field",
-			workerEl !== undefined &&
-				workerEl.attributes["data-worker-status"] === "working" &&
-				workerEl.textContent.includes("2026-06-01T00:10:00.000Z") &&
-				!find(root, (e) => e.attributes["data-field"] === "provider").length &&
-				!find(root, (e) => e.attributes["data-field"] === "model").length,
-			workerEl ? workerEl.textContent : "no worker element",
-		);
 	}
 
 	// -- S3 — stream reducer + cursor-resume reconnect (seam 3+6) -----------

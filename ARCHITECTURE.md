@@ -930,8 +930,9 @@ mutation surface is independent of console capture).
 header, and never placed in localStorage, a URL or a log; a structured
 401/403 clears it and re-prompts. Client modules: `public/console.js`
 (console reducer + WS tail) and `public/steer.js` (token + mutation +
-confirmation + pending-ask fold); `public/tree.js` renders the panel and
-controls through an optional per-worker view provider. No build step. Static
+confirmation + pending-ask fold); `public/detail.js` renders the panel and
+controls from the per-worker view `app.js` supplies, and `public/rail.js`
+renders the tree (sessions → tasks → workers). No build step. Static
 pins T1.20/T1.22 evolve (asset set, token store) and T1.24 constrains the
 mutation surface to `steer.js`'s two routes with a Bearer header. Check:
 `test/swarm-dashboard-steer-check.ts`.

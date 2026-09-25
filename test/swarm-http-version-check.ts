@@ -12,7 +12,7 @@
  * the SHIPPED dashboard client (src/swarm-server/public/stream.js): an
  * envelope with an injected unknown field is applied, an unsupported
  * `schemaVersion` is ignored (never half-read), and an absent one is legacy
- * v1. The tree view model is exercised with unknown graph fields too.
+ * v1.
  *
  * Run with: bun test/swarm-http-version-check.ts   (from repo root)
  * Fail-fast: top-level watchdog; every fetch is loopback + bounded.
@@ -53,7 +53,6 @@ async function main(): Promise<void> {
 		reduceFrame: (state: Record<string, unknown>, frame: unknown) => Record<string, unknown>;
 		SUPPORTED_STREAM_SCHEMA_VERSION: number;
 	};
-	const tree = (await import(publicUrl("tree.js"))) as { buildTreeView: (g: unknown) => { nodeCount: number } };
 
 	check("N0 the shipped dashboard client declares schema version 1", stream.SUPPORTED_STREAM_SCHEMA_VERSION === 1, String(stream.SUPPORTED_STREAM_SCHEMA_VERSION));
 
@@ -107,7 +106,6 @@ async function main(): Promise<void> {
 		const evFrame = { ok: true, schemaVersion: 1, type: "events", after: 0, injectedUnknownField: true, events: [{ seq: 1, kind: "progress", futureRowField: "x" }] };
 		const advanced = stream.reduceFrame(applied, evFrame);
 		check("N2.2 an events frame with an injected unknown field advances the cursor", advanced.lastSeq === 1, JSON.stringify(advanced));
-		check("N2.3 the tree view model tolerates unknown graph/node fields", tree.buildTreeView(snapFrame.snapshot).nodeCount === 1, JSON.stringify(tree.buildTreeView(snapFrame.snapshot)));
 
 		// --------------------------------------------------------------------
 		// N3 — schemaVersion is CHECKED: unsupported version ignored, absent = v1

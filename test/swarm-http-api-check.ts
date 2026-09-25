@@ -19,6 +19,8 @@
  *   E  events envelope over the seeded journal; empty-journal mount.
  *   C  console frames: rpc live, captureless (herdr) unavailable, foreign
  *      refusal, bad offset.
+ *   W3 upgrade refusals (issue #94): cause-specific hints for bad ?after and
+ *      missing Sec-WebSocket-Key vs the unknown-path hint (additive-only).
  *   M  mutation: steer/answer success, absent + wrong token (byte-identical),
  *      foreign-fleet refusal, malformed body.
  *   N  mutation id spellings (#70): the SESSION NODE ID spelling, the
@@ -273,9 +275,9 @@ class WsClient {
 
 /** Send a WS upgrade request and read the FULL plain-HTTP answer (the refusal
  *  leg: no 101, the socket just ends after the error envelope). */
-function rawUpgrade(port: number, path: string): Promise<{ status: number; body: string }> {
+function rawUpgrade(port: number, path: string, key: string | null = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64")): Promise<{ status: number; body: string }> {
 	return new Promise((resolve, reject) => {
-		const key = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64");
+		const keyLine = key === null ? "" : `Sec-WebSocket-Key: ${key}\r\n`;
 		const sock = net.connect(port, "127.0.0.1");
 		const timer = setTimeout(() => {
 			sock.destroy();
@@ -284,7 +286,7 @@ function rawUpgrade(port: number, path: string): Promise<{ status: number; body:
 		const chunks: Buffer[] = [];
 		sock.on("connect", () =>
 			sock.write(
-				`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+				`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n${keyLine}Sec-WebSocket-Version: 13\r\n\r\n`,
 			),
 		);
 		sock.on("data", (d: Buffer) => chunks.push(d));
@@ -429,6 +431,52 @@ async function main(): Promise<void> {
 	{
 		const refused = await rawUpgrade(h.port, "/api/nope");
 		golden("W2 WS upgrade on a non-stream path → 400 refusal envelope, no 101 (http1.ts:288)", refused, { status: 400, body: HTTP_GOLDENS.upgradeRefused });
+	}
+	{
+		// W3 — issue #94: the 400 refusal on a REAL stream path must name the
+		// actual cause (bad cursor / missing key), not "other paths are plain
+		// JSON requests" — that request WAS on the stream path. Envelope shape
+		// (code E_SWARM_USAGE, schemaVersion, message) stays unchanged.
+		const shape = (body: string): { code?: string; message?: string; hint?: string } | undefined => {
+			try {
+				return (JSON.parse(body) as { error?: { code?: string; message?: string; hint?: string } }).error;
+			} catch {
+				return undefined;
+			}
+		};
+		const badCursor = await rawUpgrade(h.port, "/api/swarm/stream?after=abc");
+		const badCursorErr = shape(badCursor.body);
+		check(
+			"W3.1 non-integer ?after on the stream path → cursor-specific hint (not the unknown-path hint)",
+			badCursor.status === 400 && badCursorErr?.code === "E_SWARM_USAGE" && /after/.test(badCursorErr?.hint ?? "") && !/other paths are plain JSON/.test(badCursorErr?.hint ?? ""),
+			badCursor.body,
+		);
+		const absentCursor = await rawUpgrade(h.port, "/api/swarm/stream");
+		const absentErr = shape(absentCursor.body);
+		check(
+			"W3.2 absent ?after on the stream path → cursor-specific hint",
+			absentCursor.status === 400 && absentErr?.code === "E_SWARM_USAGE" && /after/.test(absentErr?.hint ?? ""),
+			absentCursor.body,
+		);
+		const noKey = await rawUpgrade(h.port, "/api/swarm/stream?after=0", null);
+		const noKeyErr = shape(noKey.body);
+		check(
+			"W3.3 a valid cursor but NO Sec-WebSocket-Key → key-specific hint",
+			noKey.status === 400 && noKeyErr?.code === "E_SWARM_USAGE" && /Sec-WebSocket-Key/.test(noKeyErr?.hint ?? ""),
+			noKey.body,
+		);
+		const unknownErr = shape((await rawUpgrade(h.port, "/api/nope")).body);
+		const hints = [unknownErr?.hint, badCursorErr?.hint, noKeyErr?.hint].filter((x): x is string => typeof x === "string");
+		check(
+			"W3.4 the three causes carry three distinct hints (unknown path vs bad cursor vs missing key)",
+			hints.length === 3 && new Set(hints).size === 3 && badCursorErr?.hint === absentErr?.hint,
+			hints.join(" | "),
+		);
+		check(
+			"W3.5 additive-only: the refusal envelope keeps schemaVersion + E_SWARM_USAGE + the frozen message",
+			badCursorErr?.message === "websocket upgrade refused" && (JSON.parse(badCursor.body) as { schemaVersion?: number }).schemaVersion === 1,
+			badCursor.body,
+		);
 	}
 
 	// --- F: D1 per-fleet URL contract (issue #65 item 3) -------------------

@@ -22,7 +22,7 @@
  *   GET / and /<asset>       → ./static.ts (the read-only dashboard SPA,
  *                             served as source html/js/css; issue #53)
  *
- * Issue #52 adds the worker-console surface (./console.ts, §4.2.4):
+ * Issue #52 adds the worker-console surface (./console.ts, §4.2.5):
  *   GET /api/workers/:id/console?offset=<n>       → one console frame
  *   WS  /api/workers/:id/console/stream?offset=<n> → live-tail console frames
  * `:id` is a SwarmGraph session node id; resolution is fail-closed through
@@ -86,7 +86,7 @@ import { contextPct, parseSessionUsage, resolveContextWindow } from "../usage.ts
 import { StreamHub } from "./stream.ts";
 import { ConsoleCapture } from "./console-buffer.ts";
 import type { ConsoleStreamSource } from "./console-buffer.ts";
-import { consoleRoute, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
+import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleStreamPath, type ConsoleRuntime, type ConsoleTransport } from "./console.ts";
 import { ConsoleHub } from "./console-ws.ts";
 import type { SwarmGraph } from "../swarm/graph.ts";
 import { serveStaticFile } from "./static.ts";
@@ -285,7 +285,9 @@ function mutationText(req: Http1Request): string | null {
  * Output: the structured success envelope or a structured E_* refusal
  * Guarantees:
  *   - missing/wrong token → the SAME 401 E_SWARM_AUTH refusal;
- *   - a non-canonical or undecodable id → 400 E_SWARM_USAGE (no core call);
+ *   - the id accepts BOTH spellings (canonical worker name OR SwarmGraph
+ *     session node id), name-first; an id matching neither → 400
+ *     E_SWARM_USAGE (no core call);
  *   - an invalid body → 400 E_SWARM_USAGE (no core call);
  *   - a core refusal maps by code (E_SWARM_FORBIDDEN → 403, else 500);
  *   - never throws (a core throw degrades to a structured 500)
@@ -306,8 +308,23 @@ async function mutationResponse(
 	} catch {
 		return httpError(400, "E_SWARM_USAGE", "worker id is not valid URL encoding");
 	}
-	if (!WORKER_NAME_RE.test(id)) {
-		return httpError(400, "E_SWARM_USAGE", `worker id ${JSON.stringify(id)} is not a canonical worker name`);
+	// #62 item 2 (additive, Law 7): the mutation routes accept BOTH id
+	// spellings — the canonical WORKER NAME (v1) and the SwarmGraph SESSION
+	// node id the console surface uses. Resolution order is NAME-FIRST: an id
+	// that spells a canonical worker name always resolves as a name, even if
+	// a session node happens to carry the same string (documented in
+	// docs/swarm-http-api.md). Ownership is still proven fail-closed by the
+	// mutation core — this layer only maps the spelling.
+	let worker: string;
+	if (WORKER_NAME_RE.test(id)) {
+		worker = id;
+	} else {
+		const graph = deps.graph ?? (await buildSnapshotGraph(deps));
+		const emb = findWorkerEmbodiment(graph, id);
+		if (emb === undefined) {
+			return httpError(400, "E_SWARM_USAGE", `worker id ${JSON.stringify(id)} is neither a canonical worker name nor a worker session node id in the read-model`);
+		}
+		worker = emb.name;
 	}
 	const text = mutationText(req);
 	if (text === null) return httpError(400, "E_SWARM_USAGE", "a JSON body with a non-empty string \"text\" is required");
@@ -315,7 +332,7 @@ async function mutationResponse(
 
 	let outcome: OrchestratorVerbOutcome;
 	try {
-		outcome = await deps.mutate(kind, id, text);
+		outcome = await deps.mutate(kind, worker, text);
 	} catch (err) {
 		return httpError(500, "E_SWARM_IO", `mutation failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
@@ -333,6 +350,7 @@ async function mutationResponse(
 			via: "http",
 			answerPath: outcome.answerPath,
 			journal: outcome.journal,
+			confirmation: outcome.confirmation,
 			nudged: outcome.nudged,
 		}),
 	};

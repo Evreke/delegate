@@ -51,6 +51,12 @@ export interface JournalQuery {
 	limit?: number;
 }
 
+/** The explicit cursor-read page size of the HTTP/WS read API (issue #88): one
+ *  events response or WS frame never carries more than this many rows; a caller
+ *  pages with `after=<lastSeq>`. The reader itself applies a limit only when a
+ *  caller passes one — the read API is the caller that must. */
+export const JOURNAL_EVENTS_PAGE_LIMIT = 500;
+
 export interface JournalReaderOptions {
 	/** Database path override (tests sandbox here). Default `journalDbPath()`. */
 	dbPath?: string;

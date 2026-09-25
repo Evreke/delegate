@@ -24,7 +24,7 @@
  */
 
 import { worstSeverity } from "./degrade.js";
-import { isTerminalStatus } from "./status.js";
+import { isSettledStatus } from "./status.js";
 
 /** One grid slot's pixel size (CSS px, deterministic). */
 export const NODE_W = 168;
@@ -220,10 +220,12 @@ export function coordinateGolden(layout) {
 }
 
 /**
- * Adaptive-collapse decisions: a lead whose whole subtree is terminal gets ONE
- * aggregate child (`N/N collected ✓`) instead of its children. The aggregate
- * severity is the WORST descendant severity — degraded children are never
- * hidden as healthy. UI state only; computed from the snapshot, never written.
+ * Adaptive-collapse decisions: a lead whose whole subtree is settled — every
+ * descendant `collected`, `retired` or `dead-rebooted` (issue #66 §6) — gets
+ * ONE aggregate child (`N/N collected ✓`) instead of its children. The
+ * aggregate severity is the WORST descendant severity, so a dead child keeps
+ * its crit marker and degraded children are never hidden as healthy. UI state
+ * only; computed from the snapshot, never written.
  */
 export function computeCollapse(nodes, children, byId, journal) {
 	const decisions = new Map();
@@ -240,7 +242,7 @@ export function computeCollapse(nodes, children, byId, journal) {
 			descendants.push(node);
 			for (const child of children.get(id) ?? []) stack.push(child);
 		}
-		const allTerminal = isTerminalStatus(lead.status) && descendants.length > 0 && descendants.every((n) => isTerminalStatus(n.status));
+		const allTerminal = isSettledStatus(lead.status) && descendants.length > 0 && descendants.every((n) => isSettledStatus(n.status));
 		const anyAsk = descendants.some((n) => n.ask) || lead.ask !== null;
 		if (!allTerminal || anyAsk) continue;
 		const collected = descendants.filter((n) => n.status === "collected").length;

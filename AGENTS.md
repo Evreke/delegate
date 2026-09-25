@@ -57,13 +57,19 @@ Every agent in this repo (workers and orchestrators alike) follows these rules. 
 5. **Acceptance list is a PR artifact.** The PR itself carries the explicit acceptance list — the behaviors it promises, each exercisable in the real environment. The operator's field trial executes the list; deriving it at trial time is a PR defect the reviewer must catch (Law 12).
 6. **Binding-rule conflicts stop for the operator.** When two binding rules cannot both be satisfied (for example: the incident pin and the regression scenario do not fit the fail-fast bounds of one commit), stop and ask the operator via the mailbox. Never satisfy one binding rule by silently violating another.
 
-## Trunk, releases, and QA gates
+## Branching, releases, and QA gates
 
-- **Trunk discipline.** `main` is always releasable. Work happens in
-  `feature/<topic>` / `fix/<topic>` branches, lands via squash-merge PRs. No
-  direct commits to `main`. The canonical green/red verdict of `main` is
-  produced only by the merge gate's serialized run (Law 12) — agent-local
-  runs are advisory.
+- **Branch model — simplified git flow.** `main` is production, `develop` is
+  the integration line. Work happens in `feature/<topic>` / `fix/<topic>`
+  branches and lands in `develop` via squash-merge PRs. Releases are
+  `--no-ff` merge PRs `develop` → `main` (only the operator merges); the
+  tag and GitHub Release fire automatically on the version-bumped push.
+  Hotfixes cut from `main` and merge into both `main` (patch bump +
+  changelog → auto-tag) and `develop`. No direct commits to `main`: it
+  accepts PR heads from `develop` and `hotfix/*` only (CI guard + branch
+  protection). The canonical green/red verdict of `main` is produced only
+  by the merge gate's serialized run (Law 12) — agent-local runs are
+  advisory.
 - **Release authority is human.** The operator is the sole release authority:
   the tag and GitHub Release are created only after the operator has
   personally tested the release candidate. Agents may prepare everything up to

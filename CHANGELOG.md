@@ -198,6 +198,13 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **Branching model: trunk-based development → simplified git flow.**
+  `develop` is the integration branch (all `feature/*` / `fix/*` PRs land
+  there via squash-merge); releases are `--no-ff` merge PRs `develop` →
+  `main`; hotfixes cut from `main` and merge into both branches. CI gates
+  PRs into both branches and a guard job enforces that `main` accepts only
+  `develop` and `hotfix/*` heads; branch protection requires PRs + green
+  checks on `main` (admin bypass preserved).
 - **Watcher consumes the journal cursor; the delivered-facts store is
   retired (#26, swarm-core-v1).** Wake-up dedup moved from the per-task
   `delivered-<key>.json` files to a durable per-audience journal cursor

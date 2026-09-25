@@ -787,6 +787,17 @@ rows; only a proven `"mine"` verdict mutates. A foreign or unknown id refuses
 with the SAME `403 E_SWARM_FORBIDDEN` body — the gate never leaks whether an
 id exists in another fleet.
 
+The `<id>` accepts BOTH spellings additively (#70): an id matching the
+canonical worker-name grammar (`WORKER_NAME_RE`) resolves NAME-FIRST as a
+worker name — even when a session node carries the same string (node ids are
+hex and CAN look like names) — and any other id is resolved to a worker name
+through the read-model graph (`findWorkerEmbodiment` in ./console.ts, the ONE
+shared lookup the console surface also uses); an id matching neither is `400
+E_SWARM_USAGE`. Ownership is proven by the mutation core for BOTH spellings,
+so a foreign worker's session node id refuses with the same uniform `403
+E_SWARM_FORBIDDEN` as its name. No `/by-name/` route is added; the v1 name
+routes keep working unchanged (Law 7).
+
 The write itself is NOT reimplemented: `src/swarm/mailbox-verbs.ts` (the
 shared orchestrator verb core) calls the SAME `postSteerAndNudge` /
 `writeAnswer` / `archiveQuestion` path the `delegate_mailbox` tool uses, so
@@ -896,8 +907,9 @@ remains ephemeral (never journaled, never in the snapshot).
 
 **Steering.** The page POSTs the #51 routes with `Authorization: Bearer
 <operator token>`: `POST /api/workers/:id/steer {text}` and
-`POST /api/asks/:id/answer {text}` (`:id` is the WORKER NAME the mutation
-gate resolves — not the console session node id). Steering is
+`POST /api/asks/:id/answer {text}` (`:id` is the WORKER NAME the dashboard
+sends; the route accepts the worker name OR the graph session node id
+additively, name-first, #70). Steering is
 OPTIMISTIC-WITH-CONFIRMATION: a successful POST creates a pending marker that
 becomes `confirmed` ONLY when the matching journal `steer`/`answer` event
 arrives over `WS /api/swarm/stream` (the journal is the truth —

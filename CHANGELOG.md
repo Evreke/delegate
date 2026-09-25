@@ -324,6 +324,13 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **The orphan `public/tree.js` dashboard renderer is removed (#92).** The SPA
+  has rendered the tree through `rail.js` (and the panel/controls through
+  `detail.js`) since the v1 shell; `tree.js` was a dead renderer no module
+  imported, still advertised as a served asset. It is deleted and the asset
+  list / static pins / renderer-only check legs are updated to match (the
+  live tree, rail and panel coverage is unaffected).
+
 - **Branching model: trunk-based development → simplified git flow.**
   `develop` is the integration branch (all `feature/*` / `fix/*` PRs land
   there via squash-merge); releases are `--no-ff` merge PRs `develop` →

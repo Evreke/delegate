@@ -10,6 +10,25 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Scheduled wakes, stage A — `delegate_wake` (#10).** An orchestrator can now
+  schedule a ONE-SHOT wake for its own session: `delegate_wake` action
+  `schedule` takes a free-form `text` plus exactly one of `delayMs` (relative)
+  or `at` (absolute ISO-8601), and the background watcher delivers
+  `scheduled wake (id w1): <text>` as a followUp turn when due. Actions
+  `cancel` (by id) and `list` (pending wakes with due times) complete the
+  surface. Due-schedule checking runs INSIDE the existing watcher tick (one
+  more event source — no setTimeout swarm): the new deep leaf
+  `src/watch-schedule.ts` owns the in-memory store and due computation, with
+  time injected through the existing `ClockPort` so timing regressions run on
+  the VirtualClock. Delivery rides the same guarded sink as event wakes
+  (`sendUserMessage`, `deliverAs: followUp`; a headless build stays inert) and
+  the `id#run` delivery key makes a run wake at most once — a failed or
+  silent send leaves the schedule pending. Schedules are session-scoped
+  (Law 3): they die with the session. Anti-spam limits: `schedule.minDelayMs`
+  (default 1000 ms) and `schedule.maxActive` (default 8); bad input refuses
+  with the new `E_SCHEDULE` code. Periodic wakes (#11) and durable
+  persistence (#12) are later stages — stage A is one-shot and in-memory.
+
 - **Dashboard access UX — widget link, fragment auth, one server per machine
   (#65, ARCHITECTURE §4.2.8).** The mount now emits ONE canonical `dashboard`
   stderr line carrying the ACTUAL bound port (an `EADDRINUSE` fallback is

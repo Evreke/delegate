@@ -28,6 +28,13 @@ import { loadDelegateConfig } from "./src/profile.ts";
 import { registerDelegateTool } from "./src/spawn.ts";
 // Wave 3 decomposition: the mailbox tool lives in src/mailbox-tool.ts.
 import { registerMailboxTool } from "./src/mailbox-tool.ts";
+// Scheduled wakes (issue #10, stage A): the delegate_wake tool over the
+// per-session schedule store (created in session_start, threaded into the
+// watcher mount — ONE instance, Law 9/Law 3).
+import { registerWakeTool } from "./src/wake-tool.ts";
+import { createScheduleStore, type ScheduleStore } from "./src/watch-schedule.ts";
+import { resolveScheduleConfig } from "./src/watch-config.ts";
+import { systemClock } from "./src/clock.ts";
 // Resume reconciliation (#27, ARCHITECTURE §4.1.4): journal scan + dead-reboot
 // marking on session_start. Advisory by contract — never blocks session start.
 import { reconcileSessionStart } from "./src/swarm/reconcile.ts";
@@ -148,6 +155,10 @@ interface SessionLifecycle {
 	/** Watcher stop handle — undefined when the composer did not mount (a
 	 *  pure worker session mounts no watcher, F6 two-tier contract). */
 	watcherStop?: () => void;
+	/** This session's scheduled-wake store (issue #10) — the same instance the
+	 *  watcher tick reads (threaded through the composer) and the delegate_wake
+	 *  tool mutates. Session-scoped: it dies with the session (Law 3). */
+	schedules?: ScheduleStore;
 	/** Swarm read server handle (§4.2) — undefined when the server is
 	 *  disabled (default) or failed to bind (advisory, Law 8). */
 	swarmServer?: SwarmServerHandle;
@@ -163,8 +174,8 @@ let currentSession: SessionLifecycle | null = null;
  * Input:
  *   - pi: the extension API pi passes on load
  * Output: none — wires the whole tool layer:
- *   - creates ONE herdr transport and registers delegate/status/mailbox tools
- *     and the /delegate-* commands on it
+ *   - creates ONE herdr transport and registers delegate/status/mailbox/wake
+ *     tools and the /delegate-* commands on it
  *   - session_start (ONE handler): builds the per-session lifecycle context
  *     (Law 3) — session file identity, the fleet dispose handle, the watcher
  *     stop handle — and mounts:
@@ -190,6 +201,10 @@ export default function (pi: ExtensionAPI) {
 	registerDelegateTool(pi, transport);
 	registerStatusTool(pi, transport);
 	registerMailboxTool(pi, transport);
+	// Scheduled wakes (issue #10): the getter reads the CURRENT session's store
+	// at execute time — the store itself is created per session_start below
+	// (no module-global registry, Law 3).
+	registerWakeTool(pi, () => currentSession?.schedules);
 	registerCommands(pi, transport);
 
 	// Wave 2 (Law 3): ONE session_start handler builds the per-session
@@ -235,6 +250,18 @@ export default function (pi: ExtensionAPI) {
 			fleetDispose = mountFleetUI(ctx, deps);
 		}
 
+		// Scheduled wakes (issue #10, stage A): ONE store per session (Law 3),
+		// created here before the watcher mount — the watcher tick and the
+		// delegate_wake tool share this exact instance. `schedule.*` limits come
+		// from the config; the clock is the production system clock (regressions
+		// inject the VirtualClock at the store/tick seam instead).
+		const scheduleCfg = resolveScheduleConfig();
+		const schedules = createScheduleStore({
+			clock: systemClock,
+			minDelayMs: scheduleCfg.minDelayMs,
+			maxActive: scheduleCfg.maxActive,
+		});
+
 		// Event-driven watcher: the replacement for the
 		// improvised bash sleep after E_TIMEOUT. Mounted for EVERY session —
 		// deliberately NOT behind ctx.hasUI: the wake-up matters headless too
@@ -248,6 +275,7 @@ export default function (pi: ExtensionAPI) {
 			transport,
 			self,
 			sessionManager: ctx.sessionManager,
+			schedules,
 		});
 
 		// Resume reconciliation (§4.1.4): after the watcher mount, make a
@@ -267,7 +295,17 @@ export default function (pi: ExtensionAPI) {
 		// session). The handle joins this session's context (Law 3).
 		const swarmServer = (await mountSwarmServer({ sessionFile, transport })) ?? undefined;
 
-		currentSession = { sessionFile, fleetDispose, watcherStop: watcher.stop, swarmServer };
+		// The store is exposed to the delegate_wake tool ONLY when the watcher is
+		// actually mounted: a session without a tick could accept a schedule that
+		// could never fire — a silent lie (Law 2: silence is never a success). A
+		// pure worker session therefore refuses with E_SCHEDULE.
+		currentSession = {
+			sessionFile,
+			fleetDispose,
+			watcherStop: watcher.stop,
+			swarmServer,
+			schedules: watcher.mounted ? schedules : undefined,
+		};
 	});
 
 	// Session-end cleanup (quality fix A7 + Wave 2 Law 3): the fleet widget's

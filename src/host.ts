@@ -427,7 +427,12 @@ export type DelegateErrorCode =
 	| "E_REPORT_MISSING"
 	| "E_REPORT_INVALID"
 	| "E_BUDGET"
-	| "E_CONTEXT";
+	| "E_CONTEXT"
+	// One-shot scheduled wakes (issue #10): a bad schedule input (empty text,
+	// both/neither of at/delay, below the minimum-delay floor, cap reached,
+	// unknown cancel id) or the no-store degraded edge. Additive — never a
+	// redefinition of an existing code.
+	| "E_SCHEDULE";
 
 /** Named worker tier from the config's `tiers` table (v1.9.2): a
  *  provider/model/thinking combination. Any key may be absent — unresolved
@@ -794,4 +799,6 @@ export const GUIDANCE: Record<DelegateErrorCode, string> = {
 		"Worker over output budget — pick a NEW worker name or pass an explicit higher budgetTokens; budget decline across diagnosed retries is orchestrator policy.",
 	E_CONTEXT:
 		"Worker session near context-window compaction — start a NEW worker name; this session's next prompt would compact and lose the brief.",
+	E_SCHEDULE:
+		"Scheduled wake refused: pass one of delayMs/at with non-empty text, honor the minimum-delay floor, and stay under the active-schedule cap — list pending wakes with delegate_wake action 'list'.",
 };

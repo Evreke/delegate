@@ -74,6 +74,13 @@ a **validated JSON report** is on disk — never when the agent status says done
   after upgrading on a resumed session may produce a single volley of repeated wake-ups
   (bounded by ownership and the 24 h lookback) — the cursor starts at zero and is never
   seeded. The retired `delivered-*.json` files are inert leftovers, safe to delete.
+- **Scheduled wakes.** The `delegate_wake` tool schedules a ONE-SHOT wake for your own
+  session — the watcher delivers `scheduled wake (id w1): <text>` as a followUp turn when
+  due (`delayMs` relative, or `at` absolute ISO-8601). Use it after handing a long-running
+  external process (a build, a compose stack, an install) that leaves no worker behind —
+  end your turn instead of sleeping. Wakes are session-scoped, fire exactly once, and can
+  be listed (`action: "list"`) or cancelled by id. Anti-spam limits:
+  `schedule.minDelayMs` (default 1 s) and `schedule.maxActive` (default 8).
 - **File mailbox.** `q-<name>.json` / `a-<name>.json` — send follow-ups to a running worker
   or answer its questions without respawning it.
 - **Strict reports.** The completion criterion is a **validated JSON report** with evidence
@@ -89,7 +96,7 @@ a **validated JSON report** is on disk — never when the agent status says done
   report, full audit in `teardown.log`.
 - **Honest errors.** Every refusal is a structured code with a recovery hint:
   `E_BRIEF`, `E_NAME`, `E_TIER`, `E_PLACE`, `E_START`, `E_TIMEOUT`, `E_BUDGET`, `E_CONTEXT`,
-  `E_REPORT_MISSING`, `E_REPORT_INVALID`. Two result classes are control flow, not
+  `E_REPORT_MISSING`, `E_REPORT_INVALID`, `E_SCHEDULE`. Two result classes are control flow, not
   failures — `E_TIMEOUT` (the detach handoff: the worker keeps running and the watcher
   wakes you) and the awaiting-answer result (a pending mailbox question) — a deliberate,
   documented deviation from pi's throw convention (ARCHITECTURE.md, Law 8).
@@ -342,6 +349,10 @@ Optional extras (all have safe defaults; see the operational notes above):
   to the background watcher; `"settle"` (opt-out) blocks the full window unless the
   worker settles inline. The values shown are the defaults — the section may be omitted
   entirely.
+- `schedule` — the `delegate_wake` anti-spam limits: `minDelayMs` (floor on how soon a
+  scheduled wake may fire, default 1000 ms) and `maxActive` (cap on concurrent pending
+  wakes per session, default 8). Both are read tolerantly; garbage falls back to the
+  defaults.
 - `"contextWindow": <number>` — override the worker context window used by the `ctx%`
   gauge when the model is not in the built-in table.
 - Environment variable `PI_DELEGATE_EXCHANGE_ROOT` (absolute path) — relocate the exchange
@@ -410,6 +421,14 @@ done/idle.
   воркер умер без отчёта, собранный воркер всё ещё висит. Никаких `sleep 1500`.
   Вотчер привязан к сессии: ровно один маунт на сессию, повторный маунт для той же
   сессии отклоняется, а не молча заменяет первый.
+- **Запланированные пробуждения.** Инструмент `delegate_wake` планирует РАЗОВОЕ
+  пробуждение собственной сессии — вотчер доставит `scheduled wake (id w1): <текст>`
+  ходом followUp, когда придёт срок (`delayMs` — задержка, `at` — абсолютное время в
+  ISO-8601). Удобно после передачи долгого внешнего процесса (сборка, docker compose,
+  установка), за которым не остаётся воркера: завершайте ход вместо `sleep`. Пробуждения
+  привязаны к сессии, срабатывают ровно один раз; их можно посмотреть
+  (`action: "list"`) или отменить по id. Антиспам-лимиты: `schedule.minDelayMs`
+  (по умолчанию 1 с) и `schedule.maxActive` (по умолчанию 8).
 - **Почтовый ящик.** `q-<имя>.json` / `a-<имя>.json` — докидывайте уточнения работающему
   воркеру и отвечайте на его вопросы без пересоздания.
 - **Строгие отчёты.** Критерий завершения — **валидный JSON-отчёт** с evidence
@@ -425,7 +444,7 @@ done/idle.
   отчёта, полный аудит в `teardown.log`.
 - **Честные ошибки.** Каждый отказ — структурный код с подсказкой:
   `E_BRIEF`, `E_NAME`, `E_TIER`, `E_PLACE`, `E_START`, `E_TIMEOUT`, `E_BUDGET`, `E_CONTEXT`,
-  `E_REPORT_MISSING`, `E_REPORT_INVALID`. Два класса результатов — не сбои, а управление
+  `E_REPORT_MISSING`, `E_REPORT_INVALID`, `E_SCHEDULE`. Два класса результатов — не сбои, а управление
   потоком: `E_TIMEOUT` (передача управления: воркер продолжает работать, вотчер вас
   разбудит) и результат «ожидает ответа» (висит вопрос в почтовом ящике) — это
   осознанное, документированное отклонение от throw-конвенции pi (ARCHITECTURE.md,
@@ -651,6 +670,10 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
   переходит фоновому вотчеру; `"settle"` (opt-out) блокирует всё окно, если воркер не
   осел раньше. Показанные значения — значения по умолчанию; секцию можно опустить
   целиком.
+- `schedule` — антиспам-лимиты `delegate_wake`: `minDelayMs` (минимум задержки до
+  срабатывания запланированного пробуждения, по умолчанию 1000 мс) и `maxActive`
+  (предел одновременных запланированных пробуждений на сессию, по умолчанию 8).
+  Оба читаются толерантно — мусор откатывается к значениям по умолчанию.
 - `"contextWindow": <число>` — переопределяет окно контекста воркера для гейджа `ctx%`,
   когда модели нет во встроенной таблице.
 - Переменная окружения `PI_DELEGATE_EXCHANGE_ROOT` (абсолютный путь) — переносит

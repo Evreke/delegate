@@ -46,6 +46,9 @@ import { pruneArchive } from "./archive.ts";
 import { manifestStore } from "./manifest-store.ts";
 import { isWorkerSession, ownsChildManifests, type SelfIdentity } from "./watch-detect.ts";
 import { startWatcher } from "./watcher.ts";
+// Scheduled wakes (issue #10): the per-session store instance (owned by
+// index.ts, Law 3) is handed through to the watcher mount verbatim.
+import type { SchedulePort } from "./watch-schedule.ts";
 import type { Transport } from "./host.ts";
 
 /** The slice of the pi extension API the watcher needs (delivery + registry). */
@@ -60,6 +63,9 @@ export interface SessionWatcherDeps {
 	self: SelfIdentity;
 	/** The LIVE sessionManager getter, threaded to startWatcher verbatim. */
 	sessionManager?: { getSessionFile?: () => string | undefined };
+	/** This session's schedule store (issue #10) — the delegate_wake tool and
+	 *  the watcher tick share ONE instance. Absent → scheduled wakes disabled. */
+	schedules?: SchedulePort | null;
 	/** Manifest read (injectable; default manifestStore.scan(backendName())). */
 	scanManifests?: (backend: string) => Parameters<typeof isWorkerSession>[1];
 	/** Worker gate (injectable; default the real isWorkerSession). */
@@ -126,7 +132,7 @@ export function mountSessionWatcher(deps: SessionWatcherDeps): SessionWatcherRes
 		stop = (deps.mount ?? startWatcher)(deps.pi, deps.transport, {
 			cwd: deps.self.cwd,
 			sessionManager: deps.sessionManager,
-		});
+		}, deps.schedules ?? null);
 	}
 	(deps.prune ?? pruneArchive)(); // §19.3 retention: once per session start
 	return { mounted, stop };

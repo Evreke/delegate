@@ -17,8 +17,8 @@
  *       broken journal returns ok and leaves a valid manifest.json — the
  *       pipeline is not failed by the journal.
  *   F3  The worker's write-report verb exits 0 with `journal:{error}` in the
- *       success envelope AND a structured stderr warning line (swallowed, not
- *       fatal).
+ *       success envelope and NO structured stderr warning line (the failure is
+ *       envelope-only, not stderr noise).
  *   F4  ask / write-progress over the broken journal also exit 0.
  *   F5  appendSwarmEvent is total: a broken journal yields a structured
  *       `{error}` result, never a throw.
@@ -147,10 +147,10 @@ try {
 		check("F2.1 the delegate cycle returns ok over a broken journal (spawn + collect not failed)", out?.ok === true, JSON.stringify(out) || res.stdout.slice(-300));
 		check("F2.2 the cycle still wrote the manifest.json projection", out?.projectionExists === true, JSON.stringify(out?.projectionExists));
 		check(
-			"F2.3 the worker's write-report verb exited 0 with a journal error envelope + structured stderr note",
+			"F2.3 the worker's write-report verb exited 0 with a journal error envelope (no structured stderr note)",
 			out?.cliExit === 0 &&
 				typeof (out?.cliJournal as { journal?: { error?: string } } | null)?.journal?.error === "string" &&
-				String(out?.cliStderr ?? "").includes("\"component\":\"swarm-journal\""),
+				!String(out?.cliStderr ?? "").includes("\"component\":\"swarm-journal\""),
 			JSON.stringify({ cliExit: out?.cliExit, cliStderr: out?.cliStderr }),
 		);
 	}
@@ -164,8 +164,8 @@ try {
 		check("F3.1 write-report exits 0 over a broken journal", report.status === 0, report.stdout || report.stderr);
 		check("F3.2 the success envelope records the journal error (advisory)", env.journal?.error === "E_JOURNAL_OPEN", report.stdout);
 		check(
-			"F3.3 a structured stderr warning line is emitted (swallowed, never fatal)",
-			report.stderr.includes("\"level\":\"warn\"") && report.stderr.includes("\"event\":\"report\""),
+			"F3.3 no structured stderr warning line is emitted (the error is envelope-only)",
+			!report.stderr.includes("\"level\":\"warn\"") && !report.stderr.includes("\"component\":\"swarm-journal\""),
 			report.stderr,
 		);
 		const ask = runCli(["ask", "--question", "q?"]);

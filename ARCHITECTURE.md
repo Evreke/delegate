@@ -280,14 +280,16 @@ rotate it immediately, then purge the history.
   the reason in the PR. PRs whose diff touches only non-code paths (docs,
   CHANGELOG, version sync, golden-fixture regeneration) skip the reviewer;
   the exemption is verified mechanically by path filter.
-- Only the operator merges to `main`. The canonical green/red verdict of
+- Only the operator merges to `main` — via the release PR (`develop` →
+  `main`) or a hotfix PR; work lands in `develop` first (simplified git
+  flow, AGENTS.md). The canonical green/red verdict of
   `main` is produced only by the merge gate's serialized run of
   `test/run-checks.sh` plus typecheck (exit code 0 = green). Agent-local runs
   are advisory and never produce or contradict the canonical verdict — the
   runner's documented environment flake reproduces under concurrent agent
   load, so a verdict born under load is not a verdict.
-- While `main` is red, merges freeze until green. The author of the change
-  that turned main red owns the fix; ownerless reds (environment drift,
+- While `main` is red, merges into `main` freeze until green. The author of
+  the change that turned main red owns the fix; ownerless reds (environment drift,
   dependency changes) are owned by the operator.
 
 ### Law 13 — Fleet state has one durable read path: journal → read-model → clients.

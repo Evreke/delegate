@@ -113,8 +113,10 @@ export interface ManifestWorker {
 	model: string;
 	thinking: string;
 	startedAt: string; // ISO 8601
-	/** Worker session JSONL path (budget accounting) — captured
-	 *  from the herdr `agent start` result when the transport exposes it. */
+	/** Worker session JSONL path — captured from the start result when the
+	 *  transport exposes it (herdr `agent.agent_session.value`; rpc `get_state`
+	 *  `sessionFile`). Budget accounting, and the durable resume source:
+	 *  `RpcWorkerHost.resumeAgent()` re-enters this file (issue #16). */
 	sessionPath?: string;
 	/** Resolved effective budget for the spawn (per-call > config > default),
 	 *  recorded so delegate_status can display usage against the real budget. */

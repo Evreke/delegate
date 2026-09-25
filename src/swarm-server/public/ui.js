@@ -22,7 +22,6 @@ export function createUiState() {
 		focusWorker: null,
 		spotlight: new Set(),
 		expansion: new Set(),
-		toggled: new Set(),
 		view: initialView(),
 		detailTab: "console",
 	};
@@ -52,11 +51,9 @@ export function uiReducer(state, action) {
 	}
 	if (type === "toggle-collapse") {
 		const expansion = new Set(cur.expansion);
-		const toggled = new Set(cur.toggled);
 		if (expansion.has(action.leadId)) expansion.delete(action.leadId);
 		else expansion.add(action.leadId);
-		toggled.add(action.leadId);
-		return { ...cur, expansion, toggled };
+		return { ...cur, expansion };
 	}
 	if (type === "view") return { ...cur, view: action.view ?? cur.view };
 	if (type === "detail-tab") return { ...cur, detailTab: action.tab ?? cur.detailTab };

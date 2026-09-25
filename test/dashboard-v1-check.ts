@@ -483,7 +483,7 @@ async function main(): Promise<void> {
 		const expanded = layoutMod.computeLayout(model, { expansion: new Set([L1]) });
 		check("A7.4 expanding restores the children in place", expanded.visibleIds.has(sessionIdFor(WORK(1, 1))) && !expanded.nodes.some((n: any) => n.kind === "aggregate"));
 		const ui = uiMod.uiReducer(uiMod.createUiState(), { type: "toggle-collapse", leadId: L1 });
-		check("A7.5 the expansion toggle is UI state only (never persisted)", ui.expansion.has(L1) && ui.toggled.has(L1));
+		check("A7.5 the expansion toggle is UI state only (never persisted) and carries no dead `toggled` field (#92)", ui.expansion.has(L1) && ui.toggled === undefined && !("toggled" in ui));
 		// worst-severity witness: a collapsed lead whose children are degraded
 		const degradedGraph = {
 			...graph,

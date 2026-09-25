@@ -110,7 +110,7 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	primaryWatch?: { intervalMs?: number; maxIntervalMs?: number };
 }
 
-/** One structured stderr line (the writeJournalWarning shape — machine-readable). */
+/** One structured stderr line (level:warn, machine-readable). */
 function logAdvisory(event: string, fields: Record<string, unknown>): void {
 	try {
 		process.stderr.write(`${JSON.stringify({ level: "warn", component: "swarm-server", event, ...fields })}\n`);

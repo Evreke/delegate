@@ -373,14 +373,9 @@ export async function reconcileSessionStart(
 			reader.close();
 			writer.close();
 		}
-	} catch (err) {
-		try {
-			process.stderr.write(
-				`${JSON.stringify({ level: "warn", component: "swarm-reconcile", code: "E_RECONCILE", error: errorText(err) })}\n`,
-			);
-		} catch {
-			// stderr is advisory too
-		}
+	} catch {
+		// Advisory by contract (§4.1.4): a reconciliation failure never blocks
+		// session start — it is skipped silently (no stderr noise).
 		return IDLE;
 	}
 }

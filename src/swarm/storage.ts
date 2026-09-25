@@ -189,20 +189,6 @@ export function verbClock(env: NodeJS.ProcessEnv = process.env): ClockPort {
  *  {seq} on commit, {error} on an advisory failure. Absent in files mode. */
 export type SwarmJournalOutcome = { seq: number } | { error: string };
 
-/** The structured stderr note for an advisory journal failure (§4.1.3 /
- *  Law 8: the verb still succeeds; the failure is loud but never fatal). One
- *  JSON line so a log consumer can parse it; a stderr write failure is
- *  itself swallowed. */
-function writeJournalWarning(identity: { task: string; worker: string }, kind: JournalKind, code: string): void {
-	try {
-		process.stderr.write(
-			`${JSON.stringify({ level: "warn", component: "swarm-journal", event: kind, task: identity.task, worker: identity.worker, code })}\n`,
-		);
-	} catch {
-		// stderr itself is advisory
-	}
-}
-
 /**
  * Append one worker-verb event to the journal when storage mode is "journal".
  * <p>
@@ -249,7 +235,6 @@ export async function appendSwarmEvent(
 				worker: identity.worker,
 				payload,
 			});
-			if (!res.ok) writeJournalWarning(identity, kind, res.code);
 			return res.ok ? { seq: res.seq } : { error: res.code };
 		} finally {
 			writer.close();

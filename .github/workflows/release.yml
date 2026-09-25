@@ -1,4 +1,5 @@
-# Release — runs on every push to main (i.e. after a squash-merge).
+# Release — runs on every push to main (a develop→main release merge or a
+# hotfix merge; simplified git flow, see AGENTS.md).
 # AGENTS.md contract: the HUMAN bumps version + changelog in a release PR;
 # this workflow owns ONLY tagging: if package.json version is higher than the
 # latest v* tag, rerun the suite, create the semver tag and a GitHub Release
@@ -84,7 +85,7 @@ jobs:
             found { print }
           ' CHANGELOG.md)
           if [ -z "$body" ]; then
-            echo "::error::no CHANGELOG section for [$version] — the release PR must add one (Keep a Changelog format)"
+            echo "::error::no CHANGELOG section for [$version] — the release/hotfix PR must carry one (Keep a Changelog format)"
             exit 1
           fi
           {

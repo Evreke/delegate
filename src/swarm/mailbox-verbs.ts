@@ -30,6 +30,13 @@
  * appended AFTER (the `report` kind precedent — the journal never announces
  * an unpublished artifact). The journal append is advisory (Law 8): in
  * "files" storage mode appendSwarmEvent returns null and no row is written,
+ * exactly like every other verb (§4.1.3 — the Phase A/B truth switch is
+ * untouched by this surface). The success envelope states HOW the mutation
+ * confirms (#62 item 1): `confirmation: "confirmed"` when the journal row is
+ * durably appended, `"unavailable"` in files mode (no row exists to wait
+ * for — the client renders "delivered" honestly) or on an advisory append
+ * failure. The journal append is advisory (Law 8): in
+ * "files" storage mode appendSwarmEvent returns null and no row is written,
  * exactly like every other verb.
  *
  * Dependencies: ../host.ts (Transport type via ../mailbox-store.ts's
@@ -98,6 +105,10 @@ export interface OrchestratorVerbSuccess {
 	answerPath: string;
 	/** The journal outcome: null in files mode, else {seq} or {error}. */
 	journal: SwarmJournalOutcome | null;
+	/** How this mutation confirms (#62 item 1): "confirmed" when the journal
+	 *  row is durably appended; "unavailable" when no journal row exists or
+	 *  the advisory append failed (files mode per §4.1.3, or an error). */
+	confirmation: "confirmed" | "unavailable";
 	/** True when the console nudge was accepted (never on the no-transport path). */
 	nudged: boolean;
 	/** Human-readable nudge/outcome note ("" on the plain path). */
@@ -241,6 +252,13 @@ export async function runOrchestratorVerb(
 		payload,
 		deps.env ?? process.env,
 	);
+	// The journal append is advisory (Law 8) — the envelope is already
+	// published either way. "confirmed" only when a row exists to confirm
+	// against; "unavailable" is the honest files-mode answer (§4.1.3: the
+	// journal receives no production writes in Phase A) and also covers an
+	// advisory append failure (no row → no journal event will ever arrive).
+	const confirmation: "confirmed" | "unavailable" =
+		journal !== null && "seq" in journal ? "confirmed" : "unavailable";
 
 	return {
 		ok: true,
@@ -249,6 +267,7 @@ export async function runOrchestratorVerb(
 		dir: target.dir,
 		answerPath,
 		journal,
+		confirmation,
 		nudged,
 		note,
 	};

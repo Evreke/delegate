@@ -144,20 +144,39 @@ body `{"text":"<non-empty>"}`.
   session's stderr as one `operator-token` line — never the journal, a
   response body or a log file. Missing, malformed and wrong tokens yield the
   SAME `401 E_SWARM_AUTH` refusal, compared in constant time.
+- **Id spellings** (both accepted, additive since #62): `<id>` is EITHER the
+  canonical **worker name** (v1) OR the **SwarmGraph SESSION node id** of the
+  worker's session (the same spelling the console endpoint, §6, uses).
+  **Resolution order is name-first**: an id that spells a canonical worker
+  name always resolves as a name — even if a session node happens to carry
+  the same string (node ids are hex and CAN look like names, e.g. `ef2f5792`).
+  A non-name id that is not a worker session node in the read-model is
+  `400 E_SWARM_USAGE`. Ownership is proven by the mutation core either way, so
+  a foreign worker's node id refuses with the same `403` as its name.
 - **Ownership**: only workers this session provably spawned; a foreign or
   unknown id refuses with the SAME `403 E_SWARM_FORBIDDEN` body.
 - A non-canonical/undecodable id or an invalid body is `400 E_SWARM_USAGE`.
 - The write goes through the SAME mailbox core the `delegate_mailbox` tool
   uses (`src/swarm/mailbox-verbs.ts`); in journal storage a `steer`/`answer`
   row with the additive `via:"http"` is appended AFTER the envelope is
-  published (files storage writes no row).
+  published (files storage writes no row — §4.1.3 Phase A is untouched).
+- **Confirmation** (additive field since #62): `confirmation` states how the
+  mutation confirms. `"confirmed"` — the journal row is durably appended
+  (journal storage). `"unavailable"` — files storage (no journal row will
+  ever arrive) or an advisory append failure; the envelope reached the worker
+  but a client must not wait for a journal event. Clients connecting to a
+  pre-#62 server (no `confirmation` field) keep waiting for the journal
+  event — the field is additive and old servers stay fully supported.
 
 Success envelope:
 
 ```json
 {"ok":true,"schemaVersion":1,"verb":"steer","worker":"w1","via":"http",
- "answerPath":"<a-w1.json>","journal":{"seq":N},"nudged":false}
+ "answerPath":"<a-w1.json>","journal":{"seq":N},"confirmation":"confirmed",
+ "nudged":false}
 ```
+
+(`journal` is `null` and `confirmation` is `"unavailable"` in files storage.)
 
 ## 8. Error taxonomy
 

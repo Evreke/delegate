@@ -101,6 +101,17 @@ export function progressPathFor(dir: string, name: string, p: PathPlatform = nod
 	return p.join(dir, `p-${name}.jsonl`);
 }
 
+/** Durable per-session scheduled-wake store (issue #12): ONE JSON document per
+ *  session, living at the exchange ROOT next to the watcher's satellites
+ *  (`schedules-<watcherKey>.json` — a schedule is session-scoped, not
+ *  task-scoped, so the exchange root is the only location that is unique per
+ *  session). The watcherKey is the shared FNV-1a audience key
+ *  (src/watch-store.ts), so the file name carries the session identity and
+ *  exactly one session writes one file. */
+export function scheduleStorePathFor(root: string, watcherKey: string, p: PathPlatform = nodePath): string {
+	return p.join(root, `schedules-${watcherKey}.json`);
+}
+
 /** Archived pending-question path: q-<name>.answered-<ts>.json (the rename
  *  target when a posted answer consumes the question — spawn.ts mailbox
  *  answer/steer flow). */

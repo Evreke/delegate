@@ -6,7 +6,12 @@
 
 /* --- canvas ------------------------------------------------------------ */
 
+/* Pinned to the (position:relative) region box so the absolutely-positioned
+   toolbar can never push the 100%-height SVG past the overflow:hidden edge —
+   the pre-#92 in-flow toolbar clipped the graph's bottom. */
 .graph-canvas {
+	position: absolute;
+	inset: 0;
 	width: 100%;
 	height: 100%;
 	display: block;
@@ -79,3 +84,38 @@
 	fill: var(--accent);
 }
 
+/* --- canvas toolbar (issue #92) ---------------------------------------- */
+/* The fit affordance OVERLAYS the SVG (absolute, so it never steals layout
+   height from the 100%-height SVG inside the overflow:hidden region — the
+   region itself is already position:relative in app.css). The panel
+   background keeps it readable over graph content. */
+.canvas-toolbar {
+	position: absolute;
+	top: 8px;
+	right: 8px;
+	z-index: 2;
+	display: flex;
+	gap: 4px;
+	padding: 4px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--panel);
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-fit {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1;
+	color: var(--fg);
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 4px 8px;
+	cursor: pointer;
+}
+
+.canvas-fit:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}

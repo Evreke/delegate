@@ -16,9 +16,15 @@
  * Windows launch policy (TZ §3.6): on win32 the herdr CLI is typically an npm
  * shim (`herdr.cmd`), which modern Node refuses to spawn shell-less
  * (CVE-2024-27980 → EINVAL) and a bare spawn does not resolve at all (ENOENT).
- * The win32 launch goes through `cmd.exe /d /s /c` with per-argument quoting
- * in one tested helper (winQuoteArg); the argv stays an array end-to-end —
- * never a pre-joined shell string. The platform is injectable (optional
+ * The win32 launch therefore goes through `cmd.exe /d /s /c` with per-argument
+ * quoting in one tested helper (winQuoteArg); the argv stays an array
+ * end-to-end — never a pre-joined shell string. cmd.exe is used ONLY when the
+ * target really needs it (a `.cmd`/`.bat` shim, or a bare name that does not
+ * resolve to a real executable). When the target IS a real PE executable
+ * (`.exe`/`.com` — the standalone herdr.exe, or Windows' own taskkill.exe),
+ * the launch goes shell-less: cmd.exe cannot carry an argument that contains a
+ * newline (it treats it as a command separator), which silently broke
+ * multi-line `agent prompt` payloads. The platform is injectable (optional
  * trailing `platform` parameter, module-level default DEFAULT_PLATFORM) so
  * tests on a POSIX host drive the win32 branch without a real Windows machine
  * (ARCHITECTURE.md Law 1: the platform is the API). The POSIX default path is
@@ -41,6 +47,8 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 /** Per-CLI-call timeout for mutating/fast commands (ms). */
 const CLI_TIMEOUT_MS = 30_000;
@@ -74,8 +82,7 @@ const DEFAULT_PLATFORM: NodeJS.Platform = process.platform;
  * solely so the transport tests can pin its convention.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: arg — one raw argv element (never contains a newline here; herdr
- *   CLI args do not)
+ * Input: arg — one raw argv element
  * Output: the cmd.exe-safe spelling of that element
  * Guarantees:
  *   - plain args (no space/tab/quote) pass through UNCHANGED (byte-identical,
@@ -83,10 +90,65 @@ const DEFAULT_PLATFORM: NodeJS.Platform = process.platform;
  *   - quoting is idempotent-safe for the round-trip test: quote-wrap + ""-doubling
  *     is reversible by the documented cmd de-quoting (strip outer quotes, "" → ")
  * Raises: never
+ *
+ * NOTE: cmd.exe has no safe spelling for an argument containing a newline (it
+ * splits commands on CR/LF). Multi-line payloads (e.g. `agent prompt` text)
+ * MUST NOT be routed through cmd.exe; the win32 policy below only uses
+ * cmd.exe for real shims — see needsWindowsCmdShim().
  */
 export function winQuoteArg(arg: string): string {
 	if (!/[ \t"]/.test(arg)) return arg;
 	return `"${arg.replace(/"/g, '""')}"`;
+}
+
+/** Windows extensions CreateProcess can launch shell-less (real PE binaries). */
+const WINDOWS_EXECUTABLE_EXTENSIONS = [".exe", ".com"] as const;
+/** Windows script extensions that REQUIRE the cmd.exe shim (CVE-2024-27980). */
+const WINDOWS_SCRIPT_EXTENSIONS = [".cmd", ".bat"] as const;
+
+/** The running host's PATH separator: ';' on real Windows, ':' elsewhere.
+ *  The launch policy is chosen by the (possibly injected) `platform`, but the
+ *  PATH itself is always the host's, so the separator follows process.platform
+ *  — this keeps the injected-win32 branch testable on POSIX. */
+const PATH_SEPARATOR = process.platform === "win32" ? ";" : ":";
+
+/**
+ * Resolve `command` to a real Windows executable (.exe/.com) on PATH.
+ * <p>
+ * Input: command — the bare CLI name ("herdr", "taskkill") or an explicit
+ *   path that already carries an extension
+ * Output: the full path to the executable, or null when the name is a
+ *   `.cmd`/`.bat` shim or does not resolve to a real executable
+ * Guarantees: an explicit `.exe`/`.com` name resolves to itself; PATH is
+ *   scanned in order and the FIRST directory containing any of the executable
+ *   extensions wins (mirrors CreateProcess's search)
+ * Raises: never
+ */
+function resolveWindowsExecutable(command: string): string | null {
+	const lower = command.toLowerCase();
+	if (WINDOWS_EXECUTABLE_EXTENSIONS.some((ext) => lower.endsWith(ext))) return command;
+	if (WINDOWS_SCRIPT_EXTENSIONS.some((ext) => lower.endsWith(ext))) return null;
+	const pathValue = process.env.PATH ?? "";
+	for (const rawDir of pathValue.split(PATH_SEPARATOR)) {
+		const dir = rawDir.replace(/^"(.*)"$/, "$1");
+		if (!dir) continue;
+		for (const ext of WINDOWS_EXECUTABLE_EXTENSIONS) {
+			const candidate = join(dir, command + ext);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * True when the win32 launch MUST go through cmd.exe: a `.cmd`/`.bat` shim
+ * (Node refuses those shell-less) or a bare name that does not resolve to a
+ * real executable. False means shell-less spawn is safe.
+ */
+function needsWindowsCmdShim(command: string): boolean {
+	const lower = command.toLowerCase();
+	if (WINDOWS_SCRIPT_EXTENSIONS.some((ext) => lower.endsWith(ext))) return true;
+	return resolveWindowsExecutable(command) === null;
 }
 
 /** One platform-resolved launch: the command to spawn and its argv.
@@ -107,16 +169,25 @@ interface SpawnPolicy {
  * Guarantees:
  *   - POSIX: { command, args } returned UNCHANGED (byte-identical launch —
  *     the regression pin for the pre-1.17 shape)
- *   - win32: `cmd.exe /d /s /c` followed by the per-argument-quoted command
- *     and argv (argv stays an array; winQuoteArg does the quoting)
+ *   - win32 + shim needed: `cmd.exe /d /s /c` followed by the
+ *     per-argument-quoted command and argv (argv stays an array; winQuoteArg
+ *     does the quoting)
+ *   - win32 + real executable: shell-less spawn of the RESOLVED executable
+ *     path (no cmd.exe), so arguments containing newlines survive untouched
  * Raises: never
  */
 function spawnPolicyCommand(command: string, args: string[], platform: NodeJS.Platform): SpawnPolicy {
 	if (platform === "win32") {
-		return {
-			command: "cmd.exe",
-			args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
-		};
+		if (needsWindowsCmdShim(command)) {
+			return {
+				command: "cmd.exe",
+				args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
+			};
+		}
+		// Real PE executable: spawn it directly. cmd.exe would misparse any
+		// newline-bearing argument (multi-line agent prompts), and is not
+		// needed for a .exe/.com.
+		return { command: resolveWindowsExecutable(command) ?? command, args };
 	}
 	return { command, args };
 }

@@ -25,6 +25,10 @@
  *       SIGTERM); after SIGKILL_GRACE_MS the stub `taskkill` receives
  *       `/pid <stubPid> /T /F` and actually kills the stub tree process.
  *   W.4 winQuoteArg unit cases: space, embedded quotes, plain, empty.
+ *   W.5 Win32 + REAL executable on PATH (`herdr.exe`): the launch bypasses
+ *       cmd.exe entirely (shell-less spawn of the resolved .exe) so a
+ *       multi-line argument survives intact (regression for `agent prompt`
+ *       payloads — cmd.exe splits on CR/LF).
  *
  * Cleanup: every stub it spawns is verified dead or killed in the end; the
  * stub dir is removed.
@@ -33,7 +37,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import {
 	runHerdr,
 	parseHerdrResult,
@@ -53,6 +57,8 @@ function check(name: string, ok: boolean, detail = "") {
 const ART = mkdtempSync(`${tmpdir()}/pi-delegate-win-`);
 const STUB_DIR = join(ART, "bin");
 mkdirSync(STUB_DIR, { recursive: true });
+const EXE_DIR = join(ART, "exe");
+mkdirSync(EXE_DIR, { recursive: true });
 const ARGVFILE = join(ART, "herdr-argv.json");
 const CMDLOG = join(ART, "cmd-argv.log");
 const TKLOG = join(ART, "taskkill-argv.log");
@@ -60,6 +66,9 @@ const PIDFILE = join(ART, "stub.pid");
 
 // The `herdr` shim on the test PATH: dispatches on $WIN_STUB_SCRIPT.
 writeFileSync(join(STUB_DIR, "herdr"), `#!/usr/bin/env node\nrequire(process.env.WIN_STUB_SCRIPT);\n`, { mode: 0o755 });
+// A REAL-executable stub: a `.exe` name. The win32 policy must resolve it on
+// PATH and spawn it shell-less (no cmd.exe), so newline-bearing args survive.
+writeFileSync(join(EXE_DIR, "herdr.exe"), `#!/usr/bin/env node\nrequire(process.env.WIN_STUB_SCRIPT);\n`, { mode: 0o755 });
 // Recorder: writes its argv (beyond node+script), prints a valid herdr JSON line, exits 0.
 writeFileSync(
 	join(STUB_DIR, "record.js"),
@@ -284,6 +293,35 @@ async function run() {
 		check("W.4 arg with a tab is wrapped in double quotes", winQuoteArg("a\tb") === '"a\tb"');
 		check("W.4 embedded quotes are doubled inside the wrapper", winQuoteArg('say "hi"') === '"say ""hi"""');
 		check("W.4 empty arg stays empty (no space/tab/quote)", winQuoteArg("") === "");
+	}
+
+	// W.5 — win32 + REAL executable on PATH: shell-less spawn, no cmd.exe.
+	// Regression: cmd.exe splits commands on CR/LF, so a multi-line
+	// `agent prompt` payload was corrupted/rejected; a .exe must bypass the
+	// shim entirely and receive the newline-bearing argument intact.
+	{
+		const savedPath = process.env.PATH;
+		process.env.PATH = `${EXE_DIR}${delimiter}${savedPath ?? ""}`;
+		process.env.WIN_STUB_SCRIPT = join(STUB_DIR, "record.js");
+		resetArtifacts();
+		const multiline = "line one\nline two\nline three";
+		const { stdout } = await runHerdr(["agent", "prompt", "worker", multiline], T, "win32");
+		const { result } = parseHerdrResult(stdout);
+		check(
+			"W.5 real .exe on PATH bypasses cmd.exe (no shell wrapper)",
+			cmdLines().length === 0,
+			`cmd=${JSON.stringify(cmdLines())}`,
+		);
+		check(
+			"W.5 multi-line arg arrives as ONE argv element with newlines intact",
+			JSON.stringify(readJson(ARGVFILE)) === JSON.stringify(["agent", "prompt", "worker", multiline]),
+			`argv=${JSON.stringify(readJson(ARGVFILE))}`,
+		);
+		check(
+			"W.5 shell-less launch result parses (unchanged herdr shape)",
+			(result as { agent?: { agent_status?: string } })?.agent?.agent_status === "idle",
+		);
+		process.env.PATH = savedPath;
 	}
 
 	// cleanup: no stub survivor may outlive the test

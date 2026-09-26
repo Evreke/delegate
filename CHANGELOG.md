@@ -247,6 +247,16 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **win32: multi-line `agent prompt` payloads are no longer mangled by
+  cmd.exe.** The win32 launch policy wrapped every herdr call in
+  `cmd.exe /d /s /c`; cmd.exe splits its command line on CR/LF, so any
+  argument containing a newline (a multi-line agent prompt) was misparsed and
+  the agent never received it (`E_PROMPT_STALLED`). `src/herdr/cli.ts` now uses
+  cmd.exe ONLY when the target is a `.cmd`/`.bat` shim (CVE-2024-27980); a real
+  `.exe`/`.com` (standalone `herdr.exe`, or Windows' own `taskkill.exe`) is
+  spawned shell-less, so the newline-bearing argv survives untouched.
+  Regression: `test/transport-win-check.ts` W.5.
+
 - **Adaptive sqlite driver — the extension must load under node too.** The
   journal driver prefers `bun:sqlite` and falls back to `node:sqlite`
   (node ≥ 22.13); a statically chosen driver crashed the extension import

@@ -1,0 +1,18 @@
+{
+	"version": 1,
+	"id": "S12",
+	"title": "no tools → REFERENCE fallback",
+	"blocker": false,
+	"input": {
+		"task": "Fan out a 3-worker code audit (correctness, performance, security axes) and collect three reports.",
+		"context": ["The delegate tool is NOT in this session's tool list — the pi-delegate extension is missing/broken.", "herdr CLI is available and HERDR_ENV=1.", "skills/delegate/REFERENCE.md is on disk next to SKILL.md; its manual ritual applies only when the tool is absent."],
+		"trigger": "User message: 'Run the audit fan-out.'"
+	},
+	"expect": [
+		{ "tag": "skill:reference-fallback", "dimension": "tool-choice" },
+		{ "tag": "brief:file-first", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "tool:delegate", "dimension": "no-forbidden" }
+	]
+}

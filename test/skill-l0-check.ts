@@ -56,8 +56,11 @@ const REFERENCE = readFileSync(join(ROOT, "skills/delegate/REFERENCE.md"), "utf8
 		source: "synthetic",
 	};
 	check(
-		"P1: forbid fires on unguarded line, not on guarded line",
-		runPin(pin, "wait with sleep 60\nnever sleep 60 to wait\n").length === 1,
+		"P1: forbid fires on an unguarded item, not on a guarded one",
+		// Separate items (blank line): the guarded sentence cannot exempt its
+		// neighbor; inside ONE item the guard would exempt the fire.
+		runPin(pin, "wait with sleep 60\n\nnever sleep 60 to wait\n").length === 1 &&
+			runPin(pin, "wait with sleep 60, never do that\n").length === 0,
 	);
 	check(
 		"P1: forbid silent when no line matches",

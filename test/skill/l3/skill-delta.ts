@@ -125,7 +125,7 @@ function walkMarkdown(root: string, out: string[] = []): string[] {
 
 function gitRev(): string {
 	try {
-		const r = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
+		const r = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5_000 });
 		if (r.status === 0 && r.stdout) return r.stdout.trim();
 	} catch {
 		// fall through to unversioned

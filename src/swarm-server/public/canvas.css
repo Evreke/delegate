@@ -2,6 +2,10 @@
  * canvas.css — the center SVG canvas styling (issue #66).
  * Split from app.css (Law 5): the canvas grid + status markers are one
  * visual responsibility, the frame/rail/detail another.
+ *
+ * TWO HIGHLIGHT COLORS (canvas-intent round, R2): accent-blue = SELECTION
+ * (`.graph-node[data-selected]`, hover shares the family), amber = ATTENTION
+ * (spotlight stroke + glow, `.hot` edges, the 0.35 dim on the rest).
  */
 
 /* --- canvas ------------------------------------------------------------ */
@@ -21,10 +25,27 @@
 	cursor: grab;
 }
 
+.graph-node {
+	cursor: pointer;
+}
+
+/* AC14: a hover affordance — the pointer cursor above plus an accent stroke
+   (the selection color family: hover previews what a click will select). */
+.graph-node:hover .graph-box {
+	stroke: var(--accent);
+}
+
 .graph-edge {
 	fill: none;
 	stroke: var(--border);
 	stroke-width: 1.25;
+}
+
+/* C8: an edge into a spotlighted node is the amber path cue from the
+   attention queue to the affected nodes. */
+.graph-edge[data-hot="1"] {
+	stroke: var(--amber);
+	stroke-width: 1.5;
 }
 
 .graph-box {
@@ -47,11 +68,26 @@
 }
 
 .graph-node[data-dimmed="1"] {
-	opacity: 0.25;
+	opacity: 0.35;
+}
+
+/* R2: the selection stroke — accent blue, visible on its own and still
+   readable under a spotlight dim (sel+dim combine: the group dims, the
+   stroke stays accent). */
+.graph-node[data-selected="1"] .graph-box {
+	stroke: var(--accent);
+	stroke-width: 1.5;
+}
+
+/* R2: attention amber — the spotlight is a stroke + glow, never a blue
+   "focus" tint (blue is the selection convention). The rule sits AFTER the
+   selected rule so a node that is both reads as attention-first. */
+.graph-node[data-spotlight="1"] .graph-box {
+	stroke: var(--amber);
 }
 
 .graph-node[data-spotlight="1"] {
-	filter: drop-shadow(0 0 6px rgba(110, 168, 254, 0.35));
+	filter: drop-shadow(0 0 6px rgba(224, 164, 88, 0.4));
 }
 
 .graph-name {

@@ -392,8 +392,3 @@ function buildAttention(nodes, journal, expansion) {
 			].filter((chip) => chip.count > 0);
 	return { items, chips, clear, askCount, deadCount, degradedCount, expansion: expansion ?? null };
 }
-
-/** The attention queue's spotlight consumer contract (center module input). */
-export function spotlightIdsFor(item) {
-	return new Set(Array.isArray(item?.focusIds) ? item.focusIds : item?.nodeId ? [item.nodeId] : []);
-}

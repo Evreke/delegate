@@ -7,6 +7,14 @@
  * UI-STATE ONLY — it is never persisted and never written to the journal or
  * the exchange tree ("click expands in place, UI-state only").
  *
+ * SELECTION AND SPOTLIGHT ARE DECOUPLED (canvas-intent round, R1): a node
+ * click SELECTS (a visible canvas stroke) and never dims anything; the
+ * spotlight is set ONLY by `select-attention` (the attention queue) and is
+ * cleared by every other attention or selection action — `dismiss-overlay`
+ * (Escape / outside click), `chip-click` (chip toggle) and `select-node`.
+ * Invariant: the spotlight is non-empty only while the last attention
+ * interaction opened it; nothing else can leave the canvas dimmed.
+ *
  * `uiReducer` is total: an unknown action is a no-op returning the input
  * state. Nothing here touches the DOM, so the check drives the interaction
  * contract headlessly and the renderers stay thin.
@@ -38,16 +46,19 @@ export function uiReducer(state, action) {
 	const cur = state && typeof state === "object" ? state : createUiState();
 	const type = action && action.type;
 	if (type === "chip-click") {
-		return { ...cur, overlay: cur.overlay === action.kind ? null : action.kind };
+		// R1: a chip toggle ends the attention interaction — the spotlight dies
+		// with it (opening another queue starts clean, never pre-dimmed).
+		return { ...cur, overlay: cur.overlay === action.kind ? null : action.kind, spotlight: new Set() };
 	}
-	if (type === "dismiss-overlay") return { ...cur, overlay: null };
+	if (type === "dismiss-overlay") return { ...cur, overlay: null, spotlight: new Set() };
 	if (type === "select-attention") {
 		const ids = Array.isArray(action.item?.focusIds) ? action.item.focusIds : action.item?.nodeId ? [action.item.nodeId] : [];
 		return { ...cur, overlay: null, selection: action.item?.nodeId ?? null, focusWorker: action.item?.worker ?? null, spotlight: new Set(ids) };
 	}
 	if (type === "select-node") {
-		const ids = Array.isArray(action.spotlightIds) ? action.spotlightIds : [];
-		return { ...cur, selection: action.id ?? null, focusWorker: action.focusWorker ?? null, spotlight: new Set(ids) };
+		// R1: selection carries no spotlight — a click selects (canvas stroke)
+		// and any live attention spotlight is released, never replaced.
+		return { ...cur, selection: action.id ?? null, focusWorker: action.focusWorker ?? null, spotlight: new Set() };
 	}
 	if (type === "toggle-collapse") {
 		const expansion = new Set(cur.expansion);

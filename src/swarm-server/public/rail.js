@@ -54,7 +54,8 @@ function renderWorkerRow(doc, task, ctx) {
 		for (const chip of renderDegradedChips(doc, w.degraded)) row.appendChild(chip);
 		// #85b: a worker row is a FOCUS affordance, not a display-only label —
 		// tapping it selects the task AND focuses that worker in the detail panel.
-		on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id, focusWorker: w.name, spotlightIds: taskFocusIds(task) }));
+		// R1: no spotlight payload — dimming comes only from the attention queue.
+		on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id, focusWorker: w.name }));
 		list.appendChild(row);
 	}
 	return list;
@@ -113,16 +114,4 @@ export function railNodeIds(state) {
 /** The status-language view a rail row uses (exported for the check). */
 export function railStatusView(node) {
 	return statusView(node.status);
-}
-
-/**
- * The center-view nodes a rail task tap focuses: the task, its owning session
- * and each worker's session node. The center consumes this as its spotlight
- * input, so a rail click focuses the graph without a screen switch.
- */
-export function taskFocusIds(task) {
-	const ids = [task.id];
-	if (task.parentId) ids.push(task.parentId);
-	for (const w of task.workers || []) if (w.sessionId) ids.push(w.sessionId);
-	return ids;
 }

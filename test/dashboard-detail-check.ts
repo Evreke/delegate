@@ -307,8 +307,8 @@ async function main(): Promise<void> {
 		row.fire("click");
 		const action = dispatched.find((a) => a.type === "select-node");
 		check(
-			"D2.1 a rail worker row dispatches select-node with focusWorker + the task spotlight",
-			action !== undefined && action.id === "t1" && action.focusWorker === "w1" && action.spotlightIds.includes("t1") && action.spotlightIds.includes("w1-node"),
+			"D2.1 a rail worker row dispatches select-node with focusWorker and NO spotlight (R1)",
+			action !== undefined && action.id === "t1" && action.focusWorker === "w1" && action.spotlightIds === undefined,
 			JSON.stringify(action),
 		);
 		check("D2.2 a worker row carries its stable worker id", row.attributes["data-worker-id"] === "t1/w1", row.attributes["data-worker-id"]);

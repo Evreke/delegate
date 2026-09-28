@@ -10,17 +10,22 @@
  *
  * `renderCanvas` paints the layout once; `patchCanvas` updates status/progress
  * text and severity attributes IN PLACE, leaving every `transform` untouched —
- * a status or progress event never relayouts. Spotlight (from the attention
- * queue) is an input contract: non-affected nodes are dimmed, never hidden.
+ * a status or progress event never relayouts.
+ *
+ * SELECTION AND SPOTLIGHT ARE TWO COLORS (canvas-intent, R1/R2): a selected
+ * node (`opts.selection`, `data-selected="1"`) wears the accent-blue stroke
+ * and keeps it while a spotlight dims the rest (sel+dim combine). The
+ * spotlight (`opts.spotlight`, set ONLY by the attention queue) is attention
+ * AMBER: stroke + glow on lit nodes, 0.35 dim on the rest, `.hot` amber
+ * edges into lit nodes (C8). A plain node click dispatches a bare
+ * `select-node` — it never dims.
  *
  * ONE coordinate space (issue #78): the SVG viewBox is the ELEMENT PIXEL BOX
  * (`0 0 width height`, measured from the element itself) and the inner
- * `<g data-view>` transform owns pan/zoom. `fitView`/`zoomAt` therefore work
- * in element pixels end to end — the injected `viewport` seam is used only as
- * a fallback when the element cannot be measured (headless), and the
- * hardcoded 1200x720 "fantasy" viewport is ignored whenever a real
- * measurement is available. The old double-fit (viewBox = layout bounds AND
- * an inner fit transform) is gone.
+ * `<g data-view>` transform owns pan/zoom, so `fitView`/`zoomAt` work in
+ * element pixels end to end — the injected `viewport` seam is only the
+ * fallback when the element cannot be measured (headless), and the hardcoded
+ * 1200x720 "fantasy" viewport is ignored whenever a real measurement exists.
  */
 
 import { el, on } from "./dom.js";
@@ -30,13 +35,7 @@ import { nodeSubLine, statusView } from "./status.js";
 /** SVG element creation (real namespace in a browser; createElement under a fake doc). */
 function svgEl(doc, tag, attrs, text) {
 	const node = typeof doc.createElementNS === "function" ? doc.createElementNS("http://www.w3.org/2000/svg", tag) : doc.createElement(tag);
-	if (attrs) {
-		for (const key of Object.keys(attrs)) {
-			const value = attrs[key];
-			if (value === undefined || value === null) continue;
-			if (typeof node.setAttribute === "function") node.setAttribute(key, String(value));
-		}
-	}
+	if (attrs) for (const [key, value] of Object.entries(attrs)) if (value !== undefined && value !== null && typeof node.setAttribute === "function") node.setAttribute(key, String(value));
 	if (text !== undefined && typeof doc.createTextNode === "function") node.appendChild(doc.createTextNode(String(text)));
 	return node;
 }
@@ -84,6 +83,9 @@ function nodeClasses(node) {
 
 function renderNodeGroup(doc, node, pos, opts) {
 	const dimmed = opts.spotlight && opts.spotlight.size > 0 && !opts.spotlight.has(node.id);
+	// R2: selection is a visible canvas state independent of the spotlight —
+	// a dimmed selected node keeps its stroke (sel+dim).
+	const selected = opts.selection === node.id;
 	const group = svgEl(doc, "g", {
 		class: nodeClasses(node),
 		"data-graph-node": node.id,
@@ -96,15 +98,17 @@ function renderNodeGroup(doc, node, pos, opts) {
 		"data-y": pos.y,
 		"data-dimmed": dimmed ? "1" : "0",
 		"data-spotlight": dimmed ? "0" : "1",
+		"data-selected": selected ? "1" : "0",
 		transform: `translate(${pos.x} ${pos.y})`,
 	});
 	if (node.kind === "aggregate") group.setAttribute("data-aggregate", node.leadId);
 	paintNodeContent(doc, group, node);
+	// R1: a plain click selects — no spotlight payload, nothing dims.
 	on(group, "click", () =>
 		opts.dispatch?.(
 			node.kind === "aggregate" || opts.collapsedLeads?.has(node.id)
 				? { type: "toggle-collapse", leadId: node.kind === "aggregate" ? node.leadId : node.id }
-				: { type: "select-node", id: node.id, spotlightIds: [node.id, node.parentId].filter(Boolean) },
+				: { type: "select-node", id: node.id },
 		),
 	);
 	return group;
@@ -168,9 +172,11 @@ export function subLineFor(node) {
  * Render the canvas (edges, then nodes) into `root`.
  * <p>
  * FUNCTION_CONTRACT: Input — state, layout (computeLayout), root, doc, opts
- *   ({ dispatch, spotlight }). Output — a node index ({ svg, nodes: Map }).
- * Guarantees: byte-identical coordinates for identical topology + expansion;
- *   the marker is the first child of each node group (position LEFT). Never
+ *   ({ dispatch, spotlight, selection, view, viewport, onView }). Output — a
+ *   node index ({ svg, nodes: Map }). Guarantees: byte-identical coordinates
+ *   for identical topology + expansion; the marker is the first child of each
+ *   node group (position LEFT); a selected node carries `data-selected="1"`
+ *   and an edge touching a spotlighted node carries `data-hot="1"`. Never
  *   throws on a well-formed layout.
  */
 export function renderCanvas(state, layout, root, doc, opts = {}) {
@@ -184,10 +190,14 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 		viewBox: `0 0 ${vp.width} ${vp.height}`,
 		preserveAspectRatio: "xMidYMid meet",
 	});
+	const spotlight = opts.spotlight ?? new Set();
 	const edgeLayer = svgEl(doc, "g", { class: "graph-layer graph-edges", "data-graph-layer": "edges" });
 	for (const edge of layout.edges) {
+		// C8: an edge into a spotlighted node turns amber (`.hot`) — the path
+		// cue from the attention queue to the affected nodes.
+		const hot = spotlight.size > 0 && (spotlight.has(edge.from) || spotlight.has(edge.to));
 		edgeLayer.appendChild(
-			svgEl(doc, "path", { class: "graph-edge", "data-edge": "1", "data-edge-kind": edge.kind, "data-edge-from": edge.from, "data-edge-to": edge.to, d: edge.d }),
+			svgEl(doc, "path", { class: "graph-edge", "data-edge": "1", "data-edge-kind": edge.kind, "data-edge-from": edge.from, "data-edge-to": edge.to, ...(hot ? { "data-hot": "1" } : {}), d: edge.d }),
 		);
 	}
 	const nodeLayer = svgEl(doc, "g", { class: "graph-layer graph-nodes", "data-graph-layer": "nodes" });
@@ -299,13 +309,11 @@ export function cursorToUser(offsetX, offsetY, viewBox, box) {
 	return { x: (ox - (boxW - vbW * scale) / 2) / scale, y: (oy - (boxH - vbH * scale) / 2) / scale };
 }
 
-/**
- * Wire the documented interactions onto a rendered canvas: wheel zoom
- * (0.5×–2×, cursor-anchored IN USER UNITS), drag pan, and the fit affordance. A
- * fake DOM without listeners is a no-op (the pure helpers stay checkable).
- * FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
- *   ({ getView, onView, viewport }). Output — none. Never throws.
- */
+/** Wire the documented interactions onto a rendered canvas: wheel zoom
+ *  (clamped, cursor-anchored IN USER UNITS), drag pan, the fit affordance. A
+ *  fake DOM without listeners is a no-op (the pure helpers stay checkable).
+ *  FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
+ *    ({ getView, onView, viewport }). Output — none. Never throws. */
 export function attachCanvasControls(index, doc, opts = {}) {
 	if (!index || !index.svg || typeof index.svg.addEventListener !== "function") return;
 	const svg = index.svg;
@@ -319,9 +327,8 @@ export function attachCanvasControls(index, doc, opts = {}) {
 		return vp;
 	};
 	const vp = applyViewport();
-	// First measured attach: the identity ui.view is not a frame in element
-	// pixel space, so fit once and let onView persist it in ui state (only when
-	// the view is untouched AND the fit actually changes it — never a loop).
+	// First measured attach: fit once and persist via onView — only when the
+	// view is untouched AND the fit actually changes it (never a loop).
 	if (measureViewport(svg) && isInitialView(getView())) {
 		const fitted = fitView(index.layout.bounds, vp);
 		if (!sameView(fitted, getView())) opts.onView?.(fitted);
@@ -357,12 +364,11 @@ function initialViewFallback() {
 	return { zoom: 1, panX: 0, panY: 0 };
 }
 
-/**
- * Patch node status/progress/severity IN PLACE (no relayout, no transform
- * change). The aggregate severity and the degraded ⚠N marker update too.
- * FUNCTION_CONTRACT: Input — index (renderCanvas result), state. Output —
- * the same index. Guarantees: `data-x`/`data-y`/`transform` are untouched.
- */
+/** Patch node status/progress/severity/selection IN PLACE (no relayout, no
+ *  transform change). The aggregate severity + degraded badges update too.
+ *  FUNCTION_CONTRACT: Input — index (renderCanvas result), state, doc, opts
+ *    ({ spotlight, selection }). Output — the same index. Guarantees:
+ *    `data-x`/`data-y`/`transform` are untouched. */
 export function patchCanvas(index, state, doc, opts = {}) {
 	if (!index) return index;
 	const spotlight = opts.spotlight ?? new Set();
@@ -370,7 +376,7 @@ export function patchCanvas(index, state, doc, opts = {}) {
 		let node = state.byId.get(id);
 		if (!node && id.startsWith("agg:")) {
 			const decision = state.graph.collapse.get(id.slice(4));
-			if (decision) node = { id, kind: "aggregate", name: decision.label, status: "collected", severity: decision.worstSeverity, statusView: statusView("collected"), degraded: [], foreign: false, usage: null };
+			if (decision) node = { id, kind: "aggregate", name: decision.label, leadId: decision.leadId, status: "collected", severity: decision.worstSeverity, total: decision.total, collected: decision.collected, statusView: statusView("collected"), degraded: [], foreign: false, usage: null };
 		}
 		if (!node) continue;
 		if (group.setAttribute) {
@@ -380,15 +386,11 @@ export function patchCanvas(index, state, doc, opts = {}) {
 			const dimmed = spotlight.size > 0 && !spotlight.has(id);
 			group.setAttribute("data-dimmed", dimmed ? "1" : "0");
 			group.setAttribute("data-spotlight", dimmed ? "0" : "1");
+			group.setAttribute("data-selected", opts.selection === id ? "1" : "0");
 		}
-		// Repaint the content so the marker color/shape and the degraded ⚠N
-		// marker follow the status — the group's transform/x/y stay untouched.
+		// Repaint the content so the marker/degraded badges follow the status —
+		// the group's transform/x/y stay untouched.
 		paintNodeContent(doc, group, node);
 	}
 	return index;
-}
-
-/** The canvas node ids in render order (deterministic). */
-export function canvasNodeIds(layout) {
-	return [...layout.nodes].map((n) => n.id);
 }

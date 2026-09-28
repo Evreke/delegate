@@ -235,7 +235,7 @@ export function createFleetApp(env = {}) {
 	const renderRegions = () => {
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
 		if (regions.canvas) {
-			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView });
+			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, selection: ui.selection, view: ui.view, viewport, onView });
 			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
 		}
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
@@ -253,7 +253,7 @@ export function createFleetApp(env = {}) {
 	const renderLive = () => {
 		refreshModel();
 		if (!dash) return;
-		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight });
+		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight, selection: ui.selection });
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });

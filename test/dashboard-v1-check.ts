@@ -409,8 +409,12 @@ async function main(): Promise<void> {
 		const lit = groups.filter((g) => g.attributes["data-spotlight"] === "1");
 		check("A4.3 the spotlight dims non-affected nodes and keeps the affected ones lit", dimmed.length === groups.length - lit.length && lit.length === next.spotlight.size && lit.every((g) => next.spotlight.has(g.attributes["data-graph-node"])), JSON.stringify({ groups: groups.length, dimmed: dimmed.length, lit: lit.length }));
 		check("A4.4 outside-click dismissal is a pure UI action", uiMod.uiReducer(next, { type: "dismiss-overlay" }).overlay === null);
-		const railFocus = uiMod.uiReducer(uiMod.createUiState(), { type: "select-node", id: "milestone1", spotlightIds: railMod.taskFocusIds(model.byId.get("milestone1")) });
-		check("A4.5 a rail task tap focuses the center view (spotlight = task + owner + worker sessions, never a screen switch)", railFocus.spotlight.has("milestone1") && railFocus.spotlight.has(sessionIdFor(LEAD(1))) && railFocus.selection === "milestone1");
+		const railFocus = uiMod.uiReducer(uiMod.createUiState(), { type: "select-node", id: "milestone1" });
+		check("A4.5 a rail task tap selects the task with NO spotlight (R1: dimming comes only from the attention queue)", railFocus.selection === "milestone1" && railFocus.spotlight.size === 0, JSON.stringify({ selection: railFocus.selection, spotlight: [...railFocus.spotlight] }));
+		// R1: the attention interaction owns the spotlight's whole lifetime —
+		// dismiss, chip-toggle and any later select-node all release it.
+		const spotlit = uiMod.uiReducer(railFocus, { type: "select-attention", item: model.attention.items.find((i: any) => i.kind === "ask") });
+		check("A4.5b dismiss-overlay, chip-click and select-node each clear a live spotlight (nothing leaves the canvas stuck dimmed)", spotlit.spotlight.size > 0 && uiMod.uiReducer(spotlit, { type: "dismiss-overlay" }).spotlight.size === 0 && uiMod.uiReducer(spotlit, { type: "chip-click", kind: "ask" }).spotlight.size === 0 && uiMod.uiReducer(spotlit, { type: "select-node", id: "milestone1" }).spotlight.size === 0, JSON.stringify([...spotlit.spotlight]));
 		check("A4.6 a collapsed lead toggles in place through the UI reducer", uiMod.uiReducer(uiMod.createUiState(), { type: "toggle-collapse", leadId: L1 }).expansion.has(L1));
 	}
 

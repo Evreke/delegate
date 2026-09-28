@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"id": "S10",
+	"title": "verbatim retry → reject",
+	"blocker": true,
+	"input": {
+		"task": "Worker facts-1 failed with E_REPORT_MISSING. Get the audit done anyway.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "facts-1 has settled — its name stays taken; the report file never appeared.", "You already know the root cause: the brief pointed the worker at the wrong report path. The naive move would be re-running the same prompt on the same name with the same brief."],
+		"trigger": "Tool result E_REPORT_MISSING arrives from the first delegate call."
+	},
+	"expect": [
+		{ "tag": "retry:diagnosed", "dimension": "recovery" },
+		{ "tag": "retry:new-name", "dimension": "recovery" },
+		{ "tag": "brief:diagnosed-retry", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "retry:verbatim", "dimension": "recovery" },
+		{ "tag": "retry:same-name", "dimension": "recovery" }
+	]
+}

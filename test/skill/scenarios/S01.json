@@ -1,0 +1,18 @@
+{
+	"version": 1,
+	"id": "S01",
+	"title": "single task → no fan-out",
+	"blocker": false,
+	"input": {
+		"task": "Implement one bounded helper: add formatDuration(ms: number): string to src/util/time.ts with unit tests in the sibling test file. Single outcome, only those two files touched.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "skills/delegate/SKILL.md is loaded; the work fits exactly one worker — one file plus its test, one outcome."],
+		"trigger": "User message: 'Please get this done — delegate it if that is the right shape.'"
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "topology:single-direct", "dimension": "topology" }
+	],
+	"forbid": [
+		{ "tag": "topology:fan-out", "dimension": "no-forbidden" }
+	]
+}

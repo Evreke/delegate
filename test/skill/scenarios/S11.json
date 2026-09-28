@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"id": "S11",
+	"title": "external wait → wake tool",
+	"blocker": false,
+	"input": {
+		"task": "Kick off a dependency install (~8 minutes) in the background and finish your orchestration turn; confirm the install result afterwards.",
+		"context": ["You are the root orchestrator.", "The install runs as an external process with no worker and no report file left behind — nothing watches it for you.", "Your session supports scheduled self-wakes that arrive as a follow-up turn."],
+		"trigger": "User message: 'Start it, but do not sit there waiting.'"
+	},
+	"expect": [
+		{ "tag": "wait:wake-tool", "dimension": "tool-choice" },
+		{ "tag": "turn:end", "dimension": "recovery" }
+	],
+	"forbid": [
+		{ "tag": "wait:sleep", "dimension": "no-forbidden" },
+		{ "tag": "wait:status-poll-loop", "dimension": "no-forbidden" }
+	]
+}

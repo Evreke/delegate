@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"id": "S03",
+	"title": "file-slice → shared placement",
+	"blocker": false,
+	"input": {
+		"task": "Rename the symbol WorkerHost to OrchestratorHost across all 47 occurrences under src/ — mass mechanical edit, one rule applied to many files, no behavior change.",
+		"context": ["You are a sub-orchestrator: your session cwd is inside a git worktree (pwd is under ~/.herdr/worktrees/).", "Worktree placement from your session is rejected by transport guards; only tabs/shared placement are available to you.", "Per the skill, mode: shared is for file-slice fan-outs; workers sharing one checkout need disjoint file lists per brief."],
+		"trigger": "User message: 'Fan this out — slice the files across workers.'"
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "mode:shared", "dimension": "topology" },
+		{ "tag": "brief:disjoint-slices", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "mode:worktree", "dimension": "no-forbidden" }
+	]
+}

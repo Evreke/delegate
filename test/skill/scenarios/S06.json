@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"id": "S06",
+	"title": "bad report → diagnosed retry + new name",
+	"blocker": true,
+	"input": {
+		"task": "Collect worker facts-1's report on the API-surface audit and get the audit result.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "Mid-scenario event: the delegate call returns E_REPORT_MISSING — facts-1 settled without a valid report file.", "You may inspect the worker console to find the root cause (for example: it wrote the report to the wrong path because the brief named the wrong filename)."],
+		"trigger": "Tool result E_REPORT_MISSING arrives from the delegate call."
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "retry:diagnosed", "dimension": "recovery" },
+		{ "tag": "retry:new-name", "dimension": "recovery" },
+		{ "tag": "brief:diagnosed-retry", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "retry:verbatim", "dimension": "no-forbidden" }
+	]
+}

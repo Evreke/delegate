@@ -39,7 +39,7 @@ import { el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
 import { isSettledStatus, statusView } from "./status.js";
 
 /** The UI-expansion key that unfolds one task's settled workers (the shared
- *  `toggle-collapse` action carries it — * rail-scoped, never a canvas lead id). */
+ *  `toggle-collapse` action carries it — rail-scoped, never a canvas lead id). */
 function railFoldKey(taskId) {
 	return `rail:${taskId}`;
 }

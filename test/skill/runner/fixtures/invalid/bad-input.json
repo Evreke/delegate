@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"id": "S96",
+	"title": "Invalid fixture — input.task must be non-empty",
+	"blocker": false,
+	"input": { "task": "", "context": [], "trigger": "t" },
+	"expect": [],
+	"forbid": []
+}

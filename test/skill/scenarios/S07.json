@@ -1,0 +1,18 @@
+{
+	"version": 1,
+	"id": "S07",
+	"title": "mailbox → answer, no respawn",
+	"blocker": false,
+	"input": {
+		"task": "Worker facts-1 is mid-run and asked via its mailbox: 'Should the audit include test/ files?' Answer it so the worker continues.",
+		"context": ["You are the root orchestrator.", "Mid-scenario event: the delegate call returned AWAITING_ANSWER — the worker is blocked on this question.", "The decision was already made upstream: the answer is 'no, src/ only'."],
+		"trigger": "The mailbox shows a pending question from facts-1."
+	},
+	"expect": [
+		{ "tag": "tool:delegate-mailbox", "dimension": "tool-choice" },
+		{ "tag": "verify:report-evidence", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "retry:respawn", "dimension": "no-forbidden" }
+	]
+}

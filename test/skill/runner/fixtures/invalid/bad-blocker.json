@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"id": "S95",
+	"title": "Invalid fixture — blocker must be a boolean",
+	"blocker": "yes",
+	"input": { "task": "t", "context": [], "trigger": "t" },
+	"expect": [],
+	"forbid": []
+}

@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"id": "S08",
+	"title": "report status fail → honest completion",
+	"blocker": false,
+	"input": {
+		"task": "Collect and process worker audit-1's report on the docs audit.",
+		"context": ["You are the root orchestrator.", "Mid-scenario event: audit-1's report file exists, parses cleanly, and carries status \"fail\" with findings and file:line evidence — the worker ran and reported honestly.", "The findings are real input for the next round, not a spawn failure."],
+		"trigger": "You read the report file and see status \"fail\"."
+	},
+	"expect": [
+		{ "tag": "report:status-fail-honored", "dimension": "recovery" },
+		{ "tag": "verify:report-evidence", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "retry:respawn", "dimension": "no-forbidden" },
+		{ "tag": "turn:escalate-tool-error", "dimension": "no-forbidden" }
+	]
+}

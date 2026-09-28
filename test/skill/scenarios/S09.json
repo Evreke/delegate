@@ -1,0 +1,21 @@
+{
+	"version": 1,
+	"id": "S09",
+	"title": "two-tier → shared children",
+	"blocker": false,
+	"input": {
+		"task": "As worker-orchestrator, split the migration epic: spawn three file-slice workers under you, each owning a disjoint src/ subtree, then hand control back until their reports land.",
+		"context": ["You are a worker inside your own worktree workspace (sub-orchestrator): your brief says so and pwd is under ~/.herdr/worktrees/.", "Worktree placement from your session is rejected by transport guards; children must share your checkout with disjoint file lists.", "Your own watcher wakes you as each child report lands, exactly as your orchestrator's watcher does for you."],
+		"trigger": "Your brief instructs: build the fleet, then end the turn right after the fleet is out."
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "mode:shared", "dimension": "topology" },
+		{ "tag": "turn:end-after-fleet", "dimension": "topology" },
+		{ "tag": "brief:file-first", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "mode:worktree", "dimension": "no-forbidden" },
+		{ "tag": "turn:end-idle", "dimension": "no-forbidden" }
+	]
+}

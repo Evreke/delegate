@@ -1,0 +1,20 @@
+{
+	"version": 1,
+	"id": "S02",
+	"title": "multi ticket → isolated fan-out + early release",
+	"blocker": false,
+	"input": {
+		"task": "Land three independent tickets in parallel: (T1) add a --dry-run flag to src/swarm/cli.ts, (T2) fix the broken table in EXAMPLES.md, (T3) add unit tests for src/util/time.ts. No ticket touches another ticket's files.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "The tickets are independent: separate outcomes, disjoint files, no coordination needed.", "You want your turn back as soon as each worker is proven started, not when it settles."],
+		"trigger": "User message: 'Run all three tickets in parallel.'"
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "topology:fan-out", "dimension": "topology" },
+		{ "tag": "mode:worktree", "dimension": "topology" },
+		{ "tag": "release:on-started", "dimension": "tool-choice" }
+	],
+	"forbid": [
+		{ "tag": "mode:shared", "dimension": "no-forbidden" }
+	]
+}

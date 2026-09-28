@@ -12,6 +12,8 @@
  *      survives a spotlight dim (sel+dim combine).
  *   I4 C8 — edges into spotlighted nodes carry `data-hot` (the amber path
  *      cue); non-touching edges do not.
+ *   I7 R4 — the canvas renders ONLY `spawned_by` edges (collected/retired
+ *      links stay in the model, never painted).
  *   I5 R2 — canvas.css pins the two-color system: accent selection stroke,
  *      amber attention stroke+glow, 0.35 dim, hot edges, hover affordance.
  *   I6 R1/R2 — app wiring: a select-node dispatch re-renders the canvas with
@@ -186,6 +188,9 @@ function fixture() {
 		edges.push({ kind: "spawned_by", from: `m1-lead-${i}`, to: sessionIdFor(LEAD(i)) });
 		for (const j of [1, 2]) edges.push({ kind: "spawned_by", from: sessionIdFor(WORK(i, j)), to: sessionIdFor(LEAD(i)) });
 	}
+	// R4 fixture: lifecycle links the wire carries but the canvas must not draw.
+	edges.push({ kind: "collected", from: sessionIdFor(WORK(1, 1)), to: "m1-lead-1" });
+	edges.push({ kind: "retired", from: sessionIdFor(WORK(1, 2)), to: "m1-lead-1" });
 	const events = [
 		{ seq: 1, kind: "ask", worker: "w2-1", task: "m1-lead-2", payload: { question: "retry?" } },
 	];
@@ -324,6 +329,16 @@ async function main(): Promise<void> {
 		const dimmed = byAttr(shell, "data-graph-node").filter((g: any) => g.attributes["data-dimmed"] === "1");
 		check("I6.2 a select-node leaves every other node at full opacity (nothing dims)", dimmed.length === 0, JSON.stringify(dimmed.length));
 		app.close();
+	}
+
+	// -- I7 — R4: only the spawn tree is drawn --------------------------------
+	{
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(model, layout, root, doc, {});
+		const kinds = byAttr(root, "data-edge").map((e: any) => e.attributes["data-edge-kind"]);
+		check("I7.1 the canvas renders ONLY spawned_by edges (collected/retired links stay in the model)", kinds.length > 0 && kinds.every((k: string) => k === "spawned_by"), JSON.stringify(kinds));
+		check("I7.2 the layout still carries the full wire edge set (the filter is a view concern, not a model loss)", layout.edges.some((e: any) => e.kind === "collected") && layout.edges.some((e: any) => e.kind === "retired"));
 	}
 
 	console.log(failures === 0 ? "\nALL CANVAS-INTENT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

@@ -1,7 +1,13 @@
 # How to run the skill-quality harness (L0–L4 + Q)
 
 The harness measures `skills/delegate/` (SKILL.md + REFERENCE.md) against the
-real tool-contract fixture `test/skill/tool-contract.json`. All commands run
+real tool-contract fixture `test/skill/tool-contract.json` — **schema v2**
+(issue #123): every claim carries `appliesTo: "skill-text" | "tool-only"`.
+Skill-text claims (truths the judgment-only skill legitimately restates) are
+the scored surface — their weights sum to exactly 100. Tool-only claims
+(pure tool mechanics the skill deliberately never repeats, e.g.
+`release-default`) stay documented with source/weight/keywords but are
+excluded from L1 and L3 scoring. All commands run
 from the repo root. Thresholds and weights live in ONE constants module:
 `test/skill/quality/constants.ts` (L1 bar, L4 budgets, Q weights, bands);
 the L2 pass bar (70) lives in the stage-1 rubric `test/skill/runner/rubric.ts`
@@ -12,7 +18,7 @@ and is re-exported from the constants module for one-stop discovery.
 | Layer | What it measures | Command |
 |---|---|---|
 | L0 | static pins on the skill text (issue #110 minimums) | `timeout 30 bun test/skill-l0-check.ts` |
-| L1 | alignment of the skill text to the tool-contract fixture (0–100; blocker = weight ≥ 10 claim at 0) | `timeout 30 bun test/skill/l1/score.ts score --fixture test/skill/tool-contract.json --skill-dir skills/delegate` |
+| L1 | alignment of the skill text to the fixture's SKILL-TEXT claims (fixture v2 scope filter — tool-only claims are documented, never scored; 0–100; blocker = weight ≥ 10 claim at 0) | `timeout 30 bun test/skill/l1/score.ts score --fixture test/skill/tool-contract.json --skill-dir skills/delegate` |
 | L2 | scenario set S01–S12 scored against a static text projection of the skill (live replay traces remain the behavioral layer) | part of the report builder below |
 | L3 | before/after regression delta over the fixture's blocker claims (`--before` is a git rev; default `629a030^`, the pre-rewrite skill) | part of the report builder below |
 | L4 | size budgets per file (bytes + lines) | part of the report builder below |
@@ -47,8 +53,13 @@ in the report artifact.
   or L0 require-pin no longer matches, re-derive that anchor/pin in the same
   commit (`test/skill/quality/l2-text.ts` / `test/skill/l0/pins.ts` — each
   row cites its source). The quality-check tripwire fails CI otherwise.
-- **Fixture edit** → weights must keep summing to 100; keyword liveness is
-  case-insensitive substring (same rule as the stage-1 L3 delta).
+- **Fixture edit** → schema v2: every claim carries
+  `appliesTo: "skill-text" | "tool-only"`; skill-text weights must keep
+  summing to exactly 100 (tool-only weights are documentation only); every
+  skill-text keyword must be verbatim-present in the merged skill text —
+  keyword liveness is case-insensitive substring (same rule as the stage-1
+  L3 delta; the loader in `test/skill/l1/score.ts` rejects v1 fixtures,
+  unknown scopes and non-100 skill-text sums).
 - **Budgets/thresholds** → `test/skill/quality/constants.ts` only.
 
 ## Known limitations (by design)

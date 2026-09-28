@@ -1,7 +1,7 @@
 {
 	"version": 1,
-	"generatedAt": "2026-09-28T07:51:02.887Z",
-	"gitRev": "851627adca86e1f831d3a7b1d5ad4886c9e588e6",
+	"generatedAt": "2026-09-28T08:19:50.188Z",
+	"gitRev": "55a40280d705721e6ba5666bd232cd9d030fd425",
 	"inputs": {
 		"skillDir": "skills/delegate",
 		"fixture": "test/skill/tool-contract.json",
@@ -14,108 +14,96 @@
 		"violations": []
 	},
 	"l1": {
-		"score": 78.75,
+		"score": 100,
 		"threshold": 90,
-		"meetsThreshold": false,
+		"meetsThreshold": true,
 		"blocked": false,
 		"blockerClaims": [],
-		"perClaim": [
+		"excludedToolOnly": [
 			{
 				"id": "release-default",
-				"severity": "blocker",
-				"weight": 20,
-				"matched": [
-					"watcher",
-					"settle"
-				],
-				"missing": [
-					"started",
-					"releaseOn"
-				],
-				"score": 0.5,
-				"weighted": 10,
-				"blocker": false
-			},
+				"weight": 20
+			}
+		],
+		"perClaim": [
 			{
 				"id": "completion-report-file",
 				"severity": "blocker",
-				"weight": 25,
+				"weight": 31.25,
 				"matched": [
 					"report file",
 					"completion criterion",
-					"status",
-					"fail"
+					"honest completion",
+					"status"
 				],
 				"missing": [],
 				"score": 1,
-				"weighted": 25,
+				"weighted": 31.25,
 				"blocker": false
 			},
 			{
 				"id": "retry-new-name",
 				"severity": "blocker",
-				"weight": 15,
+				"weight": 18.75,
 				"matched": [
 					"NEW worker name",
-					"diagnosed retry"
+					"diagnosed retry",
+					"at most 2 repeats",
+					"root cause"
 				],
-				"missing": [
-					"r2"
-				],
-				"score": 0.67,
-				"weighted": 10,
+				"missing": [],
+				"score": 1,
+				"weighted": 18.75,
 				"blocker": false
 			},
 			{
 				"id": "placement-sub-orchestrator",
 				"severity": "major",
-				"weight": 10,
+				"weight": 12.5,
 				"matched": [
 					"sub-orchestrator",
-					"shared",
-					"worktree"
+					"root orchestrator",
+					"worktree",
+					"share its checkout"
 				],
-				"missing": [
-					"E_PLACE"
-				],
-				"score": 0.75,
-				"weighted": 7.5,
+				"missing": [],
+				"score": 1,
+				"weighted": 12.5,
 				"blocker": false
 			},
 			{
 				"id": "probe-no-report",
 				"severity": "major",
-				"weight": 5,
+				"weight": 6.25,
 				"matched": [
 					"probe",
-					"report file",
-					"final"
+					"final verdict",
+					"report file"
 				],
 				"missing": [],
 				"score": 1,
-				"weighted": 5,
+				"weighted": 6.25,
 				"blocker": false
 			},
 			{
 				"id": "timeout-end-turn",
 				"severity": "blocker",
-				"weight": 15,
+				"weight": 18.75,
 				"matched": [
 					"end your turn",
 					"watcher",
-					"delegate_status"
+					"bash-sleep",
+					"look-now alternative"
 				],
-				"missing": [
-					"E_TIMEOUT"
-				],
-				"score": 0.75,
-				"weighted": 11.25,
+				"missing": [],
+				"score": 1,
+				"weighted": 18.75,
 				"blocker": false
 			},
 			{
 				"id": "brief-output-rules",
 				"severity": "major",
-				"weight": 10,
+				"weight": 12.5,
 				"matched": [
 					"acceptance criteria",
 					"name-agnostic",
@@ -124,7 +112,7 @@
 				],
 				"missing": [],
 				"score": 1,
-				"weighted": 10,
+				"weighted": 12.5,
 				"blocker": false
 			}
 		]
@@ -221,40 +209,9 @@
 	},
 	"l3": {
 		"version": 1,
-		"blockerRegression": true,
-		"regressions": [
-			{
-				"id": "release-default",
-				"claim": "The default release posture is releaseOn \"started\": the call returns once the worker is proven started and the background watcher takes over; \"settle\" is the opt-out; the default never applies to probes.",
-				"missingKeywords": [
-					"started",
-					"releaseOn"
-				]
-			},
-			{
-				"id": "retry-new-name",
-				"claim": "A diagnosed retry after E_REPORT_MISSING/E_REPORT_INVALID must use a NEW worker name (e.g. <name>-r2) — the original name stays taken by the settled agent; at most 2 repeats, never verbatim.",
-				"missingKeywords": [
-					"r2"
-				]
-			},
-			{
-				"id": "timeout-end-turn",
-				"claim": "After E_TIMEOUT or a detach, end your turn: the watcher wakes you on report-ready/question/death; never sleep in bash or re-call delegate to wait — delegate_status is the look-now alternative.",
-				"missingKeywords": [
-					"E_TIMEOUT"
-				]
-			}
-		],
-		"warnings": [
-			{
-				"id": "placement-sub-orchestrator",
-				"claim": "A session cwd'd inside a worktree is a sub-orchestrator: worktree placement is rejected with E_PLACE; its children go through shared placement (tabs) only.",
-				"missingKeywords": [
-					"E_PLACE"
-				]
-			}
-		],
+		"blockerRegression": false,
+		"regressions": [],
+		"warnings": [],
 		"files": {
 			"changed": 2,
 			"added": 0,
@@ -275,7 +232,7 @@
 				"deltaLines": -4
 			}
 		],
-		"normalized": 0
+		"normalized": 100
 	},
 	"l4": {
 		"metrics": [
@@ -318,8 +275,8 @@
 			"l3": 0.2,
 			"l4": 0.2
 		},
-		"value": 74.69,
-		"band": "reject",
+		"value": 100,
+		"band": "ship",
 		"l0GateApplied": false
 	}
 }

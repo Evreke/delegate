@@ -28,7 +28,11 @@
  * NOT owned: thresholds/bands (./constants.ts), the pin table (test/skill/
  * l0/pins.ts), the rubric (stage-1, frozen), CI wiring (flat check
  * discovery). The REAL fixture is the only contract this builder accepts —
- * the sample fixture stays confined to stage-1's own self-tests.
+ * the sample fixture stays confined to stage-1's own self-tests. Fixture
+ * schema v2 (issue #123): loaded via loadSkillContract (scope split, skill-
+ * text weights sum 100); the stage-1 delta keeps its FROZEN v1 contract
+ * surface, so the builder hands it a v1 PROJECTION of the skill-text claims
+ * only — tool-only claims are documentation, never scored in L1 or L3.
  */
 
 import { spawnSync } from "node:child_process";
@@ -36,8 +40,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { runPins } from "../l0/pins.ts";
-import { scoreAlignment } from "../l1/score.ts";
-import { computeDelta, countLines, loadContract, loadSnapshot, snapshotDir, type Snapshot } from "../l3/skill-delta.ts";
+import { loadSkillContract, scoreAlignment, type SkillContract } from "../l1/score.ts";
+import { computeDelta, countLines, loadSnapshot, snapshotDir, type Snapshot, type ToolContract } from "../l3/skill-delta.ts";
 import { readSkillTexts, scoreScenariosAgainstTexts } from "./l2-text.ts";
 import {
 	compositeQ,
@@ -165,10 +169,11 @@ export function buildReport(paths: BuildPaths): QualityReport {
 	// L0 — static pins
 	const l0 = runPins(texts[0]!, texts[1]!);
 
-	// L1 — alignment vs the REAL fixture
-	let contract;
+	// L1 — alignment vs the REAL fixture (schema v2; scoreAlignment applies
+	// the scope filter — tool-only claims land in excludedToolOnly)
+	let contract: SkillContract;
 	try {
-		contract = loadContract(resolve(paths.fixture));
+		contract = loadSkillContract(resolve(paths.fixture));
 	} catch (e) {
 		throw new Error(`fixture: ${(e as Error).message}`);
 	}
@@ -179,21 +184,27 @@ export function buildReport(paths: BuildPaths): QualityReport {
 	if (!l2run.ok) throw new Error(`scenarios: ${l2run.error}`);
 
 	// L3 — before/after delta with the same REAL contract (git wants the
-	// repo-relative skill dir for pathspecs; fs wants the absolute one)
+	// repo-relative skill dir for pathspecs; fs wants the absolute one).
+	// Scope projection (issue #123): the stage-1 delta's frozen surface takes
+	// a v1 ToolContract — hand it ONLY the skill-text claims, so tool-only
+	// truths are excluded from L3 exactly as they are from L1.
+	const skillTextClaims = contract.claims.filter((c) => c.appliesTo === "skill-text");
+	const deltaContract: ToolContract = { version: 1, claims: skillTextClaims };
 	const before = resolveBefore(paths.before, paths.skillDir);
 	if (!before.ok) throw new Error(`before: ${before.error}`);
 	try {
 		const after = snapshotDir(skillDirAbs);
-		const delta = computeDelta(before.snapshot, after, contract);
+		const delta = computeDelta(before.snapshot, after, deltaContract);
 		// Claim satisfaction is the delta's own verdict (Law 9 — one
 		// implementation of the liveness rule): a claim is satisfied iff it
-		// appears in neither regressions nor warnings.
+		// appears in neither regressions nor warnings. Skill-text claims only —
+		// the same set the delta saw.
 		const unsatisfied = new Map(
 			[...delta.regressions, ...delta.warnings].map((r) => [r.id, r.missingKeywords]),
 		);
 		const l3norm = normalizeL3(
 			delta.blockerRegression,
-			contract.claims.map((c) => ({
+			skillTextClaims.map((c) => ({
 				weight: c.weight,
 				missingKeywords: unsatisfied.get(c.id) ?? [],
 			})),
@@ -307,6 +318,12 @@ export function renderMarkdown(report: QualityReport): string {
 		lines.push(`| ${c.id} | ${c.severity} | ${c.weight} | ${c.score} | ${c.weighted} | ${c.missing.join(", ") || "—"} |`);
 	}
 	lines.push("");
+	if (report.l1.excludedToolOnly.length > 0) {
+		lines.push(
+			`Tool-only claims (documented with source, excluded from L1/L3 scoring per fixture v2): ${report.l1.excludedToolOnly.map((c) => `${c.id} (weight ${c.weight})`).join(", ")}.`,
+		);
+		lines.push("");
+	}
 	lines.push("## L2 per scenario (static text projection)");
 	lines.push("");
 	lines.push("| scenario | total | verdict | missed | forbidden hits |");

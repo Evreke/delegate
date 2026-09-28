@@ -10,6 +10,26 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Skill-quality harness, stage 2 — L0/L1/L4/Q wired to the real skill and
+  fixture (#110 #111 #115 #116 #117).** The stage-1 scaffold now scores the
+  real `skills/delegate` texts: L0 is a 29-pin static gate over SKILL.md +
+  REFERENCE.md (flat `test/skill-l0-check.ts`, auto-discovered by
+  `test/run-checks.sh` — L0 on CI for skill paths); L1 scores the skill text
+  against the real tool-contract fixture (`test/skill/l1/score.ts`, bar 90,
+  weight-≥-10-at-0 blocker rule); L2 projects the scenario set S01–S12 onto
+  the skill text through a tested tag→anchor table (contextual forbid tags
+  are documented static dead zones — live replay stays behavioral); L3 runs
+  the real before/after delta (default before `629a030^`) with the same
+  fixture; L4 pins size budgets; and the composite
+  `Q = 0.25·L1 + 0.35·L2 + 0.20·L3_norm + 0.20·L4_norm` (L0 fail ⇒ 0; bands
+  ≥90 ship / 80–89 debt / else reject) lands in the committed report
+  artifact `test/skill/quality-report.{json,md}` (regenerate with
+  `bun test/skill/quality/build.ts`; how-to: `test/skill/HOW-TO.md`).
+  Current verdict, recorded not gated: L0 pass, L1 78.75 (bar 90), L2 100,
+  L3 blocker regression (norm 0 — the rewrite dropped fixture vocabulary
+  `started`/`releaseOn`/`r2`/`E_PLACE`/`E_TIMEOUT` the pre-rewrite skill
+  carried), L4 100 → Q 74.69 reject.
+
 - **Dashboard brief/report tabs serve the real exchange files (#87).** The
   worker-detail panel's brief/report tabs now fetch the worker's `brief-<name>.md`
   and `report-<name>.json` via two additive read-only routes —

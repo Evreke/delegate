@@ -1,0 +1,81 @@
+{
+	"version": 1,
+	"claims": [
+		{
+			"id": "release-default",
+			"claim": "The skill keeps the release-on-started default posture: the orchestrator's spawn call may detach once the worker is proven started and running, and the watcher wakes it when the report lands.",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"Esc detaches",
+				"the worker keeps running"
+			]
+		},
+		{
+			"id": "completion-report-file",
+			"claim": "Completion is judged by the report file, never by worker status: the report file is the completion criterion, not `status: done`.",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"the report file is the completion criterion",
+				"status: done"
+			]
+		},
+		{
+			"id": "retry-new-name",
+			"claim": "A failed worker is retried only via a diagnosed retry — a new brief naming the wrong path taken, the root cause, and the fix shape — never a verbatim retry.",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"diagnosed retry",
+				"Never retry verbatim"
+			]
+		},
+		{
+			"id": "placement-sub-orchestrator",
+			"claim": "A sub-orchestrator running inside a worktree must never create or remove worktrees; it places its workers inside its own workspace (tabs, or `mode: \"shared\"` with the tool).",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/REFERENCE.md",
+			"keywords": [
+				"must never call `worktree create`",
+				"sub-orchestrator"
+			]
+		},
+		{
+			"id": "probe-no-report",
+			"claim": "Smoke-gate probes never write a report file: the probe's console reply (OUTPUT: OK) is its final verdict.",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"probes never write a report file"
+			]
+		},
+		{
+			"id": "timeout-end-turn",
+			"claim": "On E_TIMEOUT the orchestrator ends its turn and lets the watcher wake it; it never re-calls the delegate tool just to keep waiting.",
+			"severity": "blocker",
+			"weight": 10,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"end your turn — the watcher wakes you",
+				"Never re-call `delegate` to wait"
+			]
+		},
+		{
+			"id": "brief-output-rules",
+			"claim": "A brief's OUTPUT section carries acceptance criteria only — the tool's fixed prompt carries the report path and shape, and report JSON is never pasted into a brief.",
+			"severity": "major",
+			"weight": 6,
+			"source": "skills/delegate/SKILL.md",
+			"keywords": [
+				"acceptance criteria only",
+				"never paste report JSON"
+			]
+		}
+	]
+}

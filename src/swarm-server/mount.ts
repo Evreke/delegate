@@ -11,15 +11,24 @@
  * replace (a double module load cannot run two servers for one session).
  *
  * Since #51 (§4.2.4) the mount ALSO generates the operator token (surfaced
- * on stderr ONLY, Law 11) and wires the mutation seam (the shared swarm
- * mailbox core over the read-model's manifestSource), so the server's POST
- * routes reach the SAME journaling writer path the delegate_mailbox tool uses.
+ * ONLY through the announce seam, never the journal or a response body) and
+ * wires the mutation seam (the shared swarm mailbox core over the read-
+ * model's manifestSource), so the server's POST routes reach the SAME
+ * journaling writer path the delegate_mailbox tool uses.
+ *
+ * Since the startup-noise round every operator-facing event — dashboard
+ * link, operator token, advisories — goes through deps.announce (default
+ * the historical stderr JSON emitter; the composition root passes
+ * createAnnounceSink(ctx.ui, ctx.hasUI) so UI sessions get notify rows and
+ * ZERO stderr bytes — ./announce.ts). The token itself is the SHARED
+ * per-machine token (./token-store.ts) so a link announced in any session
+ * authenticates against the serving session's server.
  *
  * ADVISORY BY CONTRACT (Law 8, §4.2): every failure path — disabled config,
- * bind failure, journal-reader failure — is logged as one structured JSON
- * stderr line and returns null (or a degraded-but-live handle); mountSwarmServer
- * NEVER throws and NEVER blocks session start, spawn, or collect (proven by
- * test/swarm-server-fault-check.ts).
+ * bind failure, journal-reader failure — is logged as one structured event
+ * through the announce sink and returns null (or a degraded-but-live
+ * handle); mountSwarmServer NEVER throws and NEVER blocks session start,
+ * spawn, or collect (proven by test/swarm-server-fault-check.ts).
  *
  * PORT POLICY: the configured port (default 7331, config key
  * swarm.server.port; 0 = OS-assigned) is a REQUEST, not a requirement — on
@@ -41,12 +50,13 @@
  */
 
 import { resolveSwarmServerConfig } from "./config.ts";
-import { createRouteTable, defaultUsageSource, SWARM_HTTP_PROTOCOL, type SwarmServerDeps } from "./server.ts";
+import { createRouteTable, defaultUsageSource, SWARM_HTTP_PROTOCOL, probeDelegatePrimary, type SwarmServerDeps } from "./server.ts";
 import { startHttp1Server, SWARM_SERVER_BIND_HOST, type Http1ServerHandle } from "./http1.ts";
-import { PRIMARY_WATCH_PROBE_TIMEOUT_MS, startPrimaryWatch, type PrimaryWatchHandle } from "./primary-watch.ts";
-import { dashboardLinkFor, dashboardUrlFor, logDashboard } from "./dashboard-link.ts";
+import { startPrimaryWatch, type PrimaryWatchHandle } from "./primary-watch.ts";
+import { dashboardLinkFor, dashboardUrlFor } from "./dashboard-link.ts";
+import { stderrAnnounceSink, type AnnounceSink } from "./announce.ts";
 import { openSessionJournal } from "./journal-session.ts";
-import { generateOperatorToken } from "./auth.ts";
+import { sharedOperatorToken } from "./token-store.ts";
 import { type JournalReader } from "../swarm/journal-read.ts";
 import { resolveSwarmStorage, type SwarmStorageConfig } from "../swarm/storage.ts";
 import { activeBackendName, manifestSource } from "../swarm/snapshot.ts";
@@ -85,9 +95,16 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	/** Manifest source override (the mutation ownership gate's input seam;
 	 *  default the read-model's manifestSource — Law 13). */
 	manifests?: SwarmManifestStore;
-	/** Operator-token override (tests); default a fresh random token surfaced
-	 *  on stderr. */
+	/** Operator-token override (tests/e2e); default the SHARED per-machine
+	 *  token (./token-store.ts — every session's announced link must
+	 *  authenticate against the serving session's server). */
 	operatorToken?: string;
+	/** The announcement seam (the startup-noise round): every operator-facing
+	 *  event — dashboard link, operator token, advisories — goes through this
+	 *  sink. Default the historical stderr JSON emitter (headless/machines);
+	 *  the composition root passes createAnnounceSink(ctx.ui, ctx.hasUI) so a
+	 *  UI session gets tidy notify rows and ZERO stderr bytes. */
+	announce?: AnnounceSink;
 	/** The process environment (config + test tiers). */
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
@@ -110,22 +127,13 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	primaryWatch?: { intervalMs?: number; maxIntervalMs?: number };
 }
 
-/** One structured stderr line (level:warn, machine-readable). */
-function logAdvisory(event: string, fields: Record<string, unknown>): void {
+/** One structured warn event through the resolved sink (machine-readable
+ *  in headless mode; a warning notify row in UI sessions). */
+function logAdvisory(announce: AnnounceSink, event: string, fields: Record<string, unknown>): void {
 	try {
-		process.stderr.write(`${JSON.stringify({ level: "warn", component: "swarm-server", event, ...fields })}\n`);
+		announce({ level: "warn", event, ...fields });
 	} catch {
-		// stderr itself is advisory
-	}
-}
-
-/** Surface the operator token on stderr — the session UI is its ONLY channel
- *  (Law 11: never the journal, a response body or a log FILE). One line. */
-function logOperatorToken(token: string): void {
-	try {
-		process.stderr.write(`${JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token })}\n`);
-	} catch {
-		// stderr itself is advisory
+		// announcements are advisory (Law 8)
 	}
 }
 
@@ -133,25 +141,6 @@ function logOperatorToken(token: string): void {
  * The canonical dashboard URL/fragment-link spelling lives in
  * ./dashboard-link.ts (issue #65 items 1–2, Law 9 — ONE spelling).
  */
-
-/**
- * Is the loopback process on `port` a delegate swarm server?
- * <p>
- * FUNCTION_CONTRACT: Input — port, timeoutMs. Output — true iff
- * `/api/version` answers 200 with `protocol: "swarm-http/1"` within the
- * deadline (a foreign or dead occupant answers false). Total; never throws.
- */
-async function probeDelegatePrimary(port: number, timeoutMs: number = PRIMARY_WATCH_PROBE_TIMEOUT_MS): Promise<boolean> {
-	try {
-		const url = "http://127.0.0.1:" + String(port) + "/api/version";
-		const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-		if (!res.ok) return false;
-		const body = (await res.json()) as { protocol?: unknown };
-		return body !== null && typeof body === "object" && body.protocol === SWARM_HTTP_PROTOCOL;
-	} catch {
-		return false;
-	}
-}
 
 function mountRegistry(): Map<string, SwarmServerHandle> {
 	const g = globalThis as unknown as Record<string, unknown>;
@@ -187,28 +176,38 @@ function mountKey(sessionFile: string | undefined): string {
  */
 export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<SwarmServerHandle | null> {
 	const env = deps.env ?? process.env;
+	const announce = deps.announce ?? stderrAnnounceSink;
 	let cfg;
 	try {
 		cfg = resolveSwarmServerConfig(env);
 	} catch (err) {
-		logAdvisory("config-failed", { error: String((err as Error).message ?? err) });
+		logAdvisory(announce, "config-failed", { error: String((err as Error).message ?? err) });
 		return null;
 	}
-	for (const warning of cfg.warnings) logAdvisory("config-warning", { warning });
+	for (const warning of cfg.warnings) logAdvisory(announce, "config-warning", { warning });
 	if (!cfg.enabled) return null;
 
 	const key = mountKey(deps.sessionFile);
 	const registry = mountRegistry();
 	const existing = registry.get(key);
 	if (existing) {
-		logAdvisory("mount-refused", { key, port: existing.port, reason: "session already mounted — returning the first instance's handle (Law 3)" });
+		logAdvisory(announce, "mount-refused", { key, port: existing.port, reason: "session already mounted — returning the first instance's handle (Law 3)" });
 		return existing;
 	}
 
-	// #51 operator token: fresh per mount. Generated here so the route table
-	// can gate on it; SURFACED on stderr only once the bind succeeds below
-	// (an unusable token for a failed mount is never announced).
-	const operatorToken = deps.operatorToken ?? generateOperatorToken();
+	// #51 operator token, now the SHARED per-machine token (token-store.ts):
+	// every session's announced link must authenticate against the session
+	// that serves the fleet — a per-mount random token made every secondary
+	// session's announced link dead. Generated here so the route table can
+	// gate on it; SURFACED through the announce seam only once the bind
+	// succeeds below (an unusable token for a failed mount is never announced).
+	const shared = deps.operatorToken
+		? { token: deps.operatorToken, persisted: true, warning: undefined }
+		: sharedOperatorToken();
+	const operatorToken = shared.token;
+	if (shared.warning) {
+		logAdvisory(announce, shared.warning, { reason: "the shared token store is unwritable — the announced link works only this session" });
+	}
 
 	const listen =
 		deps.listen ??
@@ -234,7 +233,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		const factory = deps.journalFactory ?? openSessionJournal;
 		journal = factory(storage.dbPath);
 	} catch (err) {
-		logAdvisory("journal-reader-failed", { error: String((err as Error).message ?? err) });
+		logAdvisory(announce, "journal-reader-failed", { error: String((err as Error).message ?? err) });
 		journal = undefined;
 	}
 	const backendName = deps.transport?.backendName?.() ?? activeBackendName();
@@ -291,14 +290,14 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	let dashboardUrl = dashboardUrlFor(cfg.port);
 	const emitDashboard = (port: number): void => {
 		dashboardUrl = dashboardUrlFor(port);
-		logDashboard(dashboardUrl, dashboardLinkFor(port, operatorToken));
+		announce({ level: "info", event: "dashboard", url: dashboardUrl, link: dashboardLinkFor(port, operatorToken), role });
 	};
 
 	if (cfg.port === 0) {
 		try {
 			bound = await listen(0);
 		} catch (err) {
-			logAdvisory("bind-failed", { port: 0, code: (err as NodeJS.ErrnoException).code ?? String(err) });
+			logAdvisory(announce, "bind-failed", { port: 0, code: (err as NodeJS.ErrnoException).code ?? String(err) });
 			return null;
 		}
 	} else {
@@ -307,12 +306,12 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code !== "EADDRINUSE") {
-				logAdvisory("bind-failed", { port: cfg.port, code: code ?? String(err) });
+				logAdvisory(announce, "bind-failed", { port: cfg.port, code: code ?? String(err) });
 				return null;
 			}
 			if (await probePrimary(cfg.port)) {
 				role = "secondary";
-				logAdvisory("secondary-mount", {
+				logAdvisory(announce, "secondary-mount", {
 					port: cfg.port,
 					reason: "a delegate primary holds the configured port; this session mounts no listener (its fleets are served read-only through the primary — D1)",
 				});
@@ -320,9 +319,9 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 				try {
 					bound = await listen(0);
 					role = "fallback";
-					logAdvisory("port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
+					logAdvisory(announce, "port-substituted", { requested: cfg.port, bound: bound.port, reason: "EADDRINUSE — bound an OS-assigned port instead" });
 				} catch (err2) {
-					logAdvisory("bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
+					logAdvisory(announce, "bind-failed", { port: 0, code: (err2 as NodeJS.ErrnoException).code ?? String(err2) });
 					return null;
 				}
 			}
@@ -338,7 +337,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 					// names the canonical port (session churn never moves it).
 					if (dashboardUrl !== dashboardUrlFor(promoted.port)) emitDashboard(promoted.port);
 				},
-				log: logAdvisory,
+				log: (event, fields) => logAdvisory(announce, event, fields),
 				intervalMs: deps.primaryWatch?.intervalMs,
 				maxIntervalMs: deps.primaryWatch?.maxIntervalMs,
 			});
@@ -346,11 +345,13 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	}
 
 	// Bound (or knowingly listenerless) — now (and only now) surface the token
-	// and the canonical dashboard link on the session's stderr. This is their
-	// ONLY channel (Law 11); the token rides in the fragment, never in the URL
-	// path/query. The link names the ACTUAL serving port when this session
-	// serves one, else the canonical primary port.
-	logOperatorToken(operatorToken);
+	// and the canonical dashboard link through the announce seam. This is their
+	// ONLY channel (never the journal, a response body or a log); the token
+	// rides in the fragment, never in the URL path/query. The link names the
+	// ACTUAL serving port when this session serves one, else the canonical
+	// primary port. In UI sessions the sink folds the token row into the
+	// dashboard row (the link carries it); headless keeps both JSON lines.
+	announce({ level: "info", event: "operator-token", token: operatorToken });
 	emitDashboard(bound ? bound.port : cfg.port);
 
 	const handle: SwarmServerHandle = {

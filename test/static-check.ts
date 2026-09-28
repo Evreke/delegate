@@ -1700,6 +1700,11 @@ export function scanCodeForServerDirectMailboxWrite(code: string): string[] {
 	const offenders: string[] = [];
 	for (const f of listTsFiles(resolve(ROOT, "src", "swarm-server"))) {
 		const rel = relative(ROOT, f).replaceAll("\\", "/");
+		// token-store.ts is EXEMPT by name: its writeFileSync persists the shared
+		// per-machine OPERATOR TOKEN (0600, the startup-noise round) — not a
+		// mailbox artifact; the pin's target is mailbox writes bypassing the
+		// journaling core.
+		if (rel.endsWith("token-store.ts")) continue;
 		const hits = scanCodeForServerDirectMailboxWrite(readFileSync(f, "utf8"));
 		if (hits.length > 0) offenders.push(`${rel} → ${hits.join(", ")}`);
 	}
@@ -1894,8 +1899,10 @@ function listDashboardAssets(root: string): string[] {
 
 // #65 token hygiene pin (Law 11, greppable): the token travels ONLY as an
 // Authorization header, in the `#t=` FRAGMENT and in the one structured
-// stderr line. No server module may build a `?token=`/`?t=` query URL, and
-// the dashboard link composer is the ONE place the fragment is spelled.
+// announce event (UI notify row in sessions, stderr JSON headless — the
+// startup-noise round). No server module may build a `?token=`/`?t=` query
+// URL, and the dashboard link composer is the ONE place the fragment is
+// spelled.
 {
 	const serverDir = resolve(ROOT, "src", "swarm-server");
 	const serverSources = readdirSync(serverDir)
@@ -1905,8 +1912,8 @@ function listDashboardAssets(root: string): string[] {
 	const mountSrc = readFileSync(resolve(serverDir, "mount.ts"), "utf8");
 	const linkSrc = readFileSync(resolve(serverDir, "dashboard-link.ts"), "utf8");
 	check(
-		"T1.29 the dashboard link has ONE spelling (token in the `#t=` fragment, never a query): dashboard-link.ts composes it, the mount emits it, and no server module builds a token query URL",
-		linkSrc.includes("#t=") && linkSrc.includes('event: "dashboard"') && mountSrc.includes("logDashboard") && queryToken.length === 0,
+		"T1.29 the dashboard link has ONE spelling (token in the `#t=` fragment, never a query): dashboard-link.ts composes it, the mount announces it through the sink (never a raw stderr write), and no server module builds a token query URL",
+		linkSrc.includes("#t=") && mountSrc.includes("announce({ level: \"info\", event: \"dashboard\"") && !mountSrc.includes("process.stderr.write") && queryToken.length === 0,
 		queryToken.join(", "),
 	);
 }

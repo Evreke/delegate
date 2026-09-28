@@ -712,7 +712,7 @@ a requirement: on `EADDRINUSE` the mount retries once on an OS-assigned port
 and logs the substitution. The server is **OFF by default**
 (`swarm.server.enabled: false`) and **advisory by contract** (Law 8): every
 startup failure — bad port, bound port, failing journal reader — is logged
-(one structured JSON stderr line) and never blocks session start, spawn, or
+(one structured event through the announce sink) and never blocks session start, spawn, or
 collect; pinned by `test/swarm-server-fault-check.ts`.
 
 The session holds ONE long-lived read-only journal reader
@@ -776,11 +776,18 @@ surface:
   owned worker (the pending q-file is archived).
 
 Both require `Authorization: Bearer <operator token>`; GET and the WS stream
-stay open. The token is generated fresh per mount (`crypto.randomBytes(32)`)
-and surfaced ONLY on the session's stderr as one structured `operator-token`
-line — never the journal, a response body or a log file (Law 11). Missing,
-malformed and wrong tokens yield the SAME uniform `401 E_SWARM_AUTH` refusal,
-compared in constant time.
+stay open. The token is the SHARED per-machine value: every mount
+read-or-creates `<agentDir>/delegate-swarm-token` (mode 0600;
+`src/swarm-server/token-store.ts`; rotation = delete the file), so a link
+announced in ANY session authenticates against the session that serves the
+fleet — the per-mount random token made every secondary session's announced
+link dead (the primary rejected its token). It is surfaced ONLY through the
+announce seam (`src/swarm-server/announce.ts`: a UI session gets one notify
+row, the token folded into the dashboard link's fragment; headless keeps one
+structured `operator-token` stderr line) — never the journal or a response
+body. An unwritable store degrades ADVISORY (Law 8) to a per-process random
+token with a warning. Missing, malformed and wrong tokens yield the SAME
+uniform `401 E_SWARM_AUTH` refusal, compared in constant time.
 
 Ownership is fail-closed (Law 8): the `<id>` resolves through the canonical
 `workerAudienceMatch` (src/watch-role.ts) over the read-model's manifest
@@ -946,13 +953,18 @@ the dashboard. The dashboard shell from #66 is unchanged; every contract
 below is additive to it (Law 7).
 
 **Widget-link surface (item 1).** The mount is the ONE spelling of the
-canonical link (Law 9): on a successful bind it emits exactly ONE structured
-stderr line `{event:"dashboard", url, link}` carrying the ACTUAL bound port —
-the EADDRINUSE fallback is reflected, never the configured port
-(`src/swarm-server/mount.ts` `dashboardUrlFor` / `dashboardLinkFor`; the
-bound port is never re-derived by a consumer). The session handle exposes
-`dashboardUrl` (tokenless) and `role` for programmatic consumers; the widget
-surface is the stderr line (the brief's "widget and/or mount line").
+canonical link (Law 9): on a successful bind it announces exactly ONE
+structured `dashboard` event `{url, link, role}` through the announce seam
+carrying the ACTUAL bound port — the EADDRINUSE fallback is reflected, never
+the configured port (`src/swarm-server/mount.ts` `dashboardUrlFor` /
+`dashboardLinkFor`; the bound port is never re-derived by a consumer). The
+presentation is the sink's (the startup-noise round): a UI session renders
+ONE tidy notify row — `Fleet dashboard: <link>`, suffixed "served by the
+primary session" when `role` is `secondary` — and writes ZERO stderr bytes;
+headless mode keeps the historical stderr JSON line. A `secondary-mount` is
+normal D1 operation: no UI row (the dashboard row's suffix carries the
+role), stderr JSON headless only. The session handle exposes `dashboardUrl`
+(tokenless) and `role` for programmatic consumers.
 
 **Fragment-token rule (item 2).** The link carries the session's operator
 token in the URL FRAGMENT: `http://127.0.0.1:<port>/#t=<token>`. A fragment

@@ -150,10 +150,13 @@ text is ephemeral — never journaled, never in the snapshot. The WS form
 `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` take a JSON
 body `{"text":"<non-empty>"}`.
 
-- **Token**: `Authorization: Bearer <operator token>`. The token is generated
-  fresh per mount (`crypto.randomBytes(32)`) and surfaced ONLY on the
-  session's stderr as one `operator-token` line — never the journal, a
-  response body or a log file. Missing, malformed and wrong tokens yield the
+- **Token**: `Authorization: Bearer <operator token>`. The token is the
+  SHARED per-machine value (read-or-created at
+  `<agentDir>/delegate-swarm-token`, mode 0600; rotation = delete the file)
+  and surfaced ONLY through the announce seam — one notify row in a UI
+  session (token folded into the dashboard link fragment), one
+  `operator-token` stderr line headless — never the journal or a response
+  body. Missing, malformed and wrong tokens yield the
   SAME `401 E_SWARM_AUTH` refusal, compared in constant time.
 - **Id spellings** (both accepted, additive since #62): `<id>` is EITHER the
   canonical **worker name** (v1) OR the **SwarmGraph SESSION node id** of the
@@ -218,12 +221,17 @@ content. A real read failure is `500 E_SWARM_IO`.
 
 ## 8. Dashboard access: link, fragment token, one server per machine (#65)
 
-**The dashboard link.** A successful mount emits exactly ONE structured
-stderr line `{component:"swarm-server",event:"dashboard",url,link}` whose
+**The dashboard link.** A successful mount announces exactly ONE structured
+`dashboard` event `{url, link, role}` through the announce seam: a UI
+session renders ONE tidy notify row (`Fleet dashboard: <link>`, suffixed
+"served by the primary session" for a secondary) and writes ZERO stderr
+bytes; headless mode keeps the historical stderr JSON line
+`{component:"swarm-server",event:"dashboard",url,link,role}` whose
 `url` names the **actual bound port** (an `EADDRINUSE` fallback is reflected,
 never the configured port) and whose `link` is
-`http://127.0.0.1:<bound-port>/#t=<operator token>`. The token is generated
-per mount; a secondary session's link names the canonical primary port.
+`http://127.0.0.1:<bound-port>/#t=<operator token>`. The token is shared
+per machine, so a secondary session's link authenticates against the
+primary's server.
 
 **The fragment token.** The operator token travels in the URL **fragment**
 (`#t=`), which a browser never sends to the server — so it can never appear

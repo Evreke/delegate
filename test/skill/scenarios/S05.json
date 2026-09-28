@@ -9,6 +9,7 @@
 		"trigger": "Tool result E_TIMEOUT arrives from the delegate call."
 	},
 	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
 		{ "tag": "turn:end", "dimension": "recovery" },
 		{ "tag": "verify:report-evidence", "dimension": "brief-rules" }
 	],

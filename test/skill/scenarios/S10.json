@@ -9,6 +9,7 @@
 		"trigger": "Tool result E_REPORT_MISSING arrives from the first delegate call."
 	},
 	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
 		{ "tag": "retry:diagnosed", "dimension": "recovery" },
 		{ "tag": "retry:new-name", "dimension": "recovery" },
 		{ "tag": "brief:diagnosed-retry", "dimension": "brief-rules" }

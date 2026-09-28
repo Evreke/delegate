@@ -1,0 +1,9 @@
+{
+	"version": 2,
+	"id": "S97",
+	"title": "Invalid fixture — version must be 1",
+	"blocker": false,
+	"input": { "task": "t", "context": [], "trigger": "t" },
+	"expect": [],
+	"forbid": []
+}

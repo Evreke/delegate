@@ -1,0 +1,10 @@
+{
+	"version": 1,
+	"scenario": "S01",
+	"steps": [
+		{ "tag": "plan:read-agents" },
+		{ "tag": "tool:read-only-survey" },
+		{ "tag": "rules:no-flat-test-files" },
+		{ "tag": "recovery:bounded-timeout" }
+	]
+}

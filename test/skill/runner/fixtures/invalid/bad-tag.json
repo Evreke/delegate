@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"id": "S99",
+	"title": "Invalid fixture — expect tag violates the tag grammar",
+	"blocker": false,
+	"input": { "task": "t", "context": [], "trigger": "t" },
+	"expect": [ { "tag": "Retry:Diagnosed", "dimension": "recovery" } ],
+	"forbid": []
+}

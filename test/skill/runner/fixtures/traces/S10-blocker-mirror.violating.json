@@ -1,0 +1,11 @@
+{
+	"version": 1,
+	"scenario": "S10",
+	"steps": [
+		{ "tag": "plan:read-issue" },
+		{ "tag": "tool:spawn-worker" },
+		{ "tag": "brief:write-report-contract" },
+		{ "tag": "retry:verbatim" },
+		{ "tag": "topology:owned-dir-only" }
+	]
+}

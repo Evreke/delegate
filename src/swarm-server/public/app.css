@@ -324,7 +324,13 @@ body {
 	cursor: pointer;
 	font-family: var(--font-mono);
 	font-size: var(--type-sm);
+	color: inherit;
 }
+
+/* the rows are real <button>s (#rail-ux F1): reset UA chrome, keep the look */
+button.rail-session, button.rail-task, button.rail-worker { background: transparent; border: none; width: 100%; text-align: left; }
+
+:focus-visible { outline: 1px solid var(--accent); }
 
 .rail-session:hover,
 .rail-task:hover {
@@ -377,14 +383,7 @@ body {
 	padding: 0 0 0 0.4rem;
 }
 
-.rail-worker {
-	display: flex;
-	gap: 0.35rem;
-	align-items: center;
-	color: var(--muted);
-	font-family: var(--font-mono);
-	font-size: var(--type-xs);
-}
+.rail-worker { display: flex; gap: 0.35rem; align-items: center; color: var(--muted); font-family: var(--font-mono); font-size: var(--type-xs); }
 
 .rail-empty {
 	color: var(--muted);

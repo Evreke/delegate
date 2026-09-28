@@ -23,7 +23,14 @@
  *   Q2  L1 scorer — synthetic contracts: full match → 100/meets/no blocker;
  *       fractional keyword match weighted exactly; weight ≥ 10 at score 0 →
  *       blocker; weight < 10 at 0 → reported but not blocking;
- *       case-insensitive matching; determinism (byte-identical reruns).
+ *       case-insensitive matching; determinism (byte-identical reruns);
+ *       fixture v2 SCOPE FILTER — tool-only claims are excluded from scoring
+ *       (listed with their documentation weight, never blocking, never
+ *       subtracting).
+ *   Q2b real fixture at schema v2 — loads via loadSkillContract; every claim
+ *       carries a valid appliesTo; skill-text weights sum to EXACTLY 100; at
+ *       least one tool-only claim stays documented; the loader rejects v1
+ *       fixtures, unknown scopes and non-100 skill-text weight sums.
  *   Q3  L2 projection — anchor tripwire on the REAL texts (every expect
  *       anchor fires, every forbid anchor silent, scenario mean 100); every
  *       non-dead-zone forbid anchor fires on its synthetic bad text; guard
@@ -37,10 +44,10 @@
  *       the Q line and per-claim/per-scenario tables.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { scoreAlignment } from "./skill/l1/score.ts";
-import type { ToolContract } from "./skill/l3/skill-delta.ts";
+import { loadSkillContract, scoreAlignment, type SkillContract } from "./skill/l1/score.ts";
 import {
 	firedTag,
 	scoreScenariosAgainstTexts,
@@ -101,9 +108,11 @@ check("Q1: L2 threshold re-exported from the stage-1 rubric is 70", L2_PASS_THRE
 // Q2 — L1 scorer on synthetic contracts
 // ---------------------------------------------------------------------------
 
-function contractOf(claims: Array<{ id: string; weight: number; keywords: string[] }>): ToolContract {
+function contractOf(
+	claims: Array<{ id: string; weight: number; keywords: string[]; appliesTo?: "skill-text" | "tool-only" }>,
+): SkillContract {
 	return {
-		version: 1,
+		version: 2,
 		claims: claims.map((c) => ({
 			id: c.id,
 			claim: `synthetic ${c.id}`,
@@ -111,6 +120,7 @@ function contractOf(claims: Array<{ id: string; weight: number; keywords: string
 			weight: c.weight,
 			source: "synthetic",
 			keywords: c.keywords,
+			appliesTo: c.appliesTo ?? "skill-text",
 		})),
 	};
 }
@@ -175,6 +185,76 @@ function contractOf(claims: Array<{ id: string; weight: number; keywords: string
 	const a = JSON.stringify(scoreAlignment(contractOf([{ id: "x", weight: 100, keywords: ["alpha"] }]), texts));
 	const b = JSON.stringify(scoreAlignment(contractOf([{ id: "x", weight: 100, keywords: ["alpha"] }]), texts));
 	check("Q2: determinism — repeated scoring byte-identical", a === b);
+
+	const scoped = scoreAlignment(
+		contractOf([
+			{ id: "scored", weight: 100, keywords: ["alpha"] },
+			{ id: "doc-only", weight: 40, keywords: ["nope", "nada"], appliesTo: "tool-only" },
+		]),
+		texts,
+	);
+	check(
+		"Q2: fixture v2 scope filter — tool-only claims excluded from scoring (zero-match neither subtracts nor blocks)",
+		scoped.score === 100 && !scoped.blocked && scoped.perClaim.length === 1 && scoped.perClaim[0]?.id === "scored",
+		JSON.stringify({ score: scoped.score, blocked: scoped.blocked, perClaim: scoped.perClaim.map((c) => c.id) }),
+	);
+	check(
+		"Q2: excluded tool-only claims listed with their documentation weight",
+		scoped.excludedToolOnly.length === 1 &&
+			scoped.excludedToolOnly[0]?.id === "doc-only" &&
+			scoped.excludedToolOnly[0]?.weight === 40,
+		JSON.stringify(scoped.excludedToolOnly),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Q2b — the REAL fixture at schema v2 (scope split + renormalized weights)
+// ---------------------------------------------------------------------------
+
+const REAL_FIXTURE = join(ROOT, "test/skill/tool-contract.json");
+const REAL_CONTRACT = loadSkillContract(REAL_FIXTURE);
+
+{
+	check(
+		"Q2b: real fixture loads at schema v2 with a valid appliesTo on every claim",
+		REAL_CONTRACT.version === 2 &&
+			REAL_CONTRACT.claims.every((c) => c.appliesTo === "skill-text" || c.appliesTo === "tool-only"),
+		JSON.stringify(REAL_CONTRACT.claims.map((c) => [c.id, c.appliesTo])),
+	);
+	const skillTextSum = REAL_CONTRACT.claims
+		.filter((c) => c.appliesTo === "skill-text")
+		.reduce((sum, c) => sum + c.weight, 0);
+	check("Q2b: skill-text weights renormalized to exactly 100", skillTextSum === 100, String(skillTextSum));
+	check(
+		"Q2b: at least one tool-only claim stays documented (excluded from scoring)",
+		REAL_CONTRACT.claims.some((c) => c.appliesTo === "tool-only"),
+	);
+
+	// Loader negative paths — synthetic temp fixtures (bounded, always removed).
+	const dir = mkdtempSync(join(tmpdir(), "sqc-v2-"));
+	try {
+		const bad: Array<[string, unknown]> = [
+			["v1.json", { version: 1, claims: [{ id: "a", claim: "x", severity: "blocker", weight: 100, source: "s", keywords: ["k"], appliesTo: "skill-text" }] }],
+			["scope.json", { version: 2, claims: [{ id: "a", claim: "x", severity: "blocker", weight: 100, source: "s", keywords: ["k"], appliesTo: "both" }] }],
+			["sum.json", { version: 2, claims: [
+				{ id: "a", claim: "x", severity: "blocker", weight: 60, source: "s", keywords: ["k"], appliesTo: "skill-text" },
+				{ id: "b", claim: "x", severity: "blocker", weight: 20, source: "s", keywords: ["k"], appliesTo: "skill-text" },
+			] }],
+		];
+		for (const [name, payload] of bad) {
+			const file = join(dir, name);
+			writeFileSync(file, JSON.stringify(payload), "utf8");
+			let threw = false;
+			try {
+				loadSkillContract(file);
+			} catch {
+				threw = true;
+			}
+			check(`Q2b: loadSkillContract rejects ${name} (v1 / bad scope / skill-text sum ≠ 100)`, threw);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -333,12 +413,23 @@ function scoreBearing(report: QualityReport): string {
 			"Q5: L1 + L2 + Q arithmetic is internally consistent (Q = blend, L0 gate off)",
 			a.q.value === compositeQ(a.l0.pass, a.l1.score, a.l2.mean, a.l3.normalized, a.l4.normalized),
 		);
+		const toolOnlyIds = REAL_CONTRACT.claims.filter((c) => c.appliesTo === "tool-only").map((c) => c.id);
+		const skillTextIds = REAL_CONTRACT.claims.filter((c) => c.appliesTo === "skill-text").map((c) => c.id);
+		check(
+			"Q5: real report scores ONLY skill-text claims (tool-only ids absent from L1 perClaim, listed in excludedToolOnly)",
+			a.l1.perClaim.length === skillTextIds.length &&
+				a.l1.perClaim.every((c) => skillTextIds.includes(c.id)) &&
+				a.l1.excludedToolOnly.map((c) => c.id).join(",") === toolOnlyIds.join(",") &&
+				!a.l3.regressions.concat(a.l3.warnings).some((r) => toolOnlyIds.includes(r.id)),
+			JSON.stringify({ perClaim: a.l1.perClaim.map((c) => c.id), excluded: a.l1.excludedToolOnly.map((c) => c.id) }),
+		);
 		const md = renderMarkdown(a);
 		check(
-			"Q5: markdown carries the Q line, bands and both per-layer tables",
+			"Q5: markdown carries the Q line, bands, both per-layer tables and the tool-only exclusion note",
 			md.includes(`Q = ${a.q.value}`) &&
 				md.includes("## L1 per claim") &&
-				md.includes("## L2 per scenario"),
+				md.includes("## L2 per scenario") &&
+				(toolOnlyIds.length === 0 || toolOnlyIds.every((id) => md.includes(id))),
 		);
 	}
 }

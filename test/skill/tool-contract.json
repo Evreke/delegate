@@ -1,0 +1,61 @@
+{
+	"version": 1,
+	"claims": [
+		{
+			"id": "release-default",
+			"claim": "The default release posture is releaseOn \"started\": the call returns once the worker is proven started and the background watcher takes over; \"settle\" is the opt-out; the default never applies to probes.",
+			"severity": "blocker",
+			"weight": 20,
+			"source": "src/watch-config.ts:167",
+			"keywords": ["started", "watcher", "releaseOn", "settle"]
+		},
+		{
+			"id": "completion-report-file",
+			"claim": "The worker's validated report file is the completion criterion, not the agent status; a report with status \"fail\" is still an honest completion.",
+			"severity": "blocker",
+			"weight": 25,
+			"source": "src/spawn.ts:543",
+			"keywords": ["report file", "completion criterion", "status", "fail"]
+		},
+		{
+			"id": "retry-new-name",
+			"claim": "A diagnosed retry after E_REPORT_MISSING/E_REPORT_INVALID must use a NEW worker name (e.g. <name>-r2) — the original name stays taken by the settled agent; at most 2 repeats, never verbatim.",
+			"severity": "blocker",
+			"weight": 15,
+			"source": "src/spawn.ts:252",
+			"keywords": ["NEW worker name", "diagnosed retry", "r2"]
+		},
+		{
+			"id": "placement-sub-orchestrator",
+			"claim": "A session cwd'd inside a worktree is a sub-orchestrator: worktree placement is rejected with E_PLACE; its children go through shared placement (tabs) only.",
+			"severity": "major",
+			"weight": 10,
+			"source": "src/herdr/host.ts:648",
+			"keywords": ["sub-orchestrator", "shared", "worktree", "E_PLACE"]
+		},
+		{
+			"id": "probe-no-report",
+			"claim": "Probe workers never write a report file; a probe OK/FAIL result is final by itself — never wait for or read a probe's report-<name>.json.",
+			"severity": "major",
+			"weight": 5,
+			"source": "src/spawn.ts:547",
+			"keywords": ["probe", "report file", "final"]
+		},
+		{
+			"id": "timeout-end-turn",
+			"claim": "After E_TIMEOUT or a detach, end your turn: the watcher wakes you on report-ready/question/death; never sleep in bash or re-call delegate to wait — delegate_status is the look-now alternative.",
+			"severity": "blocker",
+			"weight": 15,
+			"source": "src/spawn.ts:548",
+			"keywords": ["end your turn", "watcher", "E_TIMEOUT", "delegate_status"]
+		},
+		{
+			"id": "brief-output-rules",
+			"claim": "A brief's OUTPUT section carries acceptance criteria only; the tool's fixed prompt supplies the canonical worker name, report path and report contract — briefs stay name-agnostic and never paste report JSON.",
+			"severity": "major",
+			"weight": 10,
+			"source": "src/host.ts:611",
+			"keywords": ["acceptance criteria", "name-agnostic", "OUTPUT", "report contract"]
+		}
+	]
+}

@@ -1,71 +1,67 @@
 ---
 name: delegate
-description: Orchestration playbook for multi-worker fan-outs via the pi-delegate extension (topologies, brief anatomy, merge gates, failure handling). The `delegate` tool itself needs NO skill — for any spawn, collect, or status call, use the tool directly. Load this only when planning a multi-worker run (per-ticket, per-axis, per-hypothesis, per-repo) or diagnosing failed delegation.
+description: Orchestration playbook for multi-worker fan-outs via the pi-delegate extension (topology and tier choice, brief anatomy, verification and recovery judgment, merge-gate discipline). The delegate tool itself needs NO skill — for any single spawn, collect, or status call, use the tool directly. NOT for single one-shot tasks — the tool alone suffices there. Load only when planning a multi-worker run (per-ticket, per-axis, per-hypothesis, per-repo) or diagnosing failed delegation.
 ---
 
-# Delegate work via the pi-delegate extension
+# Delegate — the orchestrator's judgment layer
 
-**TOOL FIRST — non-negotiable.** If the `delegate` tool is in your tool list, it is
-the ONLY way to spawn, prompt, or collect a worker. Never shell out to `herdr agent
-start/prompt/wait` when the tool exists — the manual ritual in REFERENCE.md is a
-fallback for sessions where the extension is MISSING, nothing else. Reading
-REFERENCE.md for topologies or anti-patterns is fine; following its spawn ritual
-while the tool is available is a bug.
+The `delegate` tool owns ALL mechanics: spawn parameters, placement modes, error codes,
+probe protocol, settle and release windows, report validation. Its schema and result
+texts are the truth — this skill never repeats them. The skill owns the judgment you
+exercise around the tool: how to cut the work, how to brief, how to verify, how to
+recover, who merges, when to tear down.
 
-You are the orchestrator. You decompose, brief, verify, merge. The `delegate` tool
-(registered by the `pi-delegate` extension) owns the spawn mechanics: placement,
-agent start, prompting, settle observation, strict report collection.
+You are the orchestrator. Workers execute in their own contexts. Success is a validated
+report file, never an agent's status — and `status: "fail"` in a valid report is an
+honest completion: read it as a result, not a tool error.
 
-## Loop
+## The loop — judgment at every step
 
-1. **Decompose** — bounded, single-outcome tasks. Pick tier: execution work → flash-class
-   (`glm-5.3-flash` per operator override), decisions/review/synthesis → frontier-class.
-2. **Brief** — one file per worker at `/tmp/exchange/{TASK}/brief-<name>.md`:
-   ROLE (tier + read/write scope) / TASK (one outcome) / CONTEXT (file pointers only,
-   paste nothing the worker can read) / CONSTRAINTS (owned surface first, then explicit
-   negatives) / OUTPUT (acceptance criteria only — the tool's fixed prompt carries the
-   report path and shape; never paste report JSON into a brief) / BUDGET.
-   Names: `[a-z][a-z0-9_-]{0,31}`. Briefs are name-agnostic: the tool's fixed prompt
-   tells the worker its canonical name and report path — never hard-code worker names
-   or report filenames in briefs.
-   The exchange root is platform-dependent: `/tmp/exchange` on Linux/macOS,
-   `%LOCALAPPDATA%\pi\exchange` on Windows; the `PI_DELEGATE_EXCHANGE_ROOT` environment
-   variable overrides it. Paths in commands must use the native form of the running
-   platform.
-3. **Spawn** — call `delegate` per worker (parallel tool calls for fan-out).
-   - Smoke gate when fanning out ≥3 workers: `mode: "probe"` — optional (enterprise
-     cost); the first real worker's structured spawn failures (`E_PLACE`/`E_START`/
-     `E_NAME`) are just as cheap a smoke signal. A probe's console reply (`OUTPUT: OK`)
-     IS its final verdict — probes never write a report file; never wait for or read one.
-   - `mode: "shared"` — placement in the shared checkout without isolation — for
-     sub-orchestrators and file-slice fan-outs; `worktree` (default)
-     for independent tickets. One worktree = one worker = one branch.
-     `"tab"` is accepted as a deprecated alias of `"shared"` (both work; manifests
-     keep the canonical value `"tab"`).
-   - Blocking call. Esc detaches — the worker keeps running; recover via `delegate_status`.
-4. **Verify** — the report file is the completion criterion, never `status: done`.
-   Check the report verdict against the brief's acceptance criteria with file:line evidence.
-   `status: "fail"` in a valid report is an honest completion, not a tool error.
+1. **Decompose** into bounded, single-outcome tasks; one ticket = one worker = one
+   outcome. Pick the topology to fit the problem: ticket fan-out for independent
+   tickets, file-slice for mass mechanical edits (one shared checkout, disjoint file
+   lists), axis fan-out for reviews (one reviewer per axis, you synthesize), hypothesis
+   fan-out for diagnosis (orthogonal hypotheses; hold the superposition until evidence
+   collapses it), role chain for feature delivery, two-tier swarm for multi-repo epics
+   (cap depth at 3). Pick the tier: execution → flash-class;
+   decisions, review, synthesis → frontier-class.
+2. **Brief** — one file per worker under the exchange dir (`/tmp/exchange/{TASK}/` on
+   Linux/macOS; `PI_DELEGATE_EXCHANGE_ROOT` overrides): ROLE (tier + read/write scope) /
+   TASK (one outcome; verbatim fix shape for risky changes, equivalence argument for
+   rewrites) / CONTEXT (file pointers only — paste nothing the worker can read) /
+   CONSTRAINTS (owned surface first, then explicit negatives) / OUTPUT (acceptance
+   criteria only — the tool's own prompt carries the worker's canonical name, report
+   path and report contract; briefs stay name-agnostic, never paste report JSON) /
+   BUDGET.
+3. **Spawn** via parallel `delegate` calls, one per worker. A fan-out of ≥3 deserves a
+   cheap smoke check first — the first real worker's structured spawn failure is just
+   as cheap a signal; the tool owns how. Respect worktree authority: only a root
+   orchestrator (session cwd outside any worktree) gets worktree isolation; a
+   sub-orchestrator's workers share its checkout — disjoint file lists per brief.
+4. **Verify** every report against the brief's acceptance criteria, demanding file:line
+   evidence. Conflicting reports → spawn one tie-breaker verifier with both reports as
+   CONTEXT, or resolve from source yourself. A failed worker's output is input for the
+   retry, not waste.
 5. **Merge** — you are the single merge gate. Workers commit in their own scope; they
-   never merge, never push. Verify before merging; decide merge order yourself.
-6. **Teardown** — `/delegate-teardown` when the task is done. Never leave workspaces behind.
+   never merge, never push. Verify before merging; you own merge order.
+6. **Teardown** — close what you opened (`/delegate-teardown`); never leave worktree
+   placements behind.
 
-**Two-tier fleets (worker-orchestrators).** If YOU are a worker that spawns its own
-fleet (a tech-lead pattern), end your turn right after the fleet is out — your
-watcher wakes you as each child's report lands, exactly as your own orchestrator's
-watcher does. And never end a turn having taken ZERO actions (no briefs written, no
-spawns): an idle worker with no report and no fleet reads as a failed spawn and will
-be retried.
+## Recovery policy
 
-## Failure handling
+- **Diagnosed retry, never verbatim.** When a worker settles without a valid report,
+  read its console output, find the root cause, and retry with a new brief naming the
+  wrong path, the cause and the fix shape — under a NEW worker name (the settled agent
+  keeps the old one). At most 2 repeats per issue, then escalate to the user.
+- **End your turn on timeouts.** After a spawn timeout or detach the worker is alive
+  and the background watcher owns the wait: end your turn and you are woken when the
+  report lands, a question arrives or the worker dies. Never bash-sleep and never
+  re-call the tool to wait; status polling is the look-now alternative.
+- **Answer blocked workers.** A worker paused on a question is answered through the
+  mailbox: read the pending question, reply, let it continue.
+- **Two-tier fleets.** If YOU are a worker that spawns its own fleet, end your turn
+  right after the fleet is out — your watcher wakes you as each child's report lands,
+  exactly as your orchestrator's does. And never end a turn having taken zero actions.
 
-| Tool result | Meaning | Your move |
-|---|---|---|
-| `E_REPORT_MISSING` / `E_REPORT_INVALID` | worker settled without a valid report | read the worker console (`herdr agent read` on the herdr backend), diagnose root cause, **diagnosed retry** — new brief naming the wrong path, root cause, fix shape. Never retry verbatim. ≤2 repeats per issue, then escalate to the user |
-| `E_TIMEOUT` | settle wait expired or detached after started; worker alive | end your turn — the watcher wakes you when the report lands, a question arrives, grill_deck is invoked, context goes critical, or the worker dies. `delegate_status` is the tool for "look now"; bash sleep only when the watcher is absent (old extension build). Never re-call `delegate` to wait |
-| `E_NAME` | name taken by a live agent | choose a different name |
-| `E_PROMPT_STALLED` | worker console not at a prompt | inspect via `delegate_status`, answer or re-brief |
-| `E_PLACE` / `E_START` | placement/start failed | read the embedded herdr stderr; reconcile via `herdr workspace list` |
-
-Report/manifest conventions, worktree authority rules, topologies (ticket, file-slice,
-axis, hypothesis, role chain, two-tier swarm), and anti-patterns: [REFERENCE.md](REFERENCE.md).
+Fallback: if the `delegate` tool is absent from your session, follow the manual ritual
+in [REFERENCE.md](REFERENCE.md).

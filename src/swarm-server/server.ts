@@ -112,6 +112,31 @@ export { SWARM_HTTP_SCHEMA_VERSION };
 /** The protocol identity string (§4.2 — frozen surface of the HTTP API). */
 export const SWARM_HTTP_PROTOCOL = "swarm-http/1";
 
+/** Bounded deadline of one primary liveness probe (a hung peer is "dead").
+ *  Re-exported from the watch leaf so consumers see one import surface. */
+export { PRIMARY_WATCH_PROBE_TIMEOUT_MS } from "./primary-watch.ts";
+import { PRIMARY_WATCH_PROBE_TIMEOUT_MS } from "./primary-watch.ts";
+
+/**
+ * Is the loopback process on `port` a delegate swarm server?
+ * <p>
+ * The default `probePrimary` seam of the D1 bind decision (mount.ts,
+ * §4.2.8 item 3). Lives here because it is PROTOCOL IDENTITY (§4.2.2):
+ * true iff `/api/version` answers 200 with `protocol: "swarm-http/1"`
+ * within the deadline (a foreign or dead occupant answers false). Total;
+ * never throws.
+ */
+export function probeDelegatePrimary(port: number, timeoutMs: number = PRIMARY_WATCH_PROBE_TIMEOUT_MS): Promise<boolean> {
+	const ask = async (): Promise<boolean> => {
+		const url = "http://127.0.0.1:" + String(port) + "/api/version";
+		const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		if (!res.ok) return false;
+		const body = (await res.json()) as { protocol?: unknown };
+		return body !== null && typeof body === "object" && body.protocol === SWARM_HTTP_PROTOCOL;
+	};
+	return ask().catch(() => false);
+}
+
 /** The HTTP surface's E_* code ADDITIONS (taxonomy grows by addition only).
  *  E_SWARM_AUTH / E_SWARM_FORBIDDEN are the #51 mutation-surface codes. */
 export type SwarmServerErrorCode =

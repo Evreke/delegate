@@ -19,10 +19,10 @@
  * still exit. `stop()` is idempotent and the final state change is delivered
  * exactly once through `onPromoted`.
  *
- * Token continuity (Law 11, item 3b): the watch never touches a token — each
- * session keeps ITS OWN operator token (a token authenticates the operator to
- * a session, not to a port); the promoted session's mount re-surfaces its
- * dashboard link if the effective port changed.
+ * Token continuity (Law 11, item 3b): the watch never touches a token — the
+ * operator token is the SHARED per-machine value (./token-store.ts), so a
+ * promotion never changes authentication; the promoted session's mount
+ * re-surfaces its dashboard link if the effective port changed.
  *
  * Dependencies: node:net only (a leaf). No herdr import (Law 4); no store.
  *

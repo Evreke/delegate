@@ -44,6 +44,9 @@ import { reconcileSessionStart } from "./src/swarm/reconcile.ts";
 // read-model surface, mounted per session (Law 3) and OFF by default
 // (swarm.server.enabled). Advisory by contract — never blocks session start.
 import { mountSwarmServer, type SwarmServerHandle } from "./src/swarm-server/mount.ts";
+// The announcement seam (startup-noise round): swarm-server events become
+// notify rows in UI sessions, stderr JSON lines only headless.
+import { createAnnounceSink } from "./src/swarm-server/announce.ts";
 
 // ===========================================================================
 // Host binding (workerhost inversion, design §5/§6 migration steps 5–6):
@@ -299,8 +302,11 @@ export default function (pi: ExtensionAPI) {
 		// Session-hosted read server (#50, §4.2): ONE binding — the mount owns
 		// its own gating (config tier, second-mount refusal, port fallback) and
 		// is TOTAL (a failure is a logged null; Law 8 — never blocks the
-		// session). The handle joins this session's context (Law 3).
-		const swarmServer = (await mountSwarmServer({ sessionFile, transport })) ?? undefined;
+		// session). Announcements go through the UI-aware seam (the startup-
+		// noise round): notify rows in UI sessions, ZERO stderr bytes; the
+		// historical stderr JSON only headless (./src/swarm-server/announce.ts).
+		// The handle joins this session's context (Law 3).
+		const swarmServer = (await mountSwarmServer({ sessionFile, transport, announce: createAnnounceSink(ctx.ui, ctx.hasUI) })) ?? undefined;
 
 		// The store is exposed to the delegate_wake tool ONLY when the watcher is
 		// actually mounted: a session without a tick could accept a schedule that

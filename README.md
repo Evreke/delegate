@@ -214,9 +214,12 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   local process can read); WRITES are operator-only and land under **#51**:
   `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
   `{"text":"..."}`) require `Authorization: Bearer <operator token>`. The
-  token is generated per mount; the mount prints one `dashboard` stderr line
-  with the canonical link `http://127.0.0.1:<bound-port>/#t=<token>` — the
-  token rides in the URL FRAGMENT (never a path/query/log), the dashboard
+  token is shared per machine (`~/.pi/agent/delegate-swarm-token`, 0600 —
+  delete the file to rotate); at session start the mount announces ONE tidy
+  notify row with the canonical link
+  `http://127.0.0.1:<bound-port>/#t=<token>` (headless sessions keep a
+  machine-readable stderr line instead — no raw JSON ever lands in the TUI);
+  the token rides in the URL FRAGMENT (never a path/query), the dashboard
   moves it into sessionStorage and strips the address bar on load, and a
   bookmark without a fragment still prompts. Writes only
   reach workers the session itself spawned (foreign/unknown ids refuse) and

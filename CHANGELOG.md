@@ -10,6 +10,30 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **The swarm-server startup announcements are quiet — one notify row, no
+  raw stderr JSON in the TUI (operator field finding).** The mount's
+  session-start lines (`dashboard`, `operator-token`, `secondary-mount`)
+  no longer print raw JSON to stderr, where pi's TUI displayed them as
+  garbage under the `[Extensions]` header. All operator-facing swarm-server
+  events now travel ONE announce seam (`src/swarm-server/announce.ts`): a
+  UI session renders ONE tidy notify row — `Fleet dashboard:
+  http://127.0.0.1:<port>/#t=<token>`, suffixed "served by the primary
+  session" for a secondary — and writes ZERO stderr bytes; failure advisories
+  (bind-failed, config warnings, port substitution) become warning rows; the
+  historical machine-readable stderr JSON remains the headless path (pinned
+  by `test/swarm-announce-check.ts`).
+
+- **The operator token is shared per machine (`token-store.ts`).** Every
+  mount read-or-creates `~/.pi/agent/delegate-swarm-token` (mode 0600;
+  rotation = delete the file) instead of minting a per-mount random token.
+  This fixes a latent D1 bug: a secondary session's announced link carried
+  ITS OWN token, which the primary's server rejected — now every session's
+  announced link authenticates. An unwritable store degrades advisory (Law
+  8) to a per-process random token with a warning (pinned by
+  `test/swarm-token-store-check.ts`).
+
+### Added
+
 - **Skill-quality harness, stage 2 — L0/L1/L4/Q wired to the real skill and
   fixture (#110 #111 #115 #116 #117).** The stage-1 scaffold now scores the
   real `skills/delegate` texts: L0 is a 29-pin static gate over SKILL.md +

@@ -27,6 +27,8 @@
  * are frozen (the flat check pins the engine itself with synthetic inputs).
  */
 
+import { firesOn } from "../text-match.ts";
+
 /** Which text a pin targets — the primary path vs the fallback reference. */
 export type PinTarget = "SKILL.md" | "REFERENCE.md";
 
@@ -64,37 +66,16 @@ export interface L0Result {
 	violations: Violation[];
 }
 
-/** Split into lines the way the engine sees them (terminal newline ignored). */
+/** Split into lines the way violation reports cite them (1-based). */
 function linesOf(text: string): string[] {
 	return text.split("\n");
-}
-
-/**
- * Paragraph-joined view of a text: within each blank-line-separated paragraph,
- * wrapped lines are joined with single spaces. Markdown hard-wraps phrases
- * across lines ("a validated\nreport file"), so REQUIRE anchors — phrases,
- * not line shapes — are matched against this view in addition to raw lines.
- * FORBID pins stay strictly line-scoped: a fire and its exemption guard must
- * co-locate on one physical line.
- */
-function paragraphLines(text: string): string[] {
-	return text
-		.split(/\n\s*\n/)
-		.map((paragraph) => paragraph.split("\n").join(" ").replace(/\s+/g, " ").trim())
-		.filter((joined) => joined.length > 0);
-}
-
-function testLine(line: string, patterns: RegExp[]): boolean {
-	return patterns.some((re) => re.test(line));
 }
 
 /** Evaluate one pin against its target text. Pure. */
 export function runPin(pin: Pin, text: string): Violation[] {
 	const out: Violation[] = [];
 	if (pin.kind === "require") {
-		const candidates = [...linesOf(text), ...paragraphLines(text)];
-		const hit = candidates.some((line) => testLine(line, pin.fire));
-		if (!hit) {
+		if (!firesOn(text, pin.fire)) {
 			out.push({
 				pin: pin.id,
 				kind: pin.kind,
@@ -107,17 +88,42 @@ export function runPin(pin: Pin, text: string): Violation[] {
 		}
 		return out;
 	}
-	const lines = linesOf(text);
-	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i]!;
-		if (!testLine(line, pin.fire)) continue;
-		if (pin.guards !== undefined && testLine(line, pin.guards)) continue;
+	// Forbid: paragraph-scoped verdict through firesOn — a wrapped fire still
+	// violates, and a guard exempts its whole paragraph (the negation and its
+	// subject share the wrapped lines). Violations still cite a physical line.
+	if (firesOn(text, pin.fire, pin.guards)) {
+		const lines = linesOf(text);
+		let cited = 0;
+		let excerpt = "";
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i]!;
+			if (!pin.fire.some((re) => re.test(line))) continue;
+			if (pin.guards !== undefined && pin.guards.some((re) => re.test(line))) continue;
+			cited = i + 1;
+			excerpt = line.trim().slice(0, 160);
+			break;
+		}
+		if (cited === 0) {
+			// The fire exists only in the joined-paragraph view: cite the first
+			// physical line that contributes to a firing paragraph.
+			const paragraphs = text.split(/\n\s*\n/);
+			outer: for (const paragraph of paragraphs) {
+				const joined = paragraph.split("\n").join(" ").replace(/\s+/g, " ");
+				if (!pin.fire.some((re) => re.test(joined))) continue;
+				if (pin.guards !== undefined && pin.guards.some((re) => re.test(joined))) continue;
+				const first = paragraph.split("\n")[0]!;
+				cited = lines.indexOf(first) + 1;
+				excerpt = first.trim().slice(0, 160);
+				break outer;
+			}
+			if (cited === 0) cited = 1;
+		}
 		out.push({
 			pin: pin.id,
 			kind: pin.kind,
 			target: pin.target,
-			line: i + 1,
-			excerpt: line.trim().slice(0, 160),
+			line: cited,
+			excerpt,
 			description: pin.description,
 			source: pin.source,
 		});

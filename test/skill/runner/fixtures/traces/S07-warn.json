@@ -1,0 +1,11 @@
+{
+	"version": 1,
+	"scenario": "S07",
+	"steps": [
+		{ "tag": "plan:diagnose-root-cause" },
+		{ "tag": "tool:read-mailbox" },
+		{ "tag": "rules:bounded-retry" },
+		{ "tag": "brief:write-report-contract" },
+		{ "tag": "retry:diagnosed" }
+	]
+}

@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"id": "X10",
+	"title": "Invalid fixture — id must match pattern",
+	"blocker": false,
+	"input": { "task": "t", "context": [], "trigger": "t" },
+	"expect": [],
+	"forbid": []
+}

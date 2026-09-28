@@ -1,0 +1,19 @@
+{
+	"version": 1,
+	"id": "S04",
+	"title": "short task → settle OK",
+	"blocker": false,
+	"input": {
+		"task": "Have a worker answer one lookup: report the exported function names in src/host.ts. One short read, one report line.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "The task is minutes-short: the worker will settle well inside the blocking window.", "You have nothing else to do meanwhile, so blocking until settle costs nothing."],
+		"trigger": "User message: 'Look that up via a worker.'"
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "release:on-settle", "dimension": "tool-choice" },
+		{ "tag": "verify:report-evidence", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "topology:fan-out", "dimension": "no-forbidden" }
+	]
+}

@@ -1,0 +1,21 @@
+{
+	"version": 1,
+	"id": "S05",
+	"title": "timeout → end turn",
+	"blocker": true,
+	"input": {
+		"task": "Delegate a long refactor to worker refactor-1 and collect its report when it lands.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "Mid-scenario event: the delegate call returns E_TIMEOUT — the settle wait expired, the worker is likely still alive, no report yet.", "A background watcher is active (current extension build): it wakes you when the report lands or the worker needs attention."],
+		"trigger": "Tool result E_TIMEOUT arrives from the delegate call."
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "turn:end", "dimension": "recovery" },
+		{ "tag": "verify:report-evidence", "dimension": "brief-rules" }
+	],
+	"forbid": [
+		{ "tag": "wait:sleep", "dimension": "no-forbidden" },
+		{ "tag": "wait:delegate-rewait", "dimension": "recovery" },
+		{ "tag": "wait:status-poll-loop", "dimension": "no-forbidden" }
+	]
+}

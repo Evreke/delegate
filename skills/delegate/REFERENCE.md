@@ -227,7 +227,8 @@ order decided by you.
 - Interactive tools with rich TUI inside worker consoles → workers answer questions in
   files; you poll and answer.
 - Unbounded fan-out → smoke test first, cap concurrency, budget per tier.
-- Briefs that omit the exchange dir or report path → the loop has no collection point;
-  always OUTPUT first.
+- Briefs with no OUTPUT section → the loop has no collection point; always OUTPUT
+  first. Tool-absent, that OUTPUT must pin the report path itself; with the tool,
+  the tool's prompt fixes the path — acceptance criteria only, brief name-agnostic.
 - Running this ritual while the `delegate` tool exists → the tool is the only spawn
   path; see the gate at the top of this file.

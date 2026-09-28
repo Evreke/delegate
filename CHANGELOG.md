@@ -333,6 +333,23 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **The delegate skill is rewritten judgment-only, with an explicit tool-absent
+  fallback (#104, #105, #106, #107).** `skills/delegate/SKILL.md` stops duplicating the
+  `delegate` tool's mechanics (spawn/mode parameters, error tables, probe protocol,
+  settle windows — the tool's schema and result texts own those) and now carries only
+  orchestrator judgment: topology and tier choice, brief anatomy, verification with
+  file:line evidence, recovery policy (diagnosed retry under a new worker name,
+  end-turn on timeout, mailbox answers for blocked workers), merge-gate authority and
+  teardown; its description gains the negative trigger (not for single one-shot
+  tasks). `skills/delegate/REFERENCE.md` opens with an explicit fallback banner —
+  the manual herdr ritual applies ONLY when the tool is absent; running it with the
+  tool present is a bug — and keeps the universal parts (topologies, anti-patterns,
+  worktree authority, pre-flight gate); the one universal bullet that fought the
+  tool-present rule (briefs must pin a report path) now splits tool-absent vs
+  tool-present phrasing after the #107 alignment pass. The seven tool truths the skill text must
+  not contradict are pinned as the shared fixture `test/skill/tool-contract.json`
+  (#105). Both files ship as versioned `pi.skills` artifacts.
+
 - **The noisy advisory stderr lines are gone.** The `swarm-journal` advisory
   note (a journal append failure) and the `swarm-reconcile` note (a reconcile
   failure) no longer print a structured JSON line to stderr — the failure is

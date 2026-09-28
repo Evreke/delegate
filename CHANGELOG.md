@@ -353,6 +353,26 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   reference: `docs/swarm-http-api.md` (goldens remain normative).
 ### Changed
 
+- **Fixture v2 — scope-split tool-contract claims, judgment-semantic
+  keywords (#123).** The shared fixture `test/skill/tool-contract.json` moves
+  to schema v2: every claim now carries
+  `appliesTo: "skill-text" | "tool-only"`. Tool-only claims (`release-default` —
+  release-posture mechanics the judgment-only skill deliberately never
+  restates) keep their id/claim/severity/weight/source/keywords for
+  documentation but are excluded from L1 and L3 scoring; the six skill-text
+  claims renormalize to weights summing exactly 100 and re-author their
+  keywords to judgment-semantic anchors verbatim-present in the merged skill
+  text (v1's `started`/`releaseOn`/`r2`/`E_PLACE`/`E_TIMEOUT` tool-surface
+  tokens demanded vocabulary the #119 rewrite intentionally removed — the
+  78.75/blocker-regression verdicts were fixture errors, not skill errors).
+  `test/skill/l1/score.ts` gains the one-line scope filter (scoring logic
+  otherwise unchanged; `loadSkillContract` validates the v2 invariants);
+  `test/skill/quality/build.ts` hands the frozen stage-1 delta a v1
+  projection of the skill-text claims only. Regenerated honest verdict:
+  L0 pass, L1 100, L2 100, L3 clean (norm 100), L4 100 → Q 100 ship.
+  Mechanics check extended to pin the scope filter and the real fixture's
+  v2 shape; how-to updated.
+
 - **The delegate skill is rewritten judgment-only, with an explicit tool-absent
   fallback (#104, #105, #106, #107).** `skills/delegate/SKILL.md` stops duplicating the
   `delegate` tool's mechanics (spawn/mode parameters, error tables, probe protocol,

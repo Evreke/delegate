@@ -8,8 +8,8 @@
  *   - nodes    — the graph nodes enriched with a resolved status (ask / dead /
  *                live / collected / retired / unknown), unified severity, the
  *                latest progress, usage, elapsed and ownership;
- *   - rail     — fleets grouped by owning session (own first, foreign marked),
- *                each with its TaskNodes and live done/total counters;
+ *   - rail     — fleets grouped by owning session (own first, foreign marked), each
+ *                with its TaskNodes, done/total counters and severity-first workers;
  *   - attention— chips + a severity-ordered queue, aggregated over OWN fleets
  *                ONLY (a foreign fleet never raises attention);
  *   - graph    — the canvas input: deterministic depth columns, `spawned_by`
@@ -173,7 +173,7 @@ function buildTaskNode(node, ctx) {
 			parentId: node.id,
 			childIds: [],
 		};
-	});
+	}).sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || (b.ask ? 1 : 0) - (a.ask ? 1 : 0) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // rail-ux F6: severity desc, ask first, then name — one stable sort
 	const total = workers.length;
 	const done = workers.filter((w) => isTerminalStatus(w.status)).length;
 	const openAsk = workers.find((w) => w.ask) ?? null;

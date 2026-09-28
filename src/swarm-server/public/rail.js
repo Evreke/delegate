@@ -24,13 +24,25 @@
  * the same selected visual the session/task rows use (#85b's missing trace,
  * rail-ux F4).
  *
+ * Settled workers (collected / retired / dead — `isSettledStatus`) fold behind
+ * a muted `+k settled` expander row (rail-ux F6, the rail's mirror of the
+ * canvas's adaptive collapse): collapsed unless the UI expansion Set holds
+ * `rail:<task id>`; the expander dispatches the shared `toggle-collapse`
+ * action. Live workers keep their model-given severity-first order.
+ *
  * Status markers render through the shared status language (color + shape,
  * LEFT of the name). Degraded chips render verbatim with their severity.
  * No framework; pure view function over the model.
  */
 
 import { el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
-import { statusView } from "./status.js";
+import { isSettledStatus, statusView } from "./status.js";
+
+/** The UI-expansion key that unfolds one task's settled workers (the shared
+ *  `toggle-collapse` action carries it — rail-scoped, never a canvas lead id). */
+function railFoldKey(taskId) {
+	return `rail:${taskId}`;
+}
 
 /** Wrap one worker-row button in its list item (valid `<ul>` content). */
 function appendWorkerItem(list, doc, row) {
@@ -87,6 +99,8 @@ function statusRow(doc, node, extra) {
 
 function renderWorkerRow(doc, task, ctx, rows) {
 	const list = el(doc, "ul", { class: "rail-workers", "data-rail-workers": task.id });
+	const active = [];
+	const settled = [];
 	for (const w of task.workers || []) {
 		const row = el(doc, "button", {
 			class: "rail-worker",
@@ -105,8 +119,37 @@ function renderWorkerRow(doc, task, ctx, rows) {
 		// #85b: a worker row is a FOCUS affordance, not a display-only label —
 		// tapping it selects the task AND focuses that worker in the detail panel.
 		on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id, focusWorker: w.name, spotlightIds: taskFocusIds(task) }));
+		if (isSettledStatus(w.status)) settled.push(row);
+		else active.push(row);
+	}
+	for (const row of active) {
 		appendWorkerItem(list, doc, row);
 		rows.push(row);
+	}
+	if (settled.length > 0) {
+		const expanded = ctx.expansion ? ctx.expansion.has(railFoldKey(task.id)) : false;
+		const toggle = el(
+			doc,
+			"button",
+			{
+				class: "rail-worker rail-settled-toggle",
+				type: "button",
+				"data-rail-settled-toggle": String(settled.length),
+				"data-expanded": expanded ? "1" : "0",
+				"aria-expanded": expanded ? "true" : "false",
+				title: "settled workers (collected, retired or dead)",
+			},
+			`${expanded ? "\u2212" : "+"}${settled.length} settled`,
+		);
+		on(toggle, "click", () => ctx.dispatch?.({ type: "toggle-collapse", leadId: railFoldKey(task.id) }));
+		appendWorkerItem(list, doc, toggle);
+		rows.push(toggle);
+		if (expanded) {
+			for (const row of settled) {
+				appendWorkerItem(list, doc, row);
+				rows.push(row);
+			}
+		}
 	}
 	return list;
 }
@@ -128,18 +171,26 @@ function renderTask(doc, task, ctx, rows) {
  * Render the rail into `root` (the renderer clears it first).
  * <p>
  * FUNCTION_CONTRACT: Input — state (buildDashboardState output), root, doc,
- *   opts ({ dispatch, selection, focusWorker }). Output — none (root mutated).
+ *   opts ({ dispatch, selection, focusWorker, expansion }). Output — none
+ *   (root mutated).
  * Guarantees: own groups precede foreign groups; every rendered node appears
  *   once with `data-node-id`; foreign groups carry the read-only marker and
  *   no mutation affordance; session/task/worker rows are keyboard-operable
  *   `<button>`s (Enter/Space fire the click dispatch; the group's section
  *   roves focus on arrow keys); the worker matching `opts.focusWorker`
- *   renders `data-selected="1"`. Raises: never on a well-formed model.
+ *   renders `data-selected="1"`; settled workers fold behind a `+k settled`
+ *   expander unless `opts.expansion` (the UI Set) holds `rail:<task id>`.
+ *   Raises: never on a well-formed model.
  */
 export function renderRail(state, root, doc, opts = {}) {
 	while (root.firstChild) root.removeChild(root.firstChild);
 	if (!state || !state.rail) return;
-	const ctx = { dispatch: opts.dispatch, selection: opts.selection ?? null, focusWorker: opts.focusWorker ?? null };
+	const ctx = {
+		dispatch: opts.dispatch,
+		selection: opts.selection ?? null,
+		focusWorker: opts.focusWorker ?? null,
+		expansion: opts.expansion && typeof opts.expansion.has === "function" ? opts.expansion : null,
+	};
 	const wrap = el(doc, "div", { class: "rail-inner", "data-rail": "1" });
 	for (const group of state.rail.groups) {
 		const section = el(doc, "section", { class: "rail-group", "data-rail-group": group.session.id, "data-foreign": group.foreign ? "1" : "0" });

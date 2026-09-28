@@ -9,6 +9,14 @@
  * uses its own `data-graph-node`), so "one screen, no duplication" is
  * checkable in the DOM.
  *
+ * Every row is a real `<button>` (rail-ux F1): Tab reaches session, task and
+ * worker rows, Enter/Space fire the same dispatch a click does, and each
+ * `.rail-group` section roves focus through its rows on
+ * ArrowUp/ArrowDown/Home/End. The focused row is visible through the global
+ * `:focus-visible` accent outline (app.css). Worker rows sit in their `li`
+ * wrappers inside the task's `ul` — a `<button>` is not valid directly under
+ * `<ul>`, and the list semantics stay.
+ *
  * Status markers render through the shared status language (color + shape,
  * LEFT of the name). Degraded chips render verbatim with their severity.
  * No framework; pure view function over the model.
@@ -17,8 +25,39 @@
 import { el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
 import { statusView } from "./status.js";
 
+/** Wrap one worker-row button in its list item (valid `<ul>` content). */
+function appendWorkerItem(list, doc, row) {
+	const item = doc.createElement("li");
+	item.appendChild(row);
+	list.appendChild(item);
+}
+
+/** Rove focus through a group's rows on ArrowUp/ArrowDown/Home/End (F1).
+ *  The rows are Tab-reachable buttons; the arrows move focus within the
+ *  group (roving movement, one shared listener on the section). */
+function attachRailGroupKeys(section, rows, doc) {
+	if (rows.length === 0 || typeof section?.addEventListener !== "function") return;
+	on(section, "keydown", (event) => {
+		const key = event && event.key;
+		if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return;
+		const active = doc && doc.activeElement ? rows.indexOf(doc.activeElement) : -1;
+		let index = 0;
+		if (key === "ArrowDown") index = active < 0 ? 0 : Math.min(active + 1, rows.length - 1);
+		else if (key === "ArrowUp") index = active < 0 ? 0 : Math.max(active - 1, 0);
+		else if (key === "Home") index = 0;
+		else index = rows.length - 1;
+		const next = rows[index];
+		if (!next) return;
+		if (typeof event.preventDefault === "function") event.preventDefault();
+		if (typeof next.focus === "function") next.focus();
+	});
+}
+
+/** One session/task row: a `<button>` carrying the node identity (the frozen
+ *  `data-node-id` surface) + status marker + hidden status label + name +
+ *  degraded chips + the foreign read-only tag. */
 function statusRow(doc, node, extra) {
-	const row = el(doc, extra.tag, {
+	const attrs = {
 		class: extra.className,
 		"data-node-id": node.id,
 		"data-rail-kind": node.kind,
@@ -26,7 +65,9 @@ function statusRow(doc, node, extra) {
 		"data-severity": node.severity,
 		"data-foreign": node.foreign ? "1" : "0",
 		"data-selected": extra.selected ? "1" : "0",
-	});
+	};
+	if (extra.tag === "button") attrs.type = "button";
+	const row = el(doc, extra.tag, attrs);
 	row.appendChild(renderStatusMarker(doc, node.statusView));
 	// #91: the marker is a visual shape only — a visually-hidden label carries
 	// the same status to screen readers (color+shape never the only channel).
@@ -37,11 +78,12 @@ function statusRow(doc, node, extra) {
 	return row;
 }
 
-function renderWorkerRow(doc, task, ctx) {
+function renderWorkerRow(doc, task, ctx, rows) {
 	const list = el(doc, "ul", { class: "rail-workers", "data-rail-workers": task.id });
 	for (const w of task.workers || []) {
-		const row = el(doc, "li", {
+		const row = el(doc, "button", {
 			class: "rail-worker",
+			type: "button",
 			"data-rail-worker": w.name,
 			"data-worker-id": w.id ?? w.name,
 			"data-session-id": w.sessionId,
@@ -55,20 +97,22 @@ function renderWorkerRow(doc, task, ctx) {
 		// #85b: a worker row is a FOCUS affordance, not a display-only label —
 		// tapping it selects the task AND focuses that worker in the detail panel.
 		on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id, focusWorker: w.name, spotlightIds: taskFocusIds(task) }));
-		list.appendChild(row);
+		appendWorkerItem(list, doc, row);
+		rows.push(row);
 	}
 	return list;
 }
 
-function renderTask(doc, task, ctx) {
-	const row = statusRow(doc, task, { tag: "div", className: "rail-task", name: task.name, selected: ctx.selection === task.id });
+function renderTask(doc, task, ctx, rows) {
+	const row = statusRow(doc, task, { tag: "button", className: "rail-task", name: task.name, selected: ctx.selection === task.id });
 	const counters = task.counters || { done: 0, total: 0 };
 	row.appendChild(el(doc, "span", { class: "rail-counters", "data-counters": `${counters.done}/${counters.total}` }, `${counters.done}/${counters.total}`));
 	if (task.ask) row.appendChild(el(doc, "span", { class: "rail-ask", "data-rail-ask": "1", "aria-label": "pending ask" }, "\u2691"));
 	on(row, "click", () => ctx.dispatch?.({ type: "select-node", id: task.id }));
+	rows.push(row);
 	const box = el(doc, "div", { class: "rail-task-box", "data-rail-task": task.id });
 	box.appendChild(row);
-	if ((task.workers || []).length > 0) box.appendChild(renderWorkerRow(doc, task, ctx));
+	if ((task.workers || []).length > 0) box.appendChild(renderWorkerRow(doc, task, ctx, rows));
 	return box;
 }
 
@@ -79,7 +123,9 @@ function renderTask(doc, task, ctx) {
  *   opts ({ dispatch, selection }). Output — none (root mutated).
  * Guarantees: own groups precede foreign groups; every rendered node appears
  *   once with `data-node-id`; foreign groups carry the read-only marker and
- *   no mutation affordance. Raises: never on a well-formed model.
+ *   no mutation affordance; session/task/worker rows are keyboard-operable
+ *   `<button>`s (Enter/Space fire the click dispatch; the group's section
+ *   roves focus on arrow keys). Raises: never on a well-formed model.
  */
 export function renderRail(state, root, doc, opts = {}) {
 	while (root.firstChild) root.removeChild(root.firstChild);
@@ -88,12 +134,15 @@ export function renderRail(state, root, doc, opts = {}) {
 	const wrap = el(doc, "div", { class: "rail-inner", "data-rail": "1" });
 	for (const group of state.rail.groups) {
 		const section = el(doc, "section", { class: "rail-group", "data-rail-group": group.session.id, "data-foreign": group.foreign ? "1" : "0" });
-		const header = statusRow(doc, group.session, { tag: "div", className: "rail-session", name: group.session.worker || group.session.id, selected: ctx.selection === group.session.id });
+		const rows = [];
+		const header = statusRow(doc, group.session, { tag: "button", className: "rail-session", name: group.session.worker || group.session.id, selected: ctx.selection === group.session.id });
 		header.appendChild(el(doc, "span", { class: "rail-role", "data-rail-role": group.session.role }, group.session.role));
 		on(header, "click", () => ctx.dispatch?.({ type: "select-node", id: group.session.id }));
+		rows.push(header);
 		section.appendChild(header);
-		for (const task of group.fleets) section.appendChild(renderTask(doc, task, ctx));
+		for (const task of group.fleets) section.appendChild(renderTask(doc, task, ctx, rows));
 		if (group.fleets.length === 0) section.appendChild(el(doc, "div", { class: "rail-empty", "data-rail-empty": "1" }, "no tasks"));
+		attachRailGroupKeys(section, rows, doc);
 		wrap.appendChild(section);
 	}
 	if (state.rail.groups.length === 0) wrap.appendChild(el(doc, "div", { class: "rail-empty", "data-rail-empty": "all" }, "no fleets"));

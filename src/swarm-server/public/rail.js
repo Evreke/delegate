@@ -17,6 +17,13 @@
  * wrappers inside the task's `ul` — a `<button>` is not valid directly under
  * `<ul>`, and the list semantics stay.
  *
+ * Worker rows report the model's severity-first order (state.js) — but the
+ * rail's affordance is local: pointer cursor, hover background, a >= 24px
+ * hit target, and `data-selected="1"` on the worker matching
+ * `opts.focusWorker` (threaded from app.js) so the focused worker carries
+ * the same selected visual the session/task rows use (#85b's missing trace,
+ * rail-ux F4).
+ *
  * Status markers render through the shared status language (color + shape,
  * LEFT of the name). Degraded chips render verbatim with their severity.
  * No framework; pure view function over the model.
@@ -89,6 +96,7 @@ function renderWorkerRow(doc, task, ctx, rows) {
 			"data-session-id": w.sessionId,
 			"data-status": w.status,
 			"data-severity": w.severity,
+			"data-selected": ctx.focusWorker != null && w.name === ctx.focusWorker ? "1" : "0",
 		});
 		row.appendChild(renderStatusMarker(doc, w.statusView));
 		row.appendChild(el(doc, "span", { class: "rail-status-label", "data-rail-status-label": "1" }, w.statusView.label));
@@ -120,17 +128,18 @@ function renderTask(doc, task, ctx, rows) {
  * Render the rail into `root` (the renderer clears it first).
  * <p>
  * FUNCTION_CONTRACT: Input — state (buildDashboardState output), root, doc,
- *   opts ({ dispatch, selection }). Output — none (root mutated).
+ *   opts ({ dispatch, selection, focusWorker }). Output — none (root mutated).
  * Guarantees: own groups precede foreign groups; every rendered node appears
  *   once with `data-node-id`; foreign groups carry the read-only marker and
  *   no mutation affordance; session/task/worker rows are keyboard-operable
  *   `<button>`s (Enter/Space fire the click dispatch; the group's section
- *   roves focus on arrow keys). Raises: never on a well-formed model.
+ *   roves focus on arrow keys); the worker matching `opts.focusWorker`
+ *   renders `data-selected="1"`. Raises: never on a well-formed model.
  */
 export function renderRail(state, root, doc, opts = {}) {
 	while (root.firstChild) root.removeChild(root.firstChild);
 	if (!state || !state.rail) return;
-	const ctx = { dispatch: opts.dispatch, selection: opts.selection ?? null };
+	const ctx = { dispatch: opts.dispatch, selection: opts.selection ?? null, focusWorker: opts.focusWorker ?? null };
 	const wrap = el(doc, "div", { class: "rail-inner", "data-rail": "1" });
 	for (const group of state.rail.groups) {
 		const section = el(doc, "section", { class: "rail-group", "data-rail-group": group.session.id, "data-foreign": group.foreign ? "1" : "0" });

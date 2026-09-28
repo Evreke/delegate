@@ -194,6 +194,9 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	const spotlight = opts.spotlight ?? new Set();
 	const edgeLayer = svgEl(doc, "g", { class: "graph-layer graph-edges", "data-graph-layer": "edges" });
 	for (const edge of layout.edges) {
+		// R4: the canvas draws the SPAWN tree only — collected/retired links
+		// stay in the model (and the layout) but add cross-column tangle here.
+		if (edge.kind !== "spawned_by") continue;
 		// C8: an edge into a spotlighted node turns amber (`.hot`) — the path
 		// cue from the attention queue to the affected nodes.
 		const hot = spotlight.size > 0 && (spotlight.has(edge.from) || spotlight.has(edge.to));

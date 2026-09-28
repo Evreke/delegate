@@ -1,0 +1,24 @@
+{
+	"version": 1,
+	"id": "S07",
+	"title": "Warn path — partial credit across all six dimensions lands below 70",
+	"blocker": false,
+	"input": {
+		"task": "Retry a worker that died with E_REPORT_MISSING, diagnosing before re-spawning.",
+		"context": [
+			"A prior spawn died with E_REPORT_MISSING."
+		],
+		"trigger": "collect returned E_REPORT_MISSING"
+	},
+	"expect": [
+		{ "tag": "plan:diagnose-root-cause", "dimension": "load-skip" },
+		{ "tag": "tool:read-mailbox", "dimension": "tool-choice" },
+		{ "tag": "tool:inspect-journal", "dimension": "tool-choice" },
+		{ "tag": "rules:bounded-retry", "dimension": "no-forbidden" },
+		{ "tag": "brief:write-report-contract", "dimension": "brief-rules" },
+		{ "tag": "retry:diagnosed", "dimension": "recovery" },
+		{ "tag": "retry:rebriefed", "dimension": "recovery" },
+		{ "tag": "topology:owned-dir-only", "dimension": "topology" }
+	],
+	"forbid": []
+}

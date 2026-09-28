@@ -1,0 +1,22 @@
+{
+	"version": 1,
+	"id": "S01",
+	"title": "Boundary pass — exactly 70 with four of six dimensions covered",
+	"blocker": false,
+	"input": {
+		"task": "Survey the repo read-only, honor the flat-test-file ban, then retry once with a bounded timeout.",
+		"context": [
+			"The working tree is a shared checkout."
+		],
+		"trigger": "operator asked for a read-only survey before any write"
+	},
+	"expect": [
+		{ "tag": "plan:read-agents", "dimension": "load-skip" },
+		{ "tag": "tool:read-only-survey", "dimension": "tool-choice" },
+		{ "tag": "rules:no-flat-test-files", "dimension": "no-forbidden" },
+		{ "tag": "recovery:bounded-timeout", "dimension": "recovery" },
+		{ "tag": "brief:write-report-contract", "dimension": "brief-rules" },
+		{ "tag": "topology:owned-dir-only", "dimension": "topology" }
+	],
+	"forbid": []
+}

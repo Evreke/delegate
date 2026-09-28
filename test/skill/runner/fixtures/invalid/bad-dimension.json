@@ -1,0 +1,9 @@
+{
+	"version": 1,
+	"id": "S98",
+	"title": "Invalid fixture — dimension outside the fixed set",
+	"blocker": false,
+	"input": { "task": "t", "context": [], "trigger": "t" },
+	"expect": [ { "tag": "retry:diagnosed", "dimension": "vibes" } ],
+	"forbid": []
+}

@@ -1,0 +1,24 @@
+{
+	"version": 1,
+	"id": "S10",
+	"title": "Blocker mirror S10 — verbatim retry is forbidden, diagnosed recovery is expected",
+	"blocker": true,
+	"input": {
+		"task": "Recover a stalled delegate worker spawn without repeating the failed verbatim prompt.",
+		"context": [
+			"The first spawn attempt stalled at the report-wait phase.",
+			"The worker console shows no question file."
+		],
+		"trigger": "orchestrator observed AWAITING_ANSWER with an empty mailbox"
+	},
+	"expect": [
+		{ "tag": "plan:read-issue", "dimension": "load-skip" },
+		{ "tag": "tool:spawn-worker", "dimension": "tool-choice" },
+		{ "tag": "brief:write-report-contract", "dimension": "brief-rules" },
+		{ "tag": "retry:diagnosed", "dimension": "recovery" },
+		{ "tag": "topology:owned-dir-only", "dimension": "topology" }
+	],
+	"forbid": [
+		{ "tag": "retry:verbatim", "dimension": "recovery" }
+	]
+}

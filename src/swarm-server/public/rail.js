@@ -39,10 +39,12 @@ import { el, on, renderDegradedChips, renderStatusMarker } from "./dom.js";
 import { isSettledStatus, statusView } from "./status.js";
 
 /** The UI-expansion key that unfolds one task's settled workers (the shared
- *  `toggle-collapse` action carries it — rail-scoped, never a canvas lead id). */
+ *  `toggle-collapse` action carries it — * rail-scoped, never a canvas lead id). */
 function railFoldKey(taskId) {
 	return `rail:${taskId}`;
 }
+/* rail-ux F8: the full name rides every row as `title` — CSS truncation is
+ *  visual only, the text stays recoverable on hover. */
 
 /** Wrap one worker-row button in its list item (valid `<ul>` content). */
 function appendWorkerItem(list, doc, row) {
@@ -91,7 +93,7 @@ function statusRow(doc, node, extra) {
 	// #91: the marker is a visual shape only — a visually-hidden label carries
 	// the same status to screen readers (color+shape never the only channel).
 	row.appendChild(el(doc, "span", { class: "rail-status-label", "data-rail-status-label": "1" }, node.statusView.label));
-	row.appendChild(el(doc, "span", { class: "rail-name", "data-rail-name": "1" }, extra.name));
+	row.appendChild(el(doc, "span", { class: "rail-name", "data-rail-name": "1", title: extra.name }, extra.name));
 	for (const chip of renderDegradedChips(doc, node.degraded)) row.appendChild(chip);
 	if (node.foreign) row.appendChild(el(doc, "span", { class: "rail-readonly", "data-rail-readonly": "1" }, "read-only"));
 	return row;
@@ -114,7 +116,7 @@ function renderWorkerRow(doc, task, ctx, rows) {
 		});
 		row.appendChild(renderStatusMarker(doc, w.statusView));
 		row.appendChild(el(doc, "span", { class: "rail-status-label", "data-rail-status-label": "1" }, w.statusView.label));
-		row.appendChild(el(doc, "span", { class: "rail-worker-name" }, w.name));
+		row.appendChild(el(doc, "span", { class: "rail-worker-name", title: w.name }, w.name));
 		for (const chip of renderDegradedChips(doc, w.degraded)) row.appendChild(chip);
 		// #85b: a worker row is a FOCUS affordance, not a display-only label —
 		// tapping it selects the task AND focuses that worker in the detail panel.

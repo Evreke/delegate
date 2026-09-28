@@ -352,10 +352,12 @@ button.rail-session, button.rail-task, button.rail-worker { background: transpar
 	padding-left: 0.4rem;
 }
 
-.rail-name {
+.rail-name,
+.rail-worker-name {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	min-width: 0;
 }
 
 .rail-role {

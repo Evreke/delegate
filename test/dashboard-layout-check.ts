@@ -187,6 +187,7 @@ function productionShapedState() {
 async function main(): Promise<void> {
 	const layoutMod = (await import(publicUrl("layout.js"))) as any;
 	const canvasMod = (await import(publicUrl("canvas.js"))) as any;
+	const canvasViewMod = (await import(publicUrl("canvas-view.js"))) as any;
 	const statusMod = (await import(publicUrl("status.js"))) as any;
 	const degradeMod = (await import(publicUrl("degrade.js"))) as any;
 	const uiMod = (await import(publicUrl("ui.js"))) as any;
@@ -274,7 +275,7 @@ async function main(): Promise<void> {
 		// attachCanvasControls auto-fits an untouched view once the SVG reports a box.
 		index.svg.rect = { width: 900, height: 600 };
 		const attached: any[] = [];
-		canvasMod.attachCanvasControls(index, doc, { getView: () => ({ zoom: 1, panX: 0, panY: 0 }), onView: (v: any) => attached.push(v), viewport: () => ({ width: 1200, height: 720 }) });
+		canvasViewMod.attachCanvasControls(index, doc, { getView: () => ({ zoom: 1, panX: 0, panY: 0 }), onView: (v: any) => attached.push(v), viewport: () => ({ width: 1200, height: 720 }) });
 		check(
 			"B2.7 first measured attach frames the untouched view (and re-points the viewBox at the SVG's own box)",
 			attached.length === 1 && intersects(transformedBounds(bounds, attached[0]), { minX: 0, minY: 0, maxX: 900, maxY: 600 }) && index.svg.attributes.viewBox === "0 0 900 600",
@@ -285,7 +286,7 @@ async function main(): Promise<void> {
 		const index2 = canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1.5, panX: 12, panY: -8 }, viewport: () => ({ width: 1200, height: 720 }), onView: () => {} });
 		index2.svg.rect = { width: 900, height: 600 };
 		const attached2: any[] = [];
-		canvasMod.attachCanvasControls(index2, doc, { getView: () => ({ zoom: 1.5, panX: 12, panY: -8 }), onView: (v: any) => attached2.push(v) });
+		canvasViewMod.attachCanvasControls(index2, doc, { getView: () => ({ zoom: 1.5, panX: 12, panY: -8 }), onView: (v: any) => attached2.push(v) });
 		check("B2.8 a user view (non-initial) is never auto-fit (no surprise reset on re-attach)", attached2.length === 0, JSON.stringify(attached2));
 
 		// Headless: no measurable element → the injected viewport is honored,
@@ -388,15 +389,15 @@ async function main(): Promise<void> {
 
 	// -- B6 — #92a: wheel zoom anchors in USER units -------------------------
 	{
-		const identity = canvasMod.cursorToUser(120, 80, { width: 900, height: 600 }, { width: 900, height: 600 });
+		const identity = canvasViewMod.cursorToUser(120, 80, { width: 900, height: 600 }, { width: 900, height: 600 });
 		check("B6.1 cursorToUser is the identity when the viewBox IS the element box", identity.x === 120 && identity.y === 80, JSON.stringify(identity));
-		const scaled = canvasMod.cursorToUser(200, 100, { width: 900, height: 600 }, { width: 1800, height: 1200 });
+		const scaled = canvasViewMod.cursorToUser(200, 100, { width: 900, height: 600 }, { width: 1800, height: 1200 });
 		check("B6.2 cursorToUser divides by the viewBox scale (2x element box → half the offset)", Math.abs(scaled.x - 100) < 1e-9 && Math.abs(scaled.y - 50) < 1e-9, JSON.stringify(scaled));
-		const letterboxed = canvasMod.cursorToUser(100, 200, { width: 900, height: 600 }, { width: 900, height: 900 });
+		const letterboxed = canvasViewMod.cursorToUser(100, 200, { width: 900, height: 600 }, { width: 900, height: 900 });
 		check("B6.3 cursorToUser removes the xMidYMid meet letterbox gutters", Math.abs(letterboxed.x - 100) < 1e-9 && Math.abs(letterboxed.y - 50) < 1e-9, JSON.stringify(letterboxed));
 		check(
 			"B6.4 a malformed viewBox parses to null so the measured box is the fallback",
-			canvasMod.parseViewBox("0 0 900") === null && canvasMod.parseViewBox("garbage") === null && canvasMod.parseViewBox("0 0 900 600")?.width === 900,
+			canvasViewMod.parseViewBox("0 0 900") === null && canvasViewMod.parseViewBox("garbage") === null && canvasViewMod.parseViewBox("0 0 900 600")?.width === 900,
 		);
 
 		// End to end: a wheel event whose element box is 2x the viewBox must
@@ -409,7 +410,7 @@ async function main(): Promise<void> {
 		const start = { zoom: 1.5, panX: 12, panY: -8 };
 		const onView: any[] = [];
 		const index = canvasMod.renderCanvas(state, layout, root, doc, { view: start, viewport: () => ({ width: 900, height: 600 }), onView: (v: any) => onView.push(v) });
-		canvasMod.attachCanvasControls(index, doc, { getView: () => start, onView: (v: any) => onView.push(v) });
+		canvasViewMod.attachCanvasControls(index, doc, { getView: () => start, onView: (v: any) => onView.push(v) });
 		index.svg.rect = { width: 1800, height: 1200 };
 		index.svg.setAttribute("viewBox", "0 0 900 600");
 		index.svg.dispatch("wheel", { deltaY: -1, offsetX: 200, offsetY: 100, preventDefault() {} });

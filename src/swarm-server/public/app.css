@@ -340,7 +340,8 @@ button.rail-session, button.rail-task, button.rail-worker { background: transpar
 .rail-session[data-selected="1"],
 .rail-task[data-selected="1"] {
 	background: var(--panel-2);
-	outline: 1px solid var(--border);
+	outline: 1px solid var(--accent);
+	box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .rail-task-box {

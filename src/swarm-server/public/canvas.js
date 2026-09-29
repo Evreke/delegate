@@ -141,7 +141,7 @@ function textEl(doc, attrs, value) {
 function paintNodeContent(doc, group, node) {
 	while (group.firstChild) group.removeChild(group.firstChild);
 	const view = node.kind === "aggregate" ? statusView("collected") : node.statusView;
-	const sub = node.kind === "aggregate" ? `worst: ${node.severity}` : subLineFor(node);
+	const sub = node.kind === "aggregate" ? `${node.collected}/${node.total} collected \u00b7 worst: ${node.severity} \u2014 click to expand` : subLineFor(node);
 	group.appendChild(svgEl(doc, "rect", { class: "graph-box", x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 8 }));
 	group.appendChild(renderSvgMarker(doc, view, 12, NODE_H / 2));
 	group.appendChild(textEl(doc, { class: "graph-name", "data-node-name": "1", x: 24, y: 20 }, node.name));

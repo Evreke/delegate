@@ -31,6 +31,9 @@
  *      `data-graph-node` identity keeps the session hashes (stable across
  *      the relayout); a collapsed sub-fleet's aggregate sits in the worker
  *      column right after its lead.
+ *   I10 R7 — the collapsed aggregate sub-line reads
+ *      `k/n collected · worst: <sev> — click to expand`: the honest worst
+ *      severity PLUS the affordance cue.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -458,6 +461,22 @@ async function main(): Promise<void> {
 			"I9.5 a collapsed sub-fleet renders its aggregate in the worker column right after its lead (the lead's own summary)",
 			collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`]?.col === 2 && collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`]?.row === collapsed.positions[sessionIdFor(LEAD(1))].row + 1 && !collapsed.visibleIds.has("m1-lead-1"),
 			JSON.stringify({ agg: collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`], lead: collapsed.positions[sessionIdFor(LEAD(1))] }),
+		);
+	}
+
+	// -- I10 — R7: the aggregate sub-line wording ------------------------------
+	{
+		const collapsed = layoutMod.computeLayout(model, { expansion: new Set() });
+		const agg = collapsed.nodes.find((n: any) => n.kind === "aggregate");
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(model, collapsed, root, doc, {});
+		const aggEl = byAttr(root, "data-graph-node").find((g: any) => g.attributes["data-graph-node"] === agg.id);
+		const subEl = aggEl.childNodes.find((c: any) => c.getAttribute && c.getAttribute("data-node-sub") !== null);
+		check(
+			"I10.1 the collapsed aggregate sub-line reads `k/n collected · worst: <sev> — click to expand` (honest worst + the affordance cue)",
+			subEl.textContent === `${agg.collected}/${agg.total} collected \u00b7 worst: ${agg.severity} \u2014 click to expand` && /^\d+\/\d+ collected \u00b7 worst: \S+ \u2014 click to expand$/.test(subEl.textContent),
+			subEl.textContent,
 		);
 	}
 

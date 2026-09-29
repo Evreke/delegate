@@ -9,10 +9,18 @@
  * box is ignored whenever a real measurement exists.
  *
  * A fake DOM without listeners is a no-op (the pure helpers stay checkable).
+ *
+ * R5 (canvas-intent) lives here too: (a) the wheel zoom floor is DYNAMIC —
+ * `zoomFloorFor(bounds, viewport)` lowers the documented 0.5 to the fit ratio
+ * when the graph only fits below it, so wheel-out never traps the view above
+ * the fitting zoom; (b) `dragGesture` is the drag-vs-click threshold — a
+ * pointer must travel more than CLICK_DRAG_THRESHOLD_PX before the gesture
+ * pans, and a gesture that panned suppresses its trailing synthetic click so
+ * a pan never selects the node it ended on.
  */
 
 import { on } from "./dom.js";
-import { fitView, panBy, zoomAt } from "./layout.js";
+import { fitView, panBy, zoomAt, zoomFloorFor } from "./layout.js";
 
 /** The view transform string for the SVG `<g data-view>` wrapper. */
 export function viewTransform(view) {
@@ -100,9 +108,58 @@ export function cursorToUser(offsetX, offsetY, viewBox, box) {
 	return { x: (ox - (boxW - vbW * scale) / 2) / scale, y: (oy - (boxH - vbH * scale) / 2) / scale };
 }
 
+/** The drag-vs-click movement threshold (R5): a pointer must travel MORE
+ *  than this many CSS pixels from its origin before the gesture becomes a
+ *  pan — at or below it the gesture stays a click and select still fires. */
+export const CLICK_DRAG_THRESHOLD_PX = 4;
+
+/**
+ * One pointer gesture's drag-vs-click state machine (R5). Pure bookkeeping
+ * over injected coordinates: `down` opens a gesture, `move` returns the pan
+ * delta ONLY once the pointer has travelled past the threshold (null
+ * before), `up` closes the gesture and reports whether it ended a pan, and
+ * `suppressesClick` stays true for the synthetic click that follows a pan
+ * tail (cleared on the next `down`) — that click must not select.
+ * FUNCTION_CONTRACT: Input — numeric client coordinates. Output — see above;
+ *   never throws, no DOM access.
+ */
+export function dragGesture({ threshold = CLICK_DRAG_THRESHOLD_PX } = {}) {
+	let origin = null;
+	let last = null;
+	let panning = false;
+	let tail = false;
+	return {
+		down(x, y) {
+			origin = last = { x, y };
+			panning = false;
+			tail = false;
+		},
+		move(x, y) {
+			if (!origin) return null;
+			if (!panning && Math.hypot(x - origin.x, y - origin.y) > threshold) panning = true;
+			const delta = panning ? { dx: x - last.x, dy: y - last.y } : null;
+			last = { x, y };
+			return delta;
+		},
+		up() {
+			tail = panning;
+			origin = last = null;
+			panning = false;
+			return tail;
+		},
+		isPanning() {
+			return panning;
+		},
+		suppressesClick() {
+			return tail;
+		},
+	};
+}
+
 /** Wire the documented interactions onto a rendered canvas: wheel zoom
- *  (clamped, cursor-anchored IN USER UNITS), drag pan, the fit affordance. A
- *  fake DOM without listeners is a no-op (the pure helpers stay checkable).
+ *  (clamped, cursor-anchored IN USER UNITS, floored at the R5 reachability
+ *  floor), THRESHOLDED drag pan, the fit affordance. A fake DOM without
+ *  listeners is a no-op (the pure helpers stay checkable).
  *  FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
  *    ({ getView, onView, viewport }). Output — none. Never throws. */
 export function attachCanvasControls(index, doc, opts = {}) {
@@ -124,6 +181,9 @@ export function attachCanvasControls(index, doc, opts = {}) {
 		const fitted = fitView(index.layout.bounds, vp);
 		if (!sameView(fitted, getView())) opts.onView?.(fitted);
 	}
+	// R5: the wheel floor follows the fit — a fleet that only fits below 0.5×
+	// keeps a wheel-out path back to the full fit (never trapped above it).
+	const floorFor = () => zoomFloorFor(index.layout.bounds, viewportOf(opts, svg, root));
 	on(svg, "wheel", (event) => {
 		event?.preventDefault?.();
 		const factor = event && event.deltaY < 0 ? 1.1 : 0.9;
@@ -132,20 +192,22 @@ export function attachCanvasControls(index, doc, opts = {}) {
 		const box = viewportOf(opts, svg, root);
 		const vb = parseViewBox(typeof svg.getAttribute === "function" ? svg.getAttribute("viewBox") : null) ?? { x: 0, y: 0, width: box.width, height: box.height };
 		const cursor = cursorToUser(event?.offsetX ?? 0, event?.offsetY ?? 0, vb, box);
-		opts.onView?.(zoomAt(getView(), factor, cursor.x, cursor.y));
+		opts.onView?.(zoomAt(getView(), factor, cursor.x, cursor.y, floorFor()));
 	});
-	let dragging = null;
+	// R5: the drag threshold — sub-threshold pointer travel never pans, and a
+	// gesture that panned suppresses its trailing click (canvas.js consults
+	// the same gesture object via `index.gesture`).
+	const gesture = index.gesture ?? dragGesture();
+	index.gesture = gesture;
 	on(svg, "pointerdown", (event) => {
-		dragging = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
+		gesture.down(event?.clientX ?? 0, event?.clientY ?? 0);
 	});
 	on(svg, "pointermove", (event) => {
-		if (dragging === null) return;
-		const next = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
-		opts.onView?.(panBy(getView(), next.x - dragging.x, next.y - dragging.y));
-		dragging = next;
+		const delta = gesture.move(event?.clientX ?? 0, event?.clientY ?? 0);
+		if (delta) opts.onView?.(panBy(getView(), delta.dx, delta.dy));
 	});
 	on(svg, "pointerup", () => {
-		dragging = null;
+		gesture.up();
 	});
 	on(svg, "dblclick", () => opts.onView?.(fitView(index.layout.bounds, applyViewport())));
 }

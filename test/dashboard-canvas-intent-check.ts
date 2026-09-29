@@ -18,6 +18,12 @@
  *      amber attention stroke+glow, 0.35 dim, hot edges, hover affordance.
  *   I6 R1/R2 — app wiring: a select-node dispatch re-renders the canvas with
  *      exactly one `data-selected` node.
+ *   I8 R5 — pan/zoom reachability + drag-vs-click threshold: fit zooms below
+ *      the old 0.5 floor when a fleet only fits there (every node's
+ *      transformed box lands inside the viewport for ANY fleet size), the
+ *      wheel floor follows the fit (wheel-out never traps the view above
+ *      the fitting zoom), a pointer move above CLICK_DRAG_THRESHOLD_PX pans
+ *      and suppresses its trailing click, a sub-threshold tap still selects.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -339,6 +345,67 @@ async function main(): Promise<void> {
 		const kinds = byAttr(root, "data-edge").map((e: any) => e.attributes["data-edge-kind"]);
 		check("I7.1 the canvas renders ONLY spawned_by edges (collected/retired links stay in the model)", kinds.length > 0 && kinds.every((k: string) => k === "spawned_by"), JSON.stringify(kinds));
 		check("I7.2 the layout still carries the full wire edge set (the filter is a view concern, not a model loss)", layout.edges.some((e: any) => e.kind === "collected") && layout.edges.some((e: any) => e.kind === "retired"));
+	}
+
+	// -- I8 — R5: pan/zoom reachability + drag-vs-click threshold -------------
+	{
+		const canvasViewMod = (await import(publicUrl("canvas-view.js"))) as any;
+		// A viewport so small the fixture only fits below the documented 0.5
+		// floor — the old clamp left the graph unreachable there.
+		const vp = { width: 400, height: 200 };
+		const fit = layoutMod.fitView(layout.bounds, vp);
+		const floor = layoutMod.zoomFloorFor(layout.bounds, vp);
+		check("I8.1 fit of a fleet too large for 0.5× zooms at its own sub-0.5 ratio (no 0.5 floor)", fit.zoom < 0.5 && fit.zoom > 0 && Math.abs(fit.zoom - floor) < 1e-12, JSON.stringify({ fit, floor }));
+		const eps = 1e-6;
+		const inside = Object.entries(layout.positions).every(([, p]: any) => {
+			const x0 = p.x * fit.zoom + fit.panX;
+			const y0 = p.y * fit.zoom + fit.panY;
+			return x0 >= -eps && y0 >= -eps && x0 + layoutMod.NODE_W * fit.zoom <= vp.width + eps && y0 + layoutMod.NODE_H * fit.zoom <= vp.height + eps;
+		});
+		check("I8.2 after fit every node's transformed box is inside the viewport (reachable for ANY fleet size)", inside && Object.keys(layout.positions).length > 0);
+		const wheelOut = layoutMod.zoomAt(fit, 0.9, 0, 0, floor);
+		check("I8.3 the wheel floor follows the fit: zoom-out at a sub-floor view stays below 0.5 (never jumps up)", wheelOut.zoom < 0.5 && wheelOut.zoom >= floor - 1e-12, JSON.stringify(wheelOut));
+		check("I8.4 the documented wheel floor 0.5 is unchanged without a fleet floor (zoomAt default)", layoutMod.zoomAt(fit, 0.9, 0, 0).zoom === 0.5);
+
+		// Integration through attachCanvasControls on the fake svg: the wheel
+		// handler must pass the fleet floor (a sub-floor view never clamps up).
+		{
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			const index = canvasMod.renderCanvas(model, layout, root, doc, { view: { ...fit } });
+			const views: any[] = [];
+			canvasViewMod.attachCanvasControls(index, doc, { getView: () => views.at(-1) ?? { ...fit }, onView: (v: any) => views.push(v), viewport: () => vp });
+			index.svg.fire("wheel", { deltaY: 100, offsetX: 10, offsetY: 10 });
+			check("I8.5 a wheel-out through the live controls keeps the sub-0.5 fit view (the floor is wired)", views.length === 1 && views[0].zoom < 0.5 && views[0].zoom >= floor - 1e-12, JSON.stringify(views));
+		}
+
+		// The drag-vs-click threshold: >threshold pans and suppresses the
+		// trailing click; a sub-threshold tap still selects (and never pans).
+		const dragScenario = (dx: number, dy: number) => {
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			const dispatched: any[] = [];
+			const views: any[] = [];
+			const index = canvasMod.renderCanvas(model, layout, root, doc, { dispatch: (a: any) => dispatched.push(a), view: { zoom: 1, panX: 0, panY: 0 } });
+			canvasViewMod.attachCanvasControls(index, doc, { getView: () => views.at(-1) ?? { zoom: 1, panX: 0, panY: 0 }, onView: (v: any) => views.push(v), viewport: () => vp });
+			const nodeEl = byAttr(root, "data-graph-node").find((g: any) => g.attributes["data-graph-node"] === W21);
+			index.svg.fire("pointerdown", { clientX: 100, clientY: 100 });
+			index.svg.fire("pointermove", { clientX: 100 + dx, clientY: 100 + dy });
+			index.svg.fire("pointerup", {});
+			nodeEl.fire("click");
+			return { dispatched, views };
+		};
+		const sub = dragScenario(2, 1); // ~2.2px — below the 4px threshold
+		check("I8.6 a sub-threshold tap still selects and never pans", sub.dispatched.length === 1 && sub.dispatched[0].type === "select-node" && sub.dispatched[0].id === W21 && sub.views.length === 0, JSON.stringify({ dispatched: sub.dispatched, views: sub.views }));
+		const sup = dragScenario(6, 0); // 6px — above the threshold: a pan
+		check("I8.7 a drag above the threshold pans and fires NO select-node", sup.views.length === 1 && sup.views[0].panX === 6 && sup.views[0].panY === 0 && !sup.dispatched.some((a: any) => a.type === "select-node"), JSON.stringify({ dispatched: sup.dispatched, views: sup.views }));
+		check("I8.8 the threshold is the exported CLICK_DRAG_THRESHOLD_PX (4px, > not >=)", canvasViewMod.CLICK_DRAG_THRESHOLD_PX === 4 && (() => {
+			const g = canvasViewMod.dragGesture();
+			g.down(0, 0);
+			const at = g.move(4, 0); // exactly 4px is NOT yet a pan
+			g.up();
+			return at === null && g.suppressesClick() === false;
+		})());
 	}
 
 	console.log(failures === 0 ? "\nALL CANVAS-INTENT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

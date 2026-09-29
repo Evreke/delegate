@@ -18,7 +18,10 @@
  *
  * Pan/zoom/fit are the documented interaction range: wheel zoom 0.5×–2×,
  * cursor-anchored; pan by scroll/drag; `fit` resolves the whole graph into
- * the viewport at a clamped zoom.
+ * the viewport. R5 (canvas-intent): the 0.5 floor is DYNAMIC — a fleet whose
+ * fit ratio falls below 0.5 lowers the floor to that ratio (`zoomFloorFor`),
+ * so fit and wheel-out can always bring the WHOLE graph back into view and
+ * content is never unreachable behind the `overflow:hidden` region.
  *
  * This module also owns the adaptive-collapse DECISION (which all-terminal
  * lead collapses) because geometry and visibility are one responsibility.
@@ -40,8 +43,27 @@ export const ZOOM_MAX = 2;
 
 /** Clamp a zoom factor into the documented range (non-finite → 1). */
 export function clampZoom(zoom) {
+	return clampZoomWithFloor(zoom, ZOOM_MIN);
+}
+
+/** Clamp into [floor, ZOOM_MAX]; the floor may only LOWER the documented
+ *  0.5 (never raise it) — the reachability exception of R5. */
+function clampZoomWithFloor(zoom, floor) {
 	if (typeof zoom !== "number" || !Number.isFinite(zoom)) return 1;
-	return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
+	const lo = typeof floor === "number" && Number.isFinite(floor) ? Math.min(floor, ZOOM_MIN) : ZOOM_MIN;
+	return Math.min(ZOOM_MAX, Math.max(lo, zoom));
+}
+
+/** The reachability floor for one (bounds, viewport) pair (R5): the
+ *  documented 0.5, or the fit ratio itself when the whole graph only fits
+ *  below it — a fleet of ANY size stays zoomable back to a full fit. Pure,
+ *  degenerate input never NaNs. */
+export function zoomFloorFor(bounds, viewport) {
+	const width = Math.max(1, Number(bounds?.width) || 0);
+	const height = Math.max(1, Number(bounds?.height) || 0);
+	const vw = Math.max(1, Number(viewport?.width) || 0);
+	const vh = Math.max(1, Number(viewport?.height) || 0);
+	return Math.min(ZOOM_MIN, vw / width, vh / height);
 }
 
 /** The initial view (fit-to-content is applied by `fitView`). */
@@ -51,12 +73,15 @@ export function initialView() {
 
 /**
  * Zoom around a viewport-anchored cursor point (the point under the cursor
- * stays put). Pure.
- * FUNCTION_CONTRACT: Input — view {zoom,panX,panY}, factor (>0), cursorX/Y.
- * Output — a new view with the clamped zoom and the anchored pan.
+ * stays put). Pure. The optional `floor` is the R5 reachability floor
+ * (`zoomFloorFor`) — the wheel may zoom out past 0.5 only down to the zoom
+ * that still fits the whole graph.
+ * FUNCTION_CONTRACT: Input — view {zoom,panX,panY}, factor (>0), cursorX/Y,
+ *   floor (default ZOOM_MIN). Output — a new view with the clamped zoom and
+ *   the anchored pan.
  */
-export function zoomAt(view, factor, cursorX = 0, cursorY = 0) {
-	const next = clampZoom(view.zoom * factor);
+export function zoomAt(view, factor, cursorX = 0, cursorY = 0, floor = ZOOM_MIN) {
+	const next = clampZoomWithFloor(view.zoom * factor, floor);
 	const worldX = (cursorX - view.panX) / view.zoom;
 	const worldY = (cursorY - view.panY) / view.zoom;
 	return { zoom: next, panX: cursorX - worldX * next, panY: cursorY - worldY * next };
@@ -67,11 +92,14 @@ export function panBy(view, dx, dy) {
 	return { ...view, panX: view.panX + dx, panY: view.panY + dy };
 }
 
-/** Fit `bounds` into a viewport, clamped and centered. Pure. */
+/** Fit `bounds` into a viewport, clamped and centered. Pure. R5: the fit
+ *  zoom has no 0.5 floor — a fleet too large for 0.5× fits at its own ratio
+ *  (`zoomFloorFor`), so every node lands inside the viewport for ANY fleet
+ *  size (pan then covers the zoomed-in regime). */
 export function fitView(bounds, viewport) {
 	const width = Math.max(1, bounds.width);
 	const height = Math.max(1, bounds.height);
-	const zoom = clampZoom(Math.min(viewport.width / width, viewport.height / height));
+	const zoom = clampZoomWithFloor(Math.min(viewport.width / width, viewport.height / height), zoomFloorFor(bounds, viewport));
 	const panX = (viewport.width - width * zoom) / 2 - bounds.minX * zoom;
 	const panY = (viewport.height - height * zoom) / 2 - bounds.minY * zoom;
 	return { zoom, panX, panY };

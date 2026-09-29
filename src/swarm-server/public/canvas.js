@@ -26,11 +26,18 @@
  * element pixels end to end — the injected `viewport` seam is only the
  * fallback when the element cannot be measured (headless), and the hardcoded
  * 1200x720 "fantasy" viewport is ignored whenever a real measurement exists.
+ *
+ * R5 (canvas-intent): the whole graph is ALWAYS reachable — fit zooms below
+ * the old 0.5 floor when a fleet only fits there (layout.js `zoomFloorFor`),
+ * and pointer gestures run through a drag-vs-click threshold
+ * (`canvas-view.js` `dragGesture`, exposed on the index as `index.gesture`):
+ * a pan tail suppresses its trailing synthetic click, so panning never
+ * selects the node it ended on.
  */
 
 import { el, on } from "./dom.js";
 import { NODE_H, NODE_W, fitView } from "./layout.js";
-import { viewportOf, viewTransform } from "./canvas-view.js";
+import { viewportOf, viewTransform, dragGesture } from "./canvas-view.js";
 import { nodeSubLine, statusView } from "./status.js";
 
 /** SVG element creation (real namespace in a browser; createElement under a fake doc). */
@@ -105,13 +112,16 @@ function renderNodeGroup(doc, node, pos, opts) {
 	if (node.kind === "aggregate") group.setAttribute("data-aggregate", node.leadId);
 	paintNodeContent(doc, group, node);
 	// R1: a plain click selects — no spotlight payload, nothing dims.
-	on(group, "click", () =>
+	// R5: the synthetic click after a drag-pan is swallowed — a pan never
+	// selects (nor toggles) the node it ended on (canvas-view.js threshold).
+	on(group, "click", () => {
+		if (opts.gesture?.suppressesClick()) return;
 		opts.dispatch?.(
 			node.kind === "aggregate" || opts.collapsedLeads?.has(node.id)
 				? { type: "toggle-collapse", leadId: node.kind === "aggregate" ? node.leadId : node.id }
 				: { type: "select-node", id: node.id },
-		),
-	);
+		);
+	});
 	return group;
 }
 
@@ -192,6 +202,9 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 		preserveAspectRatio: "xMidYMid meet",
 	});
 	const spotlight = opts.spotlight ?? new Set();
+	// R5: one gesture object per canvas — the node click handlers and
+	// attachCanvasControls share it, so a pan tail suppresses the click.
+	const gesture = opts.gesture ?? dragGesture();
 	const edgeLayer = svgEl(doc, "g", { class: "graph-layer graph-edges", "data-graph-layer": "edges" });
 	for (const edge of layout.edges) {
 		// R4: the canvas draws the SPAWN tree only — collected/retired links
@@ -206,7 +219,7 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	}
 	const nodeLayer = svgEl(doc, "g", { class: "graph-layer graph-nodes", "data-graph-layer": "nodes" });
 	const nodes = new Map();
-	const nodeOpts = { ...opts, collapsedLeads: new Set(layout.collapsedLeadIds) };
+	const nodeOpts = { ...opts, gesture, collapsedLeads: new Set(layout.collapsedLeadIds) };
 	for (const node of layout.nodes) {
 		const pos = layout.positions[node.id];
 		const group = renderNodeGroup(doc, node, pos, nodeOpts);
@@ -224,7 +237,7 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	toolbar.appendChild(fit);
 	root.appendChild(toolbar);
 	root.appendChild(svg);
-	return { svg, nodes, layout, view, root };
+	return { svg, nodes, layout, view, root, gesture };
 }
 
 /** Patch node status/progress/severity/selection IN PLACE (no relayout, no

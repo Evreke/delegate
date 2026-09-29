@@ -461,6 +461,19 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard canvas: R5 pan/zoom reachability + drag-vs-click threshold
+  (canvas-intent round).** A fleet too large for the 0.5× zoom floor was
+  unreachable behind the `overflow:hidden` canvas region: `fitView` now zooms
+  at the graph's own sub-0.5 ratio when that is what fits (the documented
+  0.5–2× wheel range keeps 0.5 as its floor EXCEPT that `zoomFloorFor`
+  lowers it to the fit ratio for the current fleet, so wheel-out always has a
+  path back to a full fit — `clampZoom` itself is unchanged). Pointer gestures
+  now run through a 4px drag-vs-click threshold (`dragGesture`): a move above
+  the threshold pans, and the synthetic click at the gesture's end is
+  suppressed so panning never selects the node it ends on; a sub-threshold
+  tap still selects. Check: `test/dashboard-canvas-intent-check.ts` I8
+  (v1-check A9.4 amended to the ruled sub-0.5 fit).
+
 - **Dashboard ownership, bounded reads and honest errors (#81, #88, #89).**
   (a) The serving identity is now derived from the `/api/swarm/fleets`
   envelope's `self` and wired into the read model, so foreign fleets are

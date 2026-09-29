@@ -558,7 +558,7 @@ async function main(): Promise<void> {
 		check("A9.2 wheel zoom is cursor-anchored (the point under the cursor stays put)", Math.abs((100 - zoomed.panX) / zoomed.zoom - worldX) < 1e-9 && Math.abs((50 - zoomed.panY) / zoomed.zoom - worldY) < 1e-9);
 		check("A9.3 pan is a pure screen-space delta", layoutMod.panBy(view, 10, -5).panX === 10 && layoutMod.panBy(view, 10, -5).panY === -5);
 		const fit = layoutMod.fitView({ minX: 0, minY: 0, width: 2000, height: 1000 }, { width: 800, height: 400 });
-		check("A9.4 fit resolves the whole graph into the viewport at a clamped zoom", fit.zoom === 0.5 && Number.isFinite(fit.panX) && Number.isFinite(fit.panY));
+		check("A9.4 fit resolves an oversized graph into the viewport at its own sub-0.5 ratio (R5: the 0.5 floor is the reachability exception — always fits)", fit.zoom === 0.4 && Number.isFinite(fit.panX) && Number.isFinite(fit.panY));
 		const doc = fakeDoc();
 		const root = doc.createElement("div");
 		const layout = layoutMod.computeLayout(model, { expansion: [] });

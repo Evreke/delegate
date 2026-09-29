@@ -456,7 +456,14 @@ async function main(): Promise<void> {
 	// -- A6 — graph: columns, edges, statuses, collapse, golden --------------
 	{
 		const layout = layoutMod.computeLayout(model, { expansion: [] });
-		check("A6.1 columns follow depth: orchestrator 0 → leads 1 → workers 2", layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions[L1].col === 1 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined && layout.positions[W41].col === 2, JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, lead: layout.positions[L1]?.col, w41: layout.positions[W41]?.col }));
+		// R6 (canvas-intent): amended from the BFS depth pin — a lead IS a worker
+		// of its task, so leads join the workers in column 2; tasks take column
+		// 1 and the orchestrator column 0 (the wire's sibling shape synthesized).
+		check(
+			"A6.1 columns follow the ruled roles: orchestrator 0 → tasks 1 → workers 2 (a lead is a worker of its task, R6)",
+			layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions["milestone1"].col === 1 && layout.positions["m1-lead-4"].col === 1 && layout.positions[L1].col === 2 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined && layout.positions[W41].col === 2,
+			JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, task: layout.positions["milestone1"]?.col, subtask: layout.positions["m1-lead-4"]?.col, lead: layout.positions[L1]?.col, w41: layout.positions[W41]?.col }),
+		);
 		const full = layoutMod.computeLayout(model, { expansion: new Set([L1]) });
 		const graphEdges = graph.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
 		const layoutEdges = full.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");

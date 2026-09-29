@@ -5,8 +5,11 @@
  * Production shape is the whole point of the #80 fixture: every node carries
  * `depth: 0` (the wire's `depth` is the authority TIER, not tree depth — the
  * live snapshot has it 0 on all 48 nodes) and the hierarchy exists ONLY as
- * `spawned_by` edges. The layout must derive its columns from BFS over those
- * edges, never from `node.depth`.
+ * `spawned_by` edges + node roles. Since R6 (canvas-intent) the layout
+ * derives its columns from the ROLES — orchestrator 0, tasks 1, workers 2
+ * grouped under their own task — never from `node.depth` and never from a
+ * BFS over the wire's sibling-shaped edges; B1.1/B1.3/B1.7 are amended to
+ * the ruled behavior.
  *
  * The #78 half drives the real `renderCanvas`/`attachCanvasControls` through a
  * fake DOM seam whose elements report a pixel box: the measured element box
@@ -141,9 +144,13 @@ function transformedBounds(bounds: any, view: { zoom: number; panX: number; panY
 /**
  * The #80 production shape: a root orchestrator, two sub-orchestrators, their
  * workers and two task nodes — every node `depth: 0`, hierarchy only as edges.
+ * R6 (canvas-intent): production sessions carry their wire ROLE fields
+ * (`isWorker`, plus the embodiment task association folded onto `task`) — the
+ * fixture models them now, because the ruled columns read roles, not BFS
+ * distance.
  */
 function productionShapedState() {
-	const node = (kind: string, id: string, name: string) => ({
+	const node = (kind: string, id: string, name: string, extra: Record<string, unknown> = {}) => ({
 		kind,
 		id,
 		name,
@@ -156,14 +163,17 @@ function productionShapedState() {
 		usage: null,
 		elapsedLabel: null,
 		progress: null,
+		...extra,
 	});
 	const nodes = [
-		node("session", "s:root", "root"),
-		node("session", "s:lead-a", "lead-a"),
-		node("session", "s:lead-b", "lead-b"),
-		node("session", "s:a1", "a1"),
-		node("session", "s:a2", "a2"),
-		node("session", "s:b1", "b1"),
+		node("session", "s:root", "root", { isWorker: false, ownsChildren: true, role: "orchestrator" }),
+		node("session", "s:lead-a", "lead-a", { isWorker: true, ownsChildren: true, role: "worker-orchestrator", task: "t:root" }),
+		node("session", "s:lead-b", "lead-b", { isWorker: true, ownsChildren: true, role: "worker-orchestrator", task: "t:root" }),
+		node("session", "s:a1", "a1", { isWorker: true, task: "t:lead-a" }),
+		node("session", "s:a2", "a2", { isWorker: true, task: "t:lead-a" }),
+		// b1's owning task is outside this fixture slice: it lands in the
+		// ungrouped worker tail — still column 2.
+		node("session", "s:b1", "b1", { isWorker: true, task: "t:lead-b" }),
 		node("task", "t:root", "root-task"),
 		node("task", "t:lead-a", "lead-a-task"),
 	];
@@ -192,14 +202,18 @@ async function main(): Promise<void> {
 	const degradeMod = (await import(publicUrl("degrade.js"))) as any;
 	const uiMod = (await import(publicUrl("ui.js"))) as any;
 
-	// -- B1 — #80: columns come from BFS over spawned_by, never node.depth ---
+	// -- B1 — #80/R6: columns come from node roles, never node.depth --------
 	{
 		const state = productionShapedState();
 		const layout = layoutMod.computeLayout(state, { expansion: [] });
 		const col = (id: string): number | undefined => layout.positions[id]?.col;
+		// R6 (canvas-intent): the BFS column pin is amended to the ruled
+		// 3-column read — the wire makes a task and its workers SIBLINGS (both
+		// spawned_by the orchestrator), so BFS distance read as a hub of mixed
+		// siblings; the layout now synthesizes the prototype's grouping.
 		check(
-			"B1.1 a production-shaped fixture (every node depth 0) still forms depth columns from spawned_by edges",
-			col("s:root") === 0 && col("s:lead-a") === 1 && col("s:lead-b") === 1 && col("t:root") === 1 && col("s:a1") === 2 && col("s:a2") === 2 && col("s:b1") === 2 && col("t:lead-a") === 2,
+			"B1.1 a production-shaped fixture (every node depth 0) forms the ruled role columns: orchestrator 0, tasks 1, workers 2 (R6)",
+			col("s:root") === 0 && col("t:root") === 1 && col("t:lead-a") === 1 && col("s:lead-a") === 2 && col("s:lead-b") === 2 && col("s:a1") === 2 && col("s:a2") === 2 && col("s:b1") === 2,
 			JSON.stringify(layout.positions),
 		);
 		check(
@@ -207,9 +221,13 @@ async function main(): Promise<void> {
 			new Set(Object.values(layout.positions).map((p: any) => p.col)).size >= 3,
 			JSON.stringify([...new Set(Object.values(layout.positions).map((p: any) => p.col))]),
 		);
+		// R6: the one-column-per-hop pin is amended — the ruled synthesis groups
+		// workers under their task, so a worker→orchestrator edge spans 2
+		// columns and a sub-task→worker-orchestrator edge spans −1. Every edge
+		// still originates in the task/worker columns and targets a session.
 		check(
-			"B1.3 every spawned_by edge steps exactly one column (child = parent + 1)",
-			state.edges.every((e) => layout.positions[e.from].col === layout.positions[e.to].col + 1),
+			"B1.3 every spawned_by edge originates in a task/worker column and targets a session column (R6 synthesis; no edge enters column 0)",
+			state.edges.every((e) => [1, 2].includes(layout.positions[e.from].col) && [0, 2].includes(layout.positions[e.to].col)),
 			JSON.stringify(state.edges.map((e) => `${e.from}:${layout.positions[e.from].col}->${e.to}:${layout.positions[e.to].col}`)),
 		);
 		check(
@@ -217,7 +235,7 @@ async function main(): Promise<void> {
 			state.nodes.every((n) => n.depth === 0),
 		);
 		const again = layoutMod.computeLayout(state, { expansion: [] });
-		check("B1.5 the BFS layout is deterministic (byte-identical golden on two calls)", layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(again));
+		check("B1.5 the ruled layout is deterministic (byte-identical golden on two calls)", layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(again));
 
 		// A cycle is not a root: it must not loop forever and stays deterministic.
 		const cyclic = productionShapedState();
@@ -225,9 +243,13 @@ async function main(): Promise<void> {
 		const cyc = layoutMod.computeLayout(cyclic, { expansion: [] });
 		check("B1.6 a pure cycle terminates and stays deterministic", layoutMod.coordinateGolden(cyc) === layoutMod.coordinateGolden(layoutMod.computeLayout(cyclic, { expansion: [] })));
 
-		// The same heuristic on the REAL graph shape: all depth 0, edges only.
-		const depths = layoutMod.resolveDepths(state);
-		check("B1.7 resolveDepths is exported, pure and edge-derived", depths.get("s:root") === 0 && depths.get("s:lead-a") === 1 && depths.get("s:a1") === 2);
+		// The same derivation on the REAL graph shape: all depth 0, roles + edges only.
+		const cols = layoutMod.resolveColumns(state);
+		check(
+			"B1.7 resolveColumns is exported, pure and role-derived (R6: orchestrator 0, task 1, worker 2 — never node.depth)",
+			JSON.stringify([...cols.entries()]) === JSON.stringify([...layoutMod.resolveColumns(state).entries()]) && cols.get("s:root") === 0 && cols.get("t:root") === 1 && cols.get("t:lead-a") === 1 && cols.get("s:lead-a") === 2 && cols.get("s:a1") === 2 && cols.get("s:b1") === 2,
+			JSON.stringify([...cols.entries()]),
+		);
 	}
 
 	// -- B2 — #78: fit and the authoritative viewBox intersect ---------------

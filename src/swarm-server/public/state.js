@@ -108,7 +108,10 @@ function buildSessionNode(node, ctx) {
 	return {
 		id: node.id,
 		kind: "session",
-		name: node.id,
+		// R6 (canvas-intent): a worker session is NAMED by its role name — the
+		// same name the rail shows (`worker || id`) — never the session hash;
+		// `id` above stays the node identity (data-graph-node never changes).
+		name: workerName ?? node.id,
 		worker: workerName,
 		task: ctx.embodiments.get(node.id)?.task ?? (node.tasks ?? [])[0] ?? null, dir: ctx.embodiments.get(node.id)?.dir ?? null,
 		role: node.role,

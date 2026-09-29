@@ -24,6 +24,13 @@
  *      wheel floor follows the fit (wheel-out never traps the view above
  *      the fitting zoom), a pointer move above CLICK_DRAG_THRESHOLD_PX pans
  *      and suppresses its trailing click, a sub-threshold tap still selects.
+ *   I9 R6 — the ruled 3-column topology + role names: orchestrator col 0,
+ *      tasks col 1, worker sessions col 2 grouped adjacent to their own
+ *      task's band (never wire-siblings of it); a worker canvas node is
+ *      labeled by its ROLE name (the same name the rail shows), while
+ *      `data-graph-node` identity keeps the session hashes (stable across
+ *      the relayout); a collapsed sub-fleet's aggregate sits in the worker
+ *      column right after its lead.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -406,6 +413,52 @@ async function main(): Promise<void> {
 			g.up();
 			return at === null && g.suppressesClick() === false;
 		})());
+	}
+
+	// -- I9 — R6: the ruled 3-column topology + role names --------------------
+	{
+		const col = (id: string): number | undefined => layout.positions[id]?.col;
+		const row = (id: string): number | undefined => layout.positions[id]?.row;
+		check(
+			"I9.1 the ruled columns: orchestrator col 0, tasks col 1, worker sessions col 2 — a task's workers are grouped under it, never wire-siblings of it",
+			col(sessionIdFor(SELF)) === 0 && col("milestone1") === 1 && col("m1-lead-1") === 1 && col("m1-lead-2") === 1 && col(sessionIdFor(LEAD(1))) === 2 && col(L2) === 2 && col(W21) === 2 && col(sessionIdFor(WORK(2, 2))) === 2,
+			JSON.stringify(Object.fromEntries(layout.nodes.map((n: any) => [n.id, `c${col(n.id)}r${row(n.id)}`]))),
+		);
+		const workerRowsOf = (taskId: string): number[] => layout.nodes.filter((n: any) => n.kind === "session" && n.isWorker === true && n.task === taskId).map((n: any) => row(n.id)).sort((a: number, b: number) => a - b);
+		check(
+			"I9.2 workers sit adjacent to their task's band: the task first, then its workers top-to-bottom, then the next task",
+			JSON.stringify(workerRowsOf("m1-lead-1")) === JSON.stringify([row("m1-lead-1")! + 1, row("m1-lead-1")! + 2]) &&
+				JSON.stringify(workerRowsOf("m1-lead-2")) === JSON.stringify([row("m1-lead-2")! + 1, row("m1-lead-2")! + 2]) &&
+				JSON.stringify(workerRowsOf("milestone1")) === JSON.stringify([row("milestone1")! + 1, row("milestone1")! + 2]) &&
+				row("m1-lead-2") === row("m1-lead-1")! + 3 &&
+				row("milestone1") === row("m1-lead-2")! + 3,
+			JSON.stringify({ m1l1: workerRowsOf("m1-lead-1"), m1l2: workerRowsOf("m1-lead-2"), m1: workerRowsOf("milestone1") }),
+		);
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(model, layout, root, doc, {});
+		const labelOf = (id: string): string => {
+			const group = byAttr(root, "data-graph-node").find((g: any) => g.attributes["data-graph-node"] === id);
+			const nameEl = group.childNodes.find((c: any) => c.getAttribute && c.getAttribute("data-node-name") !== null);
+			return nameEl.textContent;
+		};
+		check(
+			"I9.3 worker canvas nodes are labeled by the worker ROLE name (the same name the rail shows), never the session hash",
+			labelOf(W21) === "w2-1" && labelOf(sessionIdFor(WORK(2, 2))) === "w2-2" && labelOf(L2) === "lead-2" && labelOf(sessionIdFor(LEAD(1))) === "lead-1",
+			JSON.stringify({ w21: labelOf(W21), lead2: labelOf(L2) }),
+		);
+		const domIds = byAttr(root, "data-graph-node").map((g: any) => g.attributes["data-graph-node"]);
+		check(
+			"I9.4 node identity is unchanged by the relayout: data-graph-node keeps the session hashes/task ids and never adopts a role name",
+			domIds.length === model.nodes.length && domIds.every((id: string) => model.byId.has(id)) && domIds.includes(W21) && domIds.includes("milestone1") && !domIds.includes("w2-1") && !domIds.includes("lead-2"),
+			JSON.stringify(domIds),
+		);
+		const collapsed = layoutMod.computeLayout(model, { expansion: new Set() });
+		check(
+			"I9.5 a collapsed sub-fleet renders its aggregate in the worker column right after its lead (the lead's own summary)",
+			collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`]?.col === 2 && collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`]?.row === collapsed.positions[sessionIdFor(LEAD(1))].row + 1 && !collapsed.visibleIds.has("m1-lead-1"),
+			JSON.stringify({ agg: collapsed.positions[`agg:${sessionIdFor(LEAD(1))}`], lead: collapsed.positions[sessionIdFor(LEAD(1))] }),
+		);
 	}
 
 	console.log(failures === 0 ? "\nALL CANVAS-INTENT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

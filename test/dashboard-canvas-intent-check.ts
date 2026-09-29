@@ -34,6 +34,9 @@
  *   I10 R7 — the collapsed aggregate sub-line reads
  *      `k/n collected · worst: <sev> — click to expand`: the honest worst
  *      severity PLUS the affordance cue.
+ *   I12 R8 — the rail group header: the fleet/task title (a single-fleet
+ *      group's TaskNode description) and a right-aligned muted done/total
+ *      rollup summed across the group's fleets (same `.rail-counters`).
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -477,6 +480,50 @@ async function main(): Promise<void> {
 			"I10.1 the collapsed aggregate sub-line reads `k/n collected · worst: <sev> — click to expand` (honest worst + the affordance cue)",
 			subEl.textContent === `${agg.collected}/${agg.total} collected \u00b7 worst: ${agg.severity} \u2014 click to expand` && /^\d+\/\d+ collected \u00b7 worst: \S+ \u2014 click to expand$/.test(subEl.textContent),
 			subEl.textContent,
+		);
+	}
+
+	// -- I12 — R8: rail group header title + fleet rollup ----------------------
+	{
+		// Model level: buildRail carries each group's title (a single-fleet
+		// group shows its TaskNode description) and the summed done/total rollup.
+		const orchGroup = model.rail.groups.find((g: any) => g.session.id === sessionIdFor(SELF));
+		check(
+			"I12.1 buildRail carries the fleet/task title and the done/total rollup summed across the group's fleets",
+			orchGroup.title === "milestone 1" && orchGroup.counters.done === 1 && orchGroup.counters.total === 2 &&
+				model.rail.groups.every((g: any) => g.counters.done === g.fleets.reduce((n: number, t: any) => n + t.counters.done, 0) && g.counters.total === g.fleets.reduce((n: number, t: any) => n + t.counters.total, 0)),
+			JSON.stringify(model.rail.groups.map((g: any) => [g.title, g.counters])),
+		);
+		// DOM level (the app shell renders the rail): the session row shows the
+		// title and the right-aligned muted `.rail-counters` rollup.
+		const els: Record<string, any> = {};
+		const doc = fakeDoc(els);
+		const fetchImpl = async (url: string) => {
+			if (url.startsWith("/api/swarm/fleets")) return { json: async () => ({ ok: true, fleets: [] }) };
+			if (url.startsWith("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: graph }) };
+			if (url.startsWith("/api/swarm/events")) return { json: async () => ({ ok: true, events, journal: { count: 1, dbSizeBytes: 12 } }) };
+			throw new Error(`unexpected fetch ${url}`);
+		};
+		const appMod = (await import(publicUrl("app.js"))) as any;
+		const app = appMod.createFleetApp({ doc, fetch: fetchImpl, storage: null, location: { protocol: "http:", host: "h", pathname: "/", search: "", hash: "" }, stream: () => ({ state: { lastSeq: 0 }, close() {} }), consoleTail: () => ({ close() {} }), ownSessionPath: SELF, nowMs: () => NOW });
+		await app.start();
+		const shell = els["fleet-tree"];
+		const orchHeader = walk(shell).find((e: any) => e instanceof FakeEl && e.attributes["data-rail-kind"] === "session" && e.attributes["data-node-id"] === sessionIdFor(SELF));
+		const titleEl = byAttr(orchHeader, "data-rail-fleet-title")[0];
+		const rollupEl = byAttr(orchHeader, "data-rail-group-counters")[0];
+		check(
+			"I12.2 the group header renders the fleet/task title and the `.rail-counters` rollup (right-aligned muted treatment)",
+			titleEl !== undefined && titleEl.textContent === "milestone 1" && rollupEl !== undefined && rollupEl.textContent === "1/2" && rollupEl.attributes.class === "rail-counters" && rollupEl.attributes["data-counters"] === "1/2",
+			JSON.stringify({ title: titleEl?.textContent, rollup: rollupEl?.textContent, cls: rollupEl?.attributes.class }),
+		);
+		app.close();
+		// Honest absence: a wire TaskNode without a description titles nothing —
+		// the session row stays exactly as it was, rollups still render.
+		const stripped = stateMod.buildDashboardState({ graph: { ...graph, nodes: graph.nodes.map((n: any) => (n.kind === "task" ? { ...n, description: "" } : n)) }, events, ownSessionPath: SELF, nowMs: NOW });
+		check(
+			"I12.3 a group without a task title shows none (honest absence); the rollup is independent of the title",
+			stripped.rail.groups.every((g: any) => g.title === null) && stripped.rail.groups.every((g: any) => g.counters.done === g.fleets.reduce((n: number, t: any) => n + t.counters.done, 0)),
+			JSON.stringify(stripped.rail.groups.map((g: any) => [g.title, g.counters])),
 		);
 	}
 

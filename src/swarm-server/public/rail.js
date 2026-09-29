@@ -4,7 +4,10 @@
  * Renders the dashboard model's rail: fleets grouped by owning session (own
  * fleet first, foreign fleets marked read-only), then each TaskNode with its
  * live `done/total` counter and a warn marker when a worker of the task has a
- * pending ask. The session row of a group and every task row carry
+ * pending ask. A group's session row also shows the fleet/task title (R8: a
+ * single-fleet group's TaskNode description) and the group's summed
+ * `done/total` rollup in the same `.rail-counters` treatment. The session
+ * row of a group and every task row carry
  * `data-node-id` — this is the ONE rail element per graph node (the canvas
  * uses its own `data-graph-node`), so "one screen, no duplication" is
  * checkable in the DOM.
@@ -90,7 +93,11 @@ export function renderRail(state, root, doc, opts = {}) {
 	for (const group of state.rail.groups) {
 		const section = el(doc, "section", { class: "rail-group", "data-rail-group": group.session.id, "data-foreign": group.foreign ? "1" : "0" });
 		const header = statusRow(doc, group.session, { tag: "div", className: "rail-session", name: group.session.worker || group.session.id, selected: ctx.selection === group.session.id });
+		// R8: the fleet/task title + the group's done/total rollup (additive spans —
+		// the row's click/keyboard behavior is untouched).
+		if (group.title) header.appendChild(el(doc, "span", { class: "rail-fleet-title", "data-rail-fleet-title": group.title }, group.title));
 		header.appendChild(el(doc, "span", { class: "rail-role", "data-rail-role": group.session.role }, group.session.role));
+		if (group.fleets.length > 0) header.appendChild(el(doc, "span", { class: "rail-counters", "data-counters": `${group.counters.done}/${group.counters.total}`, "data-rail-group-counters": "1" }, `${group.counters.done}/${group.counters.total}`));
 		on(header, "click", () => ctx.dispatch?.({ type: "select-node", id: group.session.id }));
 		section.appendChild(header);
 		for (const task of group.fleets) section.appendChild(renderTask(doc, task, ctx));

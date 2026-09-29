@@ -461,6 +461,21 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard rail: R8 group header fleet title + done/total rollup
+  (canvas-intent round).** The rail's group header answered "which session"
+  but never "which epic/task fleet am I looking at" — the wire TaskNode's
+  `description` was never rendered. `buildTaskNode` now carries the
+  description through, `buildRail` titles each single-fleet group with it
+  (a multi-fleet group has no one honest headline and shows none) and sums
+  a `done/total` rollup across the group's fleets; the header row renders
+  both as additive spans — the rollup in the same right-aligned muted
+  `.rail-counters` treatment, the row's click/keyboard behavior untouched
+  (kept minimal to ease the merge with #127). Law 5 size cap: the attention
+  strip styles moved verbatim from app.css to the new region stylesheet
+  `attention.css` (linked right after app.css — same cascade), and the
+  attention fold moved from state.js to the new `attention-model.js`.
+  Check: `test/dashboard-canvas-intent-check.ts` I12.
+
 - **Dashboard canvas: R7 aggregate sub-line wording (canvas-intent round).**
   A collapsed lead's aggregate node showed only `worst: <sev>` — the counts
   lived in the name line and the node gave no cue that it is clickable. The

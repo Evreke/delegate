@@ -461,6 +461,13 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard canvas: R7 aggregate sub-line wording (canvas-intent round).**
+  A collapsed lead's aggregate node showed only `worst: <sev>` — the counts
+  lived in the name line and the node gave no cue that it is clickable. The
+  sub-line now reads `k/n collected · worst: <sev> — click to expand`: the
+  worst-severity stays honest and the affordance is stated in place. Check:
+  `test/dashboard-canvas-intent-check.ts` I10.
+
 - **Dashboard canvas: R6 ruled 3-column topology + worker role names
   (canvas-intent round).** The graph read as a hub of mixed siblings: the
   wire makes a task and its worker sessions SIBLINGS (both `spawned_by` the

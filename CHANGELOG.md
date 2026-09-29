@@ -461,6 +461,24 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard canvas: R6 ruled 3-column topology + worker role names
+  (canvas-intent round).** The graph read as a hub of mixed siblings: the
+  wire makes a task and its worker sessions SIBLINGS (both `spawned_by` the
+  orchestrator), so the old BFS-over-edges column derivation put tasks and
+  hash-named worker nodes in one column. The layout now synthesizes the
+  prototype's read — column 0 orchestrator sessions, column 1 task nodes,
+  column 2 worker sessions grouped under their own task (one task-major
+  band: the task first, then its workers top-to-bottom, then the next task;
+  grouping derived from the wire's embodiment `sessionId` association folded
+  onto `session.task`; the read model `src/swarm/{nodes,edges}.ts` is
+  untouched). Worker canvas nodes are now labeled by their ROLE name (the
+  same name the rail shows) instead of the session hash, while
+  `data-graph-node` identity keeps the hashes — ids are stable across the
+  relayout; a collapsed sub-fleet's aggregate sits in the worker column
+  right after its lead. Check: `test/dashboard-canvas-intent-check.ts` I9
+  (layout-check B1.1/B1.3/B1.7 and v1-check A6.1 amended to the ruled
+  columns).
+
 - **Dashboard canvas: R5 pan/zoom reachability + drag-vs-click threshold
   (canvas-intent round).** A fleet too large for the 0.5× zoom floor was
   unreachable behind the `overflow:hidden` canvas region: `fitView` now zooms

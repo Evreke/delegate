@@ -21,7 +21,7 @@
 
 import { buildDashboardState } from "./state.js";
 import { createStatusChrome } from "./status.js";
-import { bootstrapFragmentToken } from "./auth-bootstrap.js";
+import { bootstrapFragmentToken, parseFragmentNode } from "./auth-bootstrap.js";
 import { scopedUrl, scopeGraphToFleet, servingIdentity, servingScope, streamUrlFor } from "./fleet-scope.js";
 import { computeLayout } from "./layout.js";
 import { createUiState, uiReducer } from "./ui.js";
@@ -34,31 +34,10 @@ import { createSwarmStream, readEnvelope, foldEventStore, MAX_EVENT_STORE, isStr
 import { consoleBanner, createConsoleTail } from "./console.js";
 import { createPanels } from "./panels.js";
 import { createMutations, MAX_AUTH_RETRIES } from "./mutations.js";
+import { readCursor, writeCursor } from "./cursor.js";
 import { controlsView } from "./steer.js";
 
 export { MAX_AUTH_RETRIES };
-
-const STORAGE_KEY = "swarm.dashboard.lastSeq";
-
-/** Read the persisted cursor (sessionStorage only — the documented store). */
-export function readCursor(storage) {
-	try {
-		const raw = storage ? storage.getItem(STORAGE_KEY) : null;
-		const n = Number(raw);
-		return Number.isFinite(n) && n > 0 ? n : 0;
-	} catch {
-		return 0;
-	}
-}
-
-/** Persist the cursor (best effort — private-mode storage may throw). */
-export function writeCursor(storage, seq) {
-	try {
-		if (storage) storage.setItem(STORAGE_KEY, String(seq));
-	} catch {
-		/* persistence is best effort */
-	}
-}
 
 /** The shell regions, created inside the #fleet-tree shell root. */
 const REGIONS = [["attention", "attention-strip"], ["rail", "rail"], ["canvas", "center-canvas"], ["detail", "detail"]];
@@ -88,6 +67,10 @@ export function createFleetApp(env = {}) {
 	const nowMs = typeof env.nowMs === "function" ? env.nowMs : () => Date.now();
 	// #65 item 2: a `#t=<token>` link fragment bootstraps the operator token
 	// (sessionStorage) and is stripped from the address bar before any request.
+	// R9: a further `&node=<id>` parameter names the graph node to select at
+	// load — parsed BEFORE the bootstrap strips the fragment, applied once the
+	// first state resolves (unknown/missing ids are ignored).
+	let pendingDeepLink = parseFragmentNode(location ? location.hash : "");
 	bootstrapFragmentToken({ location, history: env.history || (typeof window !== "undefined" ? window.history : null), storage });
 
 	let ui = createUiState();
@@ -243,9 +226,21 @@ export function createFleetApp(env = {}) {
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });
 		syncFocus();
 	};
+	/** R9: apply the `#t=<token>&node=<id>` deep link exactly once, at first
+	 *  state — a known node id selects it (bare select-node: stroke, no dim);
+	 *  an unknown or missing id is ignored. The fragment itself was already
+	 *  stripped by the token bootstrap. */
+	const restoreDeepLink = () => {
+		if (pendingDeepLink === null) return;
+		const id = pendingDeepLink;
+		pendingDeepLink = null;
+		if (dash.byId.has(id)) dispatch({ type: "select-node", id });
+	};
+
 	const render = () => {
 		refreshModel();
 		if (!dash) { renderRegionStates(); return; }
+		restoreDeepLink();
 		renderRegions();
 		updateStatusbar();
 	};

@@ -461,6 +461,20 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard: R9 deep-link restore `#t=<token>&node=<id>` (canvas-intent
+  round).** A URL could bootstrap the operator token but never name a node,
+  so a deep link to a worker/task was gone and refresh always lost the
+  selection. The deep-link id rides the SAME `#t=` fragment as a further
+  `node=<id>` parameter (the token's ONE spelling is untouched — pins
+  T1.24b/T1.29 hold); `parseFragmentNode` reads it, the fragment is stripped
+  after reading (token OR node match), and app.js applies the selection
+  exactly once at first state — a known id selects + focuses the node (bare
+  select-node: stroke, no dim), unknown/missing ids are ignored, and the
+  token still travels only the fragment → sessionStorage path. Law 5 size
+  cap: the cursor store split from app.js into the new `cursor.js` (pin
+  T1.22 amended to the new file map, same guarantee). Check:
+  `test/dashboard-canvas-intent-check.ts` I11.
+
 - **Dashboard rail: R8 group header fleet title + done/total rollup
   (canvas-intent round).** The rail's group header answered "which session"
   but never "which epic/task fleet am I looking at" — the wire TaskNode's

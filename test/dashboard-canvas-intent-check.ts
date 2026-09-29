@@ -34,6 +34,9 @@
  *   I10 R7 — the collapsed aggregate sub-line reads
  *      `k/n collected · worst: <sev> — click to expand`: the honest worst
  *      severity PLUS the affordance cue.
+ *   I11 R9 — deep-link restore: `#t=<token>&node=<id>` selects + focuses
+ *      the named node at load (unknown/missing ids are ignored); the token
+ *      still moves to sessionStorage and the fragment is stripped.
  *   I12 R8 — the rail group header: the fleet/task title (a single-fleet
  *      group's TaskNode description) and a right-aligned muted done/total
  *      rollup summed across the group's fleets (same `.rail-counters`).
@@ -481,6 +484,61 @@ async function main(): Promise<void> {
 			subEl.textContent === `${agg.collected}/${agg.total} collected \u00b7 worst: ${agg.severity} \u2014 click to expand` && /^\d+\/\d+ collected \u00b7 worst: \S+ \u2014 click to expand$/.test(subEl.textContent),
 			subEl.textContent,
 		);
+	}
+
+	// -- I11 — R9: deep-link restore from the fragment -------------------------
+	{
+		const appMod = (await import(publicUrl("app.js"))) as any;
+		const steerMod = (await import(publicUrl("steer.js"))) as any;
+		const deepLinkScenario = async (hash: string) => {
+			const els: Record<string, any> = {};
+			const doc = fakeDoc(els);
+			const loc = { protocol: "http:", host: "h", pathname: "/", search: "", hash };
+			const hist = { replaceState: (_s: unknown, _t: string, _url: string) => { loc.hash = ""; } };
+			const store: Record<string, string> = {};
+			const storage = {
+				getItem: (k: string) => store[k] ?? null,
+				setItem: (k: string, v: string) => { store[k] = v; },
+				removeItem: (k: string) => { delete store[k]; },
+			};
+			const fetchImpl = async (url: string) => {
+				if (url.startsWith("/api/swarm/fleets")) return { json: async () => ({ ok: true, fleets: [] }) };
+				if (url.startsWith("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: graph }) };
+				if (url.startsWith("/api/swarm/events")) return { json: async () => ({ ok: true, events, journal: { count: 1, dbSizeBytes: 12 } }) };
+				throw new Error(`unexpected fetch ${url}`);
+			};
+			const app = appMod.createFleetApp({ doc, fetch: fetchImpl, storage, location: loc, history: hist, stream: () => ({ state: { lastSeq: 0 }, close() {} }), consoleTail: () => ({ close() {} }), ownSessionPath: SELF, nowMs: () => NOW });
+			await app.start();
+			return { app, loc, storage, shell: els["fleet-tree"] };
+		};
+		const known = await deepLinkScenario(`#t=deep-token-r9&node=milestone1`);
+		const selected = byAttr(known.shell, "data-graph-node").filter((g: any) => g.attributes["data-selected"] === "1");
+		const dimmed = byAttr(known.shell, "data-graph-node").filter((g: any) => g.attributes["data-dimmed"] === "1");
+		check(
+			"I11.1 a `#t=<token>&node=<id>` deep link selects + focuses the named node at load (canvas stroke, rail row selected, nothing dims)",
+			known.app.ui.selection === "milestone1" && selected.length === 1 && selected[0].attributes["data-graph-node"] === "milestone1" && dimmed.length === 0 && walk(known.shell).some((e: any) => e instanceof FakeEl && e.attributes["data-node-id"] === "milestone1" && e.attributes["data-selected"] === "1"),
+			JSON.stringify({ selection: known.app.ui.selection, selected: selected.map((g: any) => g.attributes["data-graph-node"]) }),
+		);
+		check(
+			"I11.2 the token still moves to sessionStorage and the whole fragment is stripped (one `#t=` spelling, never a query)",
+			known.storage.getItem(steerMod.TOKEN_KEY) === "deep-token-r9" && known.loc.hash === "",
+			JSON.stringify({ hash: known.loc.hash, token: known.storage.getItem(steerMod.TOKEN_KEY) }),
+		);
+		known.app.close();
+		const unknown = await deepLinkScenario(`#t=deep-token-r9&node=no-such-node`);
+		check(
+			"I11.3 an unknown node id is ignored (no selection, nothing dims) — the token still bootstraps",
+			unknown.app.ui.selection === null && unknown.storage.getItem(steerMod.TOKEN_KEY) === "deep-token-r9" && unknown.loc.hash === "",
+			JSON.stringify({ selection: unknown.app.ui.selection, hash: unknown.loc.hash }),
+		);
+		unknown.app.close();
+		const missing = await deepLinkScenario(`#t=deep-token-r9`);
+		check(
+			"I11.4 a fragment without `node` bootstraps only the token (no selection)",
+			missing.app.ui.selection === null && missing.storage.getItem(steerMod.TOKEN_KEY) === "deep-token-r9" && missing.loc.hash === "",
+			JSON.stringify({ selection: missing.app.ui.selection, hash: missing.loc.hash }),
+		);
+		missing.app.close();
 	}
 
 	// -- I12 — R8: rail group header title + fleet rollup ----------------------

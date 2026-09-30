@@ -10,6 +10,18 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Classifier triage, display-only — opt-in note on validated worker reports
+  (#129 #130).** A new top-level `classifier` config section
+  (`classifier.enabled`, default `false`; `classifier.model` `{provider, id}`,
+  no default) enables one inline `choice` classification over a report that
+  passed report-schema validation. When both keys resolve, the `delegate` tool
+  result gains a display-only note (`classifier: complete 0.93` /
+  `classifier: suspect 0.41`, probability with no threshold). Disabled,
+  incomplete config, missing model, router down, timeout or any other failure
+  degrades to a silent skip — byte-identical output. Advisory only: no
+  auto-reject, no tier advice, no wake/retire decisions. Guide:
+  `docs/classifier.md`.
+
 - **Skill-quality harness, stage 2 — L0/L1/L4/Q wired to the real skill and
   fixture (#110 #111 #115 #116 #117).** The stage-1 scaffold now scores the
   real `skills/delegate` texts: L0 is a 29-pin static gate over SKILL.md +

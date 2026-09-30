@@ -22,7 +22,7 @@
 import { buildDashboardState } from "./state.js";
 import { createStatusChrome } from "./status.js";
 import { bootstrapFragmentToken } from "./auth-bootstrap.js";
-import { scopedUrl, scopeGraphToFleet, servingIdentity, servingScope, streamUrlFor } from "./fleet-scope.js";
+import { createScopeController, scopedUrl, scopeGraphToFleet, servingIdentity, servingScope, streamUrlFor } from "./fleet-scope.js";
 import { computeLayout } from "./layout.js";
 import { createUiState, uiReducer } from "./ui.js";
 import { renderAttention, renderErrorBanner, clearErrorBanner, regionStateView, renderRegionState } from "./attention.js";
@@ -74,6 +74,8 @@ export function createFleetApp(env = {}) {
 	let layout = null;
 	let canvasIndex = null;
 	let lastSnapshot = null;
+	// Round-1fix: the UNFOLDED wire graph — the fleet fold lives in refreshModel.
+	let rawSnapshot = null;
 	let stream = null;
 	let refreshTimer = null;
 	let renderTimer = null;
@@ -101,9 +103,8 @@ export function createFleetApp(env = {}) {
 	}
 	const byId = (id) => (doc && typeof doc.getElementById === "function" ? doc.getElementById(id) : null);
 	const errorEl = byId("error");
-	// #79/#82/#86: the static-frame chrome (connection pill, token pill, journal
-	// health footer, ticker, scope) lives in one factory behind this byId seam.
-	const chrome = createStatusChrome({ doc, byId, nowMs });
+	// #79/#82/#86: the static-frame chrome factory — round-1fix: its scope-view buttons dispatch here.
+	const chrome = createStatusChrome({ doc, byId, nowMs, onScopeView: (view) => dispatch({ type: "set-fleet-view", view }) });
 	chrome.setScope(fleetId, []);
 	const showError = (err, op) => { if (errorEl) renderErrorBanner(errorEl, err, doc, { op, onDismiss: () => clearErrorBanner(errorEl) }); };
 	const noteFailure = (err) => { readError = err; renderRegionStates(); showError(err); };
@@ -140,8 +141,13 @@ export function createFleetApp(env = {}) {
 	chrome.setToken(mutations.tokenState);
 
 	// --- model + render ----------------------------------------------------
+	// Round-1fix: scope controller (fleet-scope.js) — URL fleet wins; the root
+	// view defaults to the OWN fleet; `all` is the explicit toggle.
+	const scope = createScopeController({ chrome, fleetId, ownSessionId, isAll: () => ui.fleetView === "all" });
 	const refreshModel = () => {
-		if (!lastSnapshot) return;
+		if (!rawSnapshot) return;
+		// The ONE graph choke point (HTTP snapshot + WS frame): the fleet fold.
+		lastSnapshot = scopeGraphToFleet(rawSnapshot, scope.fleetId());
 		const foreign = new Set(env.foreignSessionIds || []);
 		if (panels) for (const id of panels.foreignIds()) foreign.add(id);
 		dash = buildDashboardState({
@@ -154,7 +160,7 @@ export function createFleetApp(env = {}) {
 			expansion: ui.expansion,
 			nowMs: nowMs(),
 		});
-		layout = computeLayout(dash, { expansion: ui.expansion });
+		layout = computeLayout(dash, { expansion: ui.expansion, showCausal: ui.showCausal });
 		stateVersion = Number.isFinite(lastSnapshot.schemaVersion) ? lastSnapshot.schemaVersion : 1;
 	};
 
@@ -227,7 +233,7 @@ export function createFleetApp(env = {}) {
 	const renderRegions = () => {
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });
 		if (regions.canvas) {
-			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView, gesture: canvasGesture });
+			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView, gesture: canvasGesture, showCausal: ui.showCausal });
 			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport, gesture: canvasGesture });
 		}
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
@@ -239,6 +245,8 @@ export function createFleetApp(env = {}) {
 		if (!dash) { renderRegionStates(); return; }
 		renderRegions();
 		updateStatusbar();
+		scope.sync();
+		chrome.setScopeView({ ownable: scope.ownable(), active: ui.fleetView });
 	};
 
 	/** An event frame patches status/progress in place — no relayout, no canvas rebuild. */
@@ -254,8 +262,9 @@ export function createFleetApp(env = {}) {
 	};
 
 	const rerender = (graph) => {
-		// The ONE graph choke point (HTTP snapshot + WS frame): the fleet filter.
-		lastSnapshot = scopeGraphToFleet(graph, fleetId);
+		// The ONE graph choke point (HTTP snapshot + WS frame): store the raw wire graph; the fold is refreshModel's.
+		rawSnapshot = graph;
+		scope.setGraph(graph);
 		render();
 	};
 	const scheduleRender = () => {
@@ -279,9 +288,9 @@ export function createFleetApp(env = {}) {
 			const identity = servingIdentity(body, env);
 			ownSessionId = identity.sessionId ?? ownSessionId;
 			ownSessionPath = identity.sessionPath ?? ownSessionPath;
-			chrome.setScope(fleetId, fleetsBody);
 		} catch { /* the index is advisory — identity stays unknown until the strip says so */ }
 		scopeKnown = true;
+		scope.setIdentity(ownSessionId).setFleets(fleetsBody).sync();
 		if (lastSnapshot) scheduleRender();
 	};
 

@@ -233,7 +233,7 @@ export function createFleetApp(env = {}) {
 	const viewport = () => ({ width: 1200, height: 720 });
 	const onView = (view) => { ui = uiReducer(ui, { type: "view", view }); renderRegions(); };
 	const renderRegions = () => {
-		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
+		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });
 		if (regions.canvas) {
 			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView });
 			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
@@ -254,7 +254,7 @@ export function createFleetApp(env = {}) {
 		refreshModel();
 		if (!dash) return;
 		if (canvasIndex) patchCanvas(canvasIndex, dash, doc, { spotlight: ui.spotlight });
-		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection });
+		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });
 		syncFocus();

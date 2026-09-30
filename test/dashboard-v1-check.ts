@@ -419,7 +419,7 @@ async function main(): Promise<void> {
 		check("A3.3 the foreign fleet's ask and degraded flag are NOT counted", !model.attention.items.some((i: any) => i.worker === "fw") && model.attention.items.every((i: any) => !String(i.label).includes("foreign-task")), JSON.stringify(model.attention.items.map((i: any) => i.label)));
 		check("A3.4 the queue is severity-ordered (crit first)", model.attention.items[0].severity === "crit", JSON.stringify(model.attention.items.map((i: any) => i.severity)));
 		const empty = stateMod.buildDashboardState({ graph: { ...graph, nodes: graph.nodes.filter((n: any) => n.id === sessionIdFor(SELF)), edges: [] }, events: [], ownSessionPath, nowMs: NOW });
-		check("A3.5 an empty queue renders the honest 'all clear' chip (never a zero-count chip row)", empty.attention.clear === true && attentionMod.chipLabels(empty.attention)[0] === "all clear");
+		check("A3.5 an empty queue renders the honest own-fleet-scoped clear chip (never a zero-count chip row, #135)", empty.attention.clear === true && attentionMod.chipLabels(empty.attention)[0] === "own fleets clear");
 		check("A3.6 foreign fleets render read-only in the rail and after own fleets", model.rail.groups[model.rail.groups.length - 1].foreign === true && model.rail.own.length >= 1);
 		// #66 box 2: the journal is SHARED across fleets — an own-fleet ask count
 		// must not move when a foreign fleet happens to reuse an own worker name.
@@ -854,6 +854,62 @@ async function main(): Promise<void> {
 			"A14.16 app.js threads focusWorker + expansion into both renderRail calls",
 			appSrc.split("renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });").length - 1 === 2,
 		);
+	}
+
+	// -- A15 — round-4 chrome: source separation (#138), scoped clear (#135),
+	//          task-row affordance (#140) ----------------------------------
+	{
+		const statusCss = readAsset("status.css");
+		const appCss = readAsset("app.css");
+		const flat = (s: string) => s.replace(/\s+/g, " ");
+		check(
+			"A15.1 the source-health spans are separated by a gap on the container — never a concatenated run (#138)",
+			/#health-sources\s*\{[^}]*display:\s*inline-flex/.test(statusCss) && /#health-sources\s*\{[^}]*gap:\s*0\.4rem/.test(statusCss) && /#health-sources\s*\{[^}]*flex-wrap:\s*wrap/.test(statusCss),
+			flat(statusCss.match(/#health-sources\s*\{[^}]*\}/)?.[0] ?? ""),
+		);
+		{
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			attentionMod.renderAttention({ attention: { clear: true, chips: [{ kind: "clear", label: "own fleets clear", count: 0 }], items: [] } }, root, doc, {});
+			const clearChip = byAttr(root, "data-attention-clear")[0];
+			check(
+				"A15.2 the clear chip's wording is own-fleet-scoped — never a bare 'all clear' (#135)",
+				clearChip !== undefined && clearChip.textContent === "own fleets clear" && !root.textContent.includes("all clear"),
+				JSON.stringify(clearChip?.textContent),
+			);
+			const doc2 = fakeDoc();
+			const root2 = doc2.createElement("div");
+			attentionMod.renderAttention({ attention: { clear: true, chips: [], items: [] } }, root2, doc2, { scoping: true });
+			const scoping = byAttr(root2, "data-attention-scoping")[0];
+			check(
+				"A15.3 the honest 'scoping…' state is preserved while the serving identity is unknown (#135)",
+				scoping !== undefined && scoping.textContent === "scoping\u2026" && byAttr(root2, "data-attention-clear").length === 0,
+				JSON.stringify(scoping?.textContent),
+			);
+		}
+		{
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			railMod.renderRail(model, root, doc, {});
+			const rows = byAttr(root, "data-node-id");
+			const taskRows = rows.filter((r: any) => r.attributes["data-rail-kind"] === "task");
+			const sessionRows = rows.filter((r: any) => r.attributes["data-rail-kind"] === "session");
+			check(
+				"A15.4 every task row carries the distinct 'task' glyph chip (#140)",
+				taskRows.length > 0 && taskRows.every((r: any) => r.childNodes.some((c: any) => c.attributes?.class === "rail-task-chip" && c.attributes["data-rail-task-chip"] === "1" && c.textContent === "task")),
+				JSON.stringify(taskRows.map((r: any) => r.attributes["data-node-id"])),
+			);
+			check(
+				"A15.5 session rows are labeled by role and carry no task chip (#140)",
+				sessionRows.length > 0 && sessionRows.every((r: any) => r.childNodes.some((c: any) => c.attributes?.["data-rail-role"] !== undefined) && !r.childNodes.some((c: any) => c.attributes?.class === "rail-task-chip")),
+				JSON.stringify(sessionRows.map((r: any) => r.childNodes.find((c: any) => c.attributes?.["data-rail-role"] !== undefined)?.textContent)),
+			);
+			check(
+				"A15.6 the task glyph is styled as a bordered pill — a different affordance from the plain role label (#140)",
+				/\.rail-task-chip\s*\{[^}]*border:\s*1px solid/.test(appCss) && /\.rail-task-chip\s*\{[^}]*text-transform:\s*uppercase/.test(appCss),
+				flat(appCss.match(/\.rail-task-chip\s*\{[^}]*\}/)?.[0] ?? ""),
+			);
+		}
 	}
 }
 

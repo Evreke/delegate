@@ -3,7 +3,10 @@
  *
  * The persistent strip is the answer to the constitution's question ("what
  * needs me?"): chips for `N asks waiting` / `N dead-reboot` / `N degraded`,
- * or an honest `all clear`. The aggregates are computed in state.js over OWN
+ * or an honest own-fleet-scoped `own fleets clear` (#135 — the strip
+ * aggregates OWN fleets ONLY, so a bare "all clear" would be a false global
+ * claim when a foreign fleet is visibly degraded). The aggregates are
+ * computed in state.js over OWN
  * fleets ONLY — a foreign fleet never raises attention, so the strip can
  * never nag about work this session cannot touch.
  *
@@ -98,7 +101,8 @@ function renderOverlay(doc, attention, kind, ctx) {
  *   opts ({ dispatch, overlay, scoping }). Output — none (root mutated).
  * Guarantees: chips show the exact model counts (never a re-derivation);
  *   the queue is severity-ordered; an empty model renders the honest
- *   `all clear` chip; while the serving identity is unknown (`opts.scoping`,
+ *   own-fleet-scoped `own fleets clear` chip (#135 — never a bare global
+ *   "all clear"); while the serving identity is unknown (`opts.scoping`,
  *   issue #81) the strip renders `scoping…` instead of counts that may
  *   retract. Raises: never on a well-formed model.
  */
@@ -119,7 +123,7 @@ export function renderAttention(state, root, doc, opts = {}) {
 	if (scoping) {
 		strip.appendChild(el(doc, "span", { class: "attention-scoping", "data-attention-scoping": "1" }, "scoping\u2026"));
 	} else if (!attention || attention.clear) {
-		strip.appendChild(el(doc, "span", { class: "attention-clear", "data-attention-clear": "1" }, "all clear"));
+		strip.appendChild(el(doc, "span", { class: "attention-clear", "data-attention-clear": "1" }, "own fleets clear"));
 	} else {
 		for (const chip of attention.chips) {
 			if (chip.kind === "clear") continue;

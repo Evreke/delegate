@@ -32,6 +32,9 @@
  *
  * Status markers render through the shared status language (color + shape,
  * LEFT of the name). Degraded chips render verbatim with their severity.
+ * Session rows are labeled by their role (`data-rail-role`, the read-model's
+ * `role`); task rows carry the distinct bordered `task` glyph chip (#140) —
+ * at a glance a fleet's task rows no longer read like its session rows.
  * No framework; pure view function over the model.
  */
 
@@ -158,6 +161,9 @@ function renderWorkerRow(doc, task, ctx, rows) {
 
 function renderTask(doc, task, ctx, rows) {
 	const row = statusRow(doc, task, { tag: "button", className: "rail-task", name: task.name, selected: ctx.selection === task.id });
+	// #140: the bordered `task` glyph names the row's kind at a glance —
+	// session rows carry the role label instead, so the two never read alike.
+	row.appendChild(el(doc, "span", { class: "rail-task-chip", "data-rail-task-chip": "1" }, "task"));
 	const counters = task.counters || { done: 0, total: 0 };
 	row.appendChild(el(doc, "span", { class: "rail-counters", "data-counters": `${counters.done}/${counters.total}` }, `${counters.done}/${counters.total}`));
 	if (task.ask) row.appendChild(el(doc, "span", { class: "rail-ask", "data-rail-ask": "1", "aria-label": "pending ask" }, "\u2691"));
@@ -176,7 +182,9 @@ function renderTask(doc, task, ctx, rows) {
  *   opts ({ dispatch, selection, focusWorker, expansion }). Output — none
  *   (root mutated).
  * Guarantees: own groups precede foreign groups; every rendered node appears
- *   once with `data-node-id`; foreign groups carry the read-only marker and
+ *   once with `data-node-id`; task rows carry the distinct `task` glyph chip
+ *   and session rows the role label (#140); foreign groups carry the
+ *   read-only marker and
  *   no mutation affordance; session/task/worker rows are keyboard-operable
  *   `<button>`s (Enter/Space fire the click dispatch; the group's section
  *   roves focus on arrow keys); the worker matching `opts.focusWorker`

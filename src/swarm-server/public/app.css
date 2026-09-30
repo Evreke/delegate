@@ -364,6 +364,7 @@ button.rail-session, button.rail-task, button.rail-worker { background: transpar
 	color: var(--muted);
 	font-size: var(--type-xs);
 }
+.rail-task-chip { flex: 0 0 auto; color: var(--cyan); font-size: var(--type-xs); text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid var(--border); border-radius: 999px; padding: 0 0.35rem; } /* #140: bordered task glyph, distinct from a session's plain role label */
 
 .rail-counters {
 	margin-left: auto;

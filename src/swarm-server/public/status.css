@@ -156,6 +156,17 @@
 	border-color: var(--accent);
 }
 
+/* #138: the per-source spans must never run together into one unreadable
+ * string — a flex gap on the container separates them (wrapping keeps every
+ * row readable on narrow statusbars). The per-source `data-source` /
+ * `data-source-state` attributes stay. */
+#health-sources {
+	display: inline-flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.4rem;
+}
+
 .source-ok {
 	color: var(--mint);
 }

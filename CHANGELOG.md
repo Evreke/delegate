@@ -34,6 +34,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 - **Rail name truncation.** `.rail-worker-name` ellipsizes like `.rail-name`
   (`min-width: 0` included) and both name spans carry `title`, so a truncated
   name is recoverable on hover.
+- **Role-aware session status (UI-validation F1, #133).** A non-worker root
+  session (no worker embodiment, `isWorker !== true` — an orchestrator the
+  transport never watches) no longer resolves to `unknown` → warn in the
+  dashboard read model: with no live-status source it is benign `idle`
+  (severity info, dot-hollow, no pulse). A worker flagged `no-live-status`
+  still resolves to the honest `unknown`/warn.
+- **Read-model edge vocabulary split (#136).** The SwarmGraph gains the two
+  missing relation kinds — `contains` (Task → worker session, structural) and
+  `owned_by` (Task → owner session, authority) — and stops spelling the
+  task→owner relation `spawned_by` (both the manifest and the journal folds);
+  `spawned_by` is causal worker→orchestrator lineage ONLY. Additive-only:
+  the v1 kinds keep their names (frozen-surface pin added).
+- **Manifest spawn identity projected onto worker embodiments (#139/#141).**
+  The embodiment JSON (snapshot + WS stream) now carries the manifest's
+  `model` / `provider` / `thinking` / `briefPath` when non-empty, so the UI
+  can render spawn identity and fetch the brief without re-reading the
+  manifest.
+- **`classifyReport` is total against a missing registry.** A null/undefined
+  registry surface (the fake-host ctx shape on classifier-configured hosts)
+  degrades to a silent skip per the function's own contract, instead of
+  throwing a TypeError out of collect.
 
 ### Added
 

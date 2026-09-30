@@ -8,6 +8,33 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rail keyboard operability + focus/selection visibility (rail-ux round).**
+  Every rail row (session, task, worker) is now a real `<button>`: Tab reaches
+  all rows, Enter/Space fire the click dispatch, and each `.rail-group` roves
+  focus on ArrowUp/ArrowDown/Home/End with a global `:focus-visible` accent
+  outline (WCAG 2.1.1/2.4.7 — the rail was mouse-only before). The selected
+  row's state passes non-text contrast: accent outline + 2px inset accent bar
+  (6.68:1 on the selected background, WCAG 1.4.11 — was 1.22:1 `--border`).
+- **Degraded-chip text contrast (WCAG 1.4.3).** `.degraded-ghost` drops its
+  `opacity: .55` channel (italic + border carry the distinction; 5.62:1 on
+  panel) and `.degraded-grey` rises to `var(--muted)` on `var(--panel-2)`
+  (6.26:1) — both were under 4.5:1.
+- **Worker-row affordance + focused-worker trace.** `.rail-worker` gains
+  pointer cursor, padding, `min-height: 1.5rem` (24px hit target), radius and
+  `:hover`; the worker matching `ui.focusWorker` renders `data-selected="1"`
+  (threaded through `renderRail` opts) and reuses the selected visual.
+- **Rail worker order + settled collapse.** Task workers sort severity-first
+  (unified ladder, ask tops its class, then name — one stable sort in the
+  read model), and settled workers (collected/retired/dead) fold behind a
+  muted `+k settled` expander dispatching the shared `toggle-collapse` action
+  (`rail:<task>` UI-expansion key) — the rail's mirror of the canvas's
+  adaptive collapse.
+- **Rail name truncation.** `.rail-worker-name` ellipsizes like `.rail-name`
+  (`min-width: 0` included) and both name spans carry `title`, so a truncated
+  name is recoverable on hover.
+
 ### Added
 
 - **Classifier triage, display-only — opt-in note on validated worker reports

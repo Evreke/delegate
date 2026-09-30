@@ -234,6 +234,9 @@ class FakeEl {
 	attributes: Record<string, string> = {};
 	childNodes: any[] = [];
 	text = "";
+	listeners: Record<string, Array<(e?: any) => void>> = {};
+	parentNode: any = null;
+	ownerDoc: any = null;
 	constructor(readonly tagName: string) {}
 	setAttribute(k: string, v: string) {
 		this.attributes[k] = String(v);
@@ -245,6 +248,7 @@ class FakeEl {
 		delete this.attributes[k];
 	}
 	appendChild(c: any) {
+		c.parentNode = this;
 		this.childNodes.push(c);
 		return c;
 	}
@@ -269,13 +273,29 @@ class FakeEl {
 	get textContent(): string {
 		return this.text + this.childNodes.map((c) => c.textContent ?? "").join("");
 	}
+	addEventListener(type: string, fn: (e?: any) => void) {
+		(this.listeners[type] ??= []).push(fn);
+	}
+	fire(type: string, event: any = {}) {
+		for (const fn of [...(this.listeners[type] ?? [])]) fn(event);
+	}
+	focus() {
+		if (this.ownerDoc) this.ownerDoc.activeElement = this;
+	}
 }
 function fakeDoc(els: Record<string, any> = {}): any {
-	return {
-		createElement: (t: string) => new FakeEl(t),
+	const doc: any = {
+		activeElement: null,
+		createElement: (t: string) => make(t),
 		createTextNode: (t: string) => ({ textContent: t, childNodes: [] }),
-		getElementById: (id: string) => (els[id] ??= new FakeEl("div")),
+		getElementById: (id: string) => (els[id] ??= make("div")),
 	};
+	const make = (t: string) => {
+		const el = new FakeEl(t);
+		el.ownerDoc = doc;
+		return el;
+	};
+	return doc;
 }
 function walk(n: any, out: any[] = []): any[] {
 	out.push(n);
@@ -696,6 +716,103 @@ async function main(): Promise<void> {
 			const css = readAsset("app.css");
 			return /--font-prose:\s*Inter[^;]*system-ui/.test(css) && /--font-mono:\s*"JetBrains Mono"[^;]*ui-monospace/.test(css);
 		})());
+	}
+
+	// -- A14 — rail UX fixes (fix/rail-ux: F1/F2/F3/F4/F6/F8) ----------------
+	{
+		const css = readAsset("app.css");
+		const detailCss = readAsset("detail.css");
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		const dispatched: any[] = [];
+		railMod.renderRail(model, root, doc, { dispatch: (a: any) => dispatched.push(a), selection: "m1-lead-2", focusWorker: "w2-1", expansion: new Set(["rail:m1-lead-3"]) });
+		const nodeRows = byAttr(root, "data-node-id");
+		const workerRows = byAttr(root, "data-rail-worker");
+		check(
+			"A14.1 every rail row is a keyboard-operable <button> (session, task, worker) inside its list semantics",
+			nodeRows.length > 0 &&
+				nodeRows.every((r: any) => r.tagName === "button" && r.attributes.tabindex === undefined) &&
+				workerRows.length > 0 &&
+				workerRows.every((r: any) => r.tagName === "button" && r.parentNode?.tagName === "li" && r.parentNode?.parentNode?.attributes?.["data-rail-workers"] !== undefined),
+			JSON.stringify(nodeRows.map((r: any) => r.tagName)),
+		);
+		const taskRow = nodeRows.find((r: any) => r.attributes["data-node-id"] === "m1-lead-2");
+		dispatched.length = 0;
+		taskRow.fire("click");
+		check("A14.2 the row's own listener dispatches select-node (a real button's Enter/Space fires its click)", dispatched.some((a: any) => a.type === "select-node" && a.id === "m1-lead-2"), JSON.stringify(dispatched));
+		check(
+			"A14.3 the selected task row and the focused worker row carry data-selected=1 (F4)",
+			taskRow.attributes["data-selected"] === "1" &&
+				workerRows.find((r: any) => r.attributes["data-rail-worker"] === "w2-1")?.attributes["data-selected"] === "1" &&
+				workerRows.filter((r: any) => r.attributes["data-selected"] === "1").length === 1,
+		);
+		const groupEl = byAttr(root, "data-rail-group").find((g: any) => g.attributes["data-rail-group"] === sessionIdFor(LEAD(2)));
+		doc.activeElement = null;
+		groupEl.fire("keydown", { key: "ArrowDown" });
+		check("A14.4 arrow keys rove focus through the group's rows (ArrowDown from outside → first row)", doc.activeElement === nodeRows.find((r: any) => r.attributes["data-node-id"] === sessionIdFor(LEAD(2))), JSON.stringify(doc.activeElement?.attributes?.["data-node-id"]));
+		groupEl.fire("keydown", { key: "ArrowDown" });
+		check("A14.5 ArrowDown steps to the next row in the group", doc.activeElement?.attributes?.["data-node-id"] === "m1-lead-2", JSON.stringify(doc.activeElement?.attributes?.["data-node-id"]));
+		const groupWorkers = workerRows.filter((r: any) => r.parentNode?.parentNode?.attributes?.["data-rail-workers"] === "m1-lead-2");
+		const lastWorker = groupWorkers.at(-1);
+		groupEl.fire("keydown", { key: "End" });
+		check("A14.6 End focuses the group's last row (Home the first)", doc.activeElement === lastWorker && (groupEl.fire("keydown", { key: "Home" }), doc.activeElement === nodeRows.find((r: any) => r.attributes["data-node-id"] === sessionIdFor(LEAD(2)))), JSON.stringify(doc.activeElement?.attributes?.["data-rail-worker"]));
+		check("A14.7 focus is visible: a :focus-visible accent-outline rule exists in app.css (F1)", /:focus-visible\s*\{\s*outline:\s*1px solid var\(--accent\)\s*;?\s*\}/.test(css.replace(/\n\t/g, " ")));
+		const flat = (s: string) => s.replace(/\s+/g, " ");
+		check(
+			"A14.8 selected rows: accent outline + 2px inset accent bar, never the 1.22:1 --border outline (F2)",
+			flat(css).includes('.rail-session[data-selected="1"], .rail-task[data-selected="1"], .rail-worker[data-selected="1"] { background: var(--panel-2); outline: 1px solid var(--accent); box-shadow: inset 2px 0 0 var(--accent); }') && !/\[data-selected="1"\][^{]*\{[^}]*var\(--border\)/.test(css),
+		);
+		check(
+			"A14.9 degraded chips drop the opacity dimming and raise grey to muted on panel-2 (F3)",
+			!/\.degraded-ghost\s*\{[^}]*opacity/.test(detailCss) && /\.degraded-grey\s*\{[^}]*var\(--muted\)[^}]*var\(--panel-2\)/.test(detailCss),
+		);
+		const workerRule = css.match(/^\.rail-worker \{[^}]*\}/m)?.[0] ?? "";
+		check(
+			"A14.10 worker rows afford interaction: pointer cursor, padding, 24px min-height, radius, hover (F4)",
+			/cursor:\s*pointer/.test(workerRule) && /padding:/.test(workerRule) && /min-height:\s*1\.5rem/.test(workerRule) && /border-radius:/.test(workerRule) && /\.rail-worker:hover/.test(css),
+			workerRule,
+		);
+		check(
+			"A14.11 worker lists sort severity-first (ask tops its class, dead first; then name) (F6)",
+			model.byId.get("m1-lead-2").workers.map((w: any) => w.name).join(",") === "w2-1,w2-2,w2-3,w2-4" && model.byId.get("m1-lead-3").workers[0].name === "w3-1" && model.byId.get("m1-lead-3").workers.map((w: any) => w.status).join(",") === "dead,running,running,running",
+			JSON.stringify(model.byId.get("m1-lead-3").workers.map((w: any) => [w.name, w.status])),
+		);
+		{
+			const doc2 = fakeDoc();
+			const root2 = doc2.createElement("div");
+			const actions: any[] = [];
+			railMod.renderRail(model, root2, doc2, { dispatch: (a: any) => actions.push(a) });
+			const toggle = byAttr(root2, "data-rail-settled-toggle").find((r: any) => r.attributes["data-rail-settled-toggle"] === "4");
+			check(
+					"A14.12 settled workers fold behind a '+4 settled' expander, collapsed by default (F6)",
+				byAttr(root2, "data-rail-worker").every((r: any) => r.attributes["data-rail-worker"] !== "w1-1") && toggle !== undefined && toggle.attributes["data-expanded"] === "0" && toggle.attributes["aria-expanded"] === "false" && toggle.textContent.includes("+4 settled"),
+				JSON.stringify(toggle?.attributes),
+			);
+			toggle.fire("click");
+			check("A14.13 the expander dispatches the shared toggle-collapse action with the rail fold key", actions.some((a: any) => a.type === "toggle-collapse" && a.leadId === "rail:m1-lead-1"), JSON.stringify(actions));
+			const uiFold = uiMod.uiReducer(uiMod.createUiState(), { type: "toggle-collapse", leadId: "rail:m1-lead-1" });
+			railMod.renderRail(model, root2, doc2, { dispatch: (a: any) => actions.push(a), expansion: uiFold.expansion });
+			const unfolded = byAttr(root2, "data-rail-settled-toggle").find((r: any) => r.attributes["data-rail-settled-toggle"] === "4");
+			check(
+					"A14.14 the expansion Set unfolds the settled workers (data-expanded=1, −4 settled)",
+				byAttr(root2, "data-rail-worker").some((r: any) => r.attributes["data-rail-worker"] === "w1-1") && unfolded.attributes["data-expanded"] === "1" && unfolded.attributes["aria-expanded"] === "true" && unfolded.textContent.includes("\u22124 settled"),
+				JSON.stringify(unfolded.attributes),
+			);
+		}
+		check(
+			"A14.15 both name spans carry title; worker names ellipsize (F8)",
+			workerRows.every((r: any) => r.childNodes.some((c: any) => c.attributes?.class === "rail-worker-name" && c.attributes.title === r.attributes["data-rail-worker"])) &&
+				nodeRows.every((r: any) => {
+				const nameSpan = r.childNodes.find((c: any) => c.attributes?.class === "rail-name");
+				return nameSpan !== undefined && nameSpan.attributes.title === nameSpan.textContent;
+			}) &&
+				/\.rail-worker-name\s*\{[^}]*text-overflow:\s*ellipsis/.test(css.match(/\.rail-name,\s*\.rail-worker-name\s*\{[^}]*\}/)?.[0] ?? "") && /min-width:\s*0/.test(css.match(/\.rail-name,\s*\.rail-worker-name\s*\{[^}]*\}/)?.[0] ?? ""),
+		);
+		const appSrc = readAsset("app.js");
+		check(
+			"A14.16 app.js threads focusWorker + expansion into both renderRail calls",
+			appSrc.split("renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });").length - 1 === 2,
+		);
 	}
 }
 

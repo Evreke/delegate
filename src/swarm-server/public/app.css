@@ -324,17 +324,26 @@ body {
 	cursor: pointer;
 	font-family: var(--font-mono);
 	font-size: var(--type-sm);
+	color: inherit;
 }
 
+/* the rows are real <button>s (#rail-ux F1): reset UA chrome, keep the look */
+button.rail-session, button.rail-task, button.rail-worker { background: transparent; border: none; width: 100%; text-align: left; }
+
+:focus-visible { outline: 1px solid var(--accent); }
+
 .rail-session:hover,
-.rail-task:hover {
+.rail-task:hover,
+.rail-worker:hover {
 	background: var(--panel-2);
 }
 
 .rail-session[data-selected="1"],
-.rail-task[data-selected="1"] {
+.rail-task[data-selected="1"],
+.rail-worker[data-selected="1"] {
 	background: var(--panel-2);
-	outline: 1px solid var(--border);
+	outline: 1px solid var(--accent);
+	box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .rail-task-box {
@@ -343,10 +352,12 @@ body {
 	padding-left: 0.4rem;
 }
 
-.rail-name {
+.rail-name,
+.rail-worker-name {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	min-width: 0;
 }
 
 .rail-role {
@@ -377,14 +388,7 @@ body {
 	padding: 0 0 0 0.4rem;
 }
 
-.rail-worker {
-	display: flex;
-	gap: 0.35rem;
-	align-items: center;
-	color: var(--muted);
-	font-family: var(--font-mono);
-	font-size: var(--type-xs);
-}
+.rail-worker { display: flex; gap: 0.35rem; align-items: center; color: var(--muted); font-family: var(--font-mono); font-size: var(--type-xs); cursor: pointer; padding: 0.15rem 0.25rem; min-height: 1.5rem; border-radius: 4px; }
 
 .rail-empty {
 	color: var(--muted);

@@ -171,8 +171,8 @@
 
 /* four distinct visual states (the flag name is always the chip text) */
 .degraded-grey {
-	color: #7d838c;
-	background: #23262c;
+	color: var(--muted);
+	background: var(--panel-2);
 	border-color: #33373f;
 }
 
@@ -180,7 +180,6 @@
 	color: #8b93a0;
 	background: transparent;
 	border-color: #3a3f49;
-	opacity: 0.55;
 	font-style: italic;
 }
 

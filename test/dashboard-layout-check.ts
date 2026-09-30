@@ -230,8 +230,8 @@ async function main(): Promise<void> {
 			JSON.stringify(state.edges.filter((e) => e.kind !== "spawned_by").map((e) => `${e.from}:${layout.positions[e.from].col}->${e.to}:${layout.positions[e.to].col}`)),
 		);
 		check(
-			"B1.3b spawned_by does NOT set a column: the lead hangs at 2 by contains, not at 1 by its causal spawned_by — and the causal edges survive into the layout to draw",
-			col("s:lead-a") === col("t:root")! + 1 && col("s:lead-a") !== col("s:root")! + 1 && layout.edges.some((e: any) => e.kind === "spawned_by" && e.from === "s:a1" && e.to === "s:lead-a"),
+			"B1.3b spawned_by does NOT set a column: the lead hangs at 2 by contains, not at 1 by its causal spawned_by — and every REDUNDANT causal edge is hidden from the default layout (round-1fix), re-shown by showCausal",
+			col("s:lead-a") === col("t:root")! + 1 && col("s:lead-a") !== col("s:root")! + 1 && !layout.edges.some((e: any) => e.kind === "spawned_by") && layoutMod.computeLayout(state, { expansion: [], showCausal: true }).edges.some((e: any) => e.kind === "spawned_by" && e.from === "s:a1" && e.to === "s:lead-a"),
 			JSON.stringify({ leadA: col("s:lead-a"), drawn: layout.edges.filter((e: any) => e.kind === "spawned_by").map((e: any) => `${e.from}->${e.to}`) }),
 		);
 		check(
@@ -261,9 +261,17 @@ async function main(): Promise<void> {
 		canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
 		const kinds = byAttr(root, "data-edge").map((p) => p.attributes["data-edge-kind"]).sort().join(",");
 		check(
-			"B1.8 the canvas still draws every edge kind: contains, owned_by AND the causal spawned_by paths",
-			kinds === "contains,contains,contains,contains,contains,owned_by,owned_by,owned_by,spawned_by,spawned_by,spawned_by,spawned_by,spawned_by",
+			"B1.8 the default canvas draws the STRUCTURAL edges only (every spawned_by in this fixture is redundant — round-1fix)",
+			kinds === "contains,contains,contains,contains,contains,owned_by,owned_by,owned_by",
 			kinds,
+		);
+		const causalRoot = doc.createElement("div");
+		canvasMod.renderCanvas(state, layoutMod.computeLayout(state, { expansion: [], showCausal: true }), causalRoot, doc, { view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {}, showCausal: true });
+		const causalKinds = byAttr(causalRoot, "data-edge").map((p) => p.attributes["data-edge-kind"]).sort().join(",");
+		check(
+			"B1.8b the causal toggle re-shows every edge kind: contains, owned_by AND the causal spawned_by paths",
+			causalKinds === "contains,contains,contains,contains,contains,owned_by,owned_by,owned_by,spawned_by,spawned_by,spawned_by,spawned_by,spawned_by",
+			causalKinds,
 		);
 	}
 
@@ -589,6 +597,125 @@ async function main(): Promise<void> {
 			canvasMod.DRAG_THRESHOLD_PX === 4 && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 3, y: 0 }) === false && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 4, y: 0 }) === false && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 5, y: 0 }) === true && canvasMod.isDragGesture(null, { x: 9, y: 9 }) === false,
 			JSON.stringify({ threshold: canvasMod.DRAG_THRESHOLD_PX }),
 		);
+	}
+
+	// -- B9 — round-1fix (a): rows follow the STRUCTURAL FAMILY, not id order -
+	// The diagnosis (report-diag-canvas): computeLayout sorted rows by id inside
+	// a column, so a task's workers scattered across the whole column and even
+	// the structural contains edges crossed sibling boxes. The fix: a
+	// deterministic DFS from the structural roots (children in id order), so a
+	// task's workers sit in rows ADJACENT to their task's row.
+	{
+		const node = (kind: string, id: string, name: string) => ({ kind, id, name, depth: 0, status: "running", severity: "info", statusView: { shape: "dot", className: "status-running", pulse: true }, foreign: false, degraded: [], usage: null, elapsedLabel: null, progress: null });
+		// Two tasks under one orchestrator; the worker ids deliberately INTERLEAVE
+		// the two tasks in id order (w-1,w-3 belong to t-a; w-2,w-4 to t-b) — the
+		// old id-sort produced the interleaved column this fix exists to kill.
+		const state = {
+			nodes: [node("session", "o", "orch"), node("task", "t-a", "task-a"), node("task", "t-b", "task-b"), node("session", "s:w-1", "w-1"), node("session", "s:w-2", "w-2"), node("session", "s:w-3", "w-3"), node("session", "s:w-4", "w-4")],
+			edges: [
+				{ kind: "owned_by", from: "t-a", to: "o" },
+				{ kind: "owned_by", from: "t-b", to: "o" },
+				{ kind: "contains", from: "t-a", to: "s:w-1" },
+				{ kind: "contains", from: "t-a", to: "s:w-3" },
+				{ kind: "contains", from: "t-b", to: "s:w-2" },
+				{ kind: "contains", from: "t-b", to: "s:w-4" },
+			],
+			byId: new Map(),
+			graph: { collapse: new Map<string, unknown>() },
+		} as any;
+		for (const n of state.nodes) state.byId.set(n.id, n);
+		const layout = layoutMod.computeLayout(state, { expansion: [] });
+		const row = (id: string): number => layout.positions[id].row;
+		check(
+			"B9.1 a task's workers occupy rows ADJACENT to each other AND to their task — the task's row IS its block's first row (no fleet interleaving inside a column)",
+			row("t-a") === 0 && row("t-b") === 2 && row("s:w-1") === 0 && row("s:w-3") === 1 && row("s:w-2") === 2 && row("s:w-4") === 3 && row("t-a") === row("s:w-1") && row("t-b") === row("s:w-2"),
+			JSON.stringify(layout.positions),
+		);
+		check(
+			"B9.2 the pin BITES: the family order differs from the id order this fixture was built to defeat (w-2 is NOT between w-1 and w-3)",
+			!(row("s:w-1") < row("s:w-2") && row("s:w-2") < row("s:w-3")),
+			JSON.stringify({ w1: row("s:w-1"), w2: row("s:w-2"), w3: row("s:w-3") }),
+		);
+		// The regenerated golden (byte-exact): PAD 24, NODE 168x58, COL_GAP 56,
+		// ROW_GAP 18 — global leaf slots in DFS family order, sorted by id inside
+		// coordinateGolden (t-b sits at ITS block's first row, slot 2).
+		check(
+			"B9.3 the coordinateGolden golden (round-1fix bytes): leaf-slot family rows, deterministic",
+			layoutMod.coordinateGolden(layout) === "o@24,24|s:w-1@472,24|s:w-2@472,176|s:w-3@472,100|s:w-4@472,252|t-a@248,24|t-b@248,176" && layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(layoutMod.computeLayout(state, { expansion: [] })),
+			layoutMod.coordinateGolden(layout),
+		);
+		check(
+			"B9.4 the causal-edge filter never relayouts: the golden is byte-identical with showCausal on",
+			layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(layoutMod.computeLayout(state, { expansion: [], showCausal: true })),
+		);
+		check(
+			"B9.5 each task's worker block is CONTIGUOUS in the shared worker column (no interleaving — the crossing fix)",
+			["t-a", "t-b"].every((t) => {
+				const rows = ["s:w-1", "s:w-2", "s:w-3", "s:w-4"].filter((w) => state.edges.some((e: any) => e.kind === "contains" && e.from === t && e.to === w)).map(row);
+				return rows.every((r, i) => r === Math.min(...rows) + i);
+			}),
+			JSON.stringify(Object.fromEntries(["t-a", "t-b"].map((t) => [t, row(t)]))),
+		);
+		check(
+			"B9.6 every contains edge is row-monotone (worker row ≥ task row, block order preserved) — near-horizontal, no upward back-edges",
+			["s:w-1", "s:w-2", "s:w-3", "s:w-4"].every((w) => {
+				const t = state.edges.find((e: any) => e.kind === "contains" && e.to === w).from;
+				return row(w) >= row(t);
+			}),
+		);
+	}
+
+	// -- B10 — round-1fix (b): redundant spawned_by hidden, unembodied kept, --
+	// -- the toolbar causal toggle re-shows all ------------------------------
+	{
+		// s:ghost has NO contains parent: its spawned_by is its only structural
+		// tie (an unembodied worker session) and must SURVIVE the default filter.
+		const state = productionShapedState();
+		state.nodes.push({ kind: "session", id: "s:ghost", name: "ghost", depth: 0, status: "running", severity: "info", statusView: { shape: "dot", className: "status-running" }, foreign: false, degraded: [], usage: null, elapsedLabel: null, progress: null } as any);
+		state.edges.push({ kind: "spawned_by", from: "s:ghost", to: "s:root" });
+		state.byId.set("s:ghost", state.nodes[state.nodes.length - 1]);
+		const def = layoutMod.computeLayout(state, { expansion: [] });
+		const causal = (l: any) => l.edges.filter((e: any) => e.kind === "spawned_by").map((e: any) => `${e.from}->${e.to}`).sort();
+		check(
+			"B10.1 the default layout hides every REDUNDANT spawned_by (the structural chain contains+owned_by already reaches the same orchestrator) — only the unembodied ghost's survives",
+			causal(def).join(",") === "s:ghost->s:root" && def.edges.length === 9,
+			JSON.stringify(causal(def)),
+		);
+		check(
+			"B10.2 an UNEMBODIED worker's spawned_by is KEPT by the default filter (its only structural tie)",
+			causal(layoutMod.computeLayout(state, { expansion: [], showCausal: true })).join(",").includes("s:ghost->s:root") && layoutMod.visibleNodes(state, [], {}).edges.some((e: any) => e.kind === "spawned_by" && e.from === "s:ghost"),
+			JSON.stringify(causal(layoutMod.computeLayout(state, { expansion: [], showCausal: true }))),
+		);
+		check(
+			"B10.3 the toggle re-shows ALL causal edges (5 redundant + the unembodied one)",
+			causal(layoutMod.computeLayout(state, { expansion: [], showCausal: true })).length === 6,
+			JSON.stringify(causal(layoutMod.computeLayout(state, { expansion: [], showCausal: true }))),
+		);
+		// The UI state + reducer: showCausal defaults false; toggle-causal flips.
+		const ui0 = uiMod.createUiState();
+		const ui1 = uiMod.uiReducer(ui0, { type: "toggle-causal" });
+		check(
+			"B10.4 ui.showCausal defaults false and toggle-causal flips it (and back)",
+			ui0.showCausal === false && ui1.showCausal === true && uiMod.uiReducer(ui1, { type: "toggle-causal" }).showCausal === false,
+			JSON.stringify({ ui0: ui0.showCausal, ui1: ui1.showCausal }),
+		);
+		// The canvas toolbar: a causal toggle NEXT TO fit, aria-pressed honest,
+		// clicking dispatches toggle-causal through the app seam.
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		const dispatchs: any[] = [];
+		canvasMod.renderCanvas(state, def, root, doc, { dispatch: (a: any) => dispatchs.push(a), showCausal: false, view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
+		const causalBtn = byAttr(root, "data-canvas-causal")[0];
+		causalBtn.dispatch("click");
+		const root2 = doc.createElement("div");
+		canvasMod.renderCanvas(state, def, root2, doc, { dispatch: () => {}, showCausal: true, view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
+		const pressedBtn = byAttr(root2, "data-canvas-causal")[0];
+		check(
+			"B10.5 the toolbar carries the causal toggle next to fit: unpressed by default, click dispatches toggle-causal, pressed when showCausal",
+			causalBtn.attributes["aria-pressed"] === "false" && dispatchs.length === 1 && dispatchs[0].type === "toggle-causal" && byAttr(root, "data-canvas-fit").length === 1 && pressedBtn.attributes["aria-pressed"] === "true",
+			JSON.stringify({ dispatchs, pressed: pressedBtn.attributes["aria-pressed"] }),
+		);
+		check("B10.6 canvas.css styles the causal toggle (the .canvas-causal rule exists with a pressed state)", /\.canvas-causal\s*\{/.test(readAsset("canvas.css")) && /\.canvas-causal\[aria-pressed="true"\]\s*\{/.test(readAsset("canvas.css")));
 	}
 
 	console.log(failures === 0 ? "\nALL DASHBOARD LAYOUT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

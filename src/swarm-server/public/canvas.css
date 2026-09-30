@@ -149,3 +149,27 @@
 	border-color: var(--accent);
 	color: var(--accent);
 }
+
+/* The causal-edges toggle (round-1fix): same affordance family as `fit`; the
+   pressed state marks that ALL causal spawned_by edges are drawn. */
+.canvas-causal {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1;
+	color: var(--fg);
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 4px 8px;
+	cursor: pointer;
+}
+
+.canvas-causal:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.canvas-causal[aria-pressed="true"] {
+	border-color: var(--accent);
+	color: var(--accent);
+}

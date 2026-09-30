@@ -504,10 +504,10 @@ async function main(): Promise<void> {
 	{
 		const layout = layoutMod.computeLayout(model, { expansion: [] });
 		check("A6.1 columns follow the structural edges (#136): orchestrator 0 → task 1 → lead 2 (lead-task 3) → worker 4; the collapsed worker has no slot", layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions["milestone1"].col === 1 && layout.positions[L1].col === 2 && layout.positions[`m1-lead-4`].col === 3 && layout.positions[W41].col === 4 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined, JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, task: layout.positions["milestone1"]?.col, lead: layout.positions[L1]?.col, leadTask: layout.positions[`m1-lead-4`]?.col, w41: layout.positions[W41]?.col }));
-		const full = layoutMod.computeLayout(model, { expansion: new Set([L1]) });
+		const full = layoutMod.computeLayout(model, { expansion: new Set([L1]), showCausal: true });
 		const graphEdges = graph.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
 		const layoutEdges = full.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
-		check("A6.2 edges match the graph's full edge set node-for-node (contains + owned_by + causal spawned_by)", graphEdges === layoutEdges, `${layoutEdges.length} vs ${graphEdges.length}`);
+		check("A6.2 with the causal toggle ON, edges match the graph's full edge set node-for-node (contains + owned_by + causal spawned_by); the DEFAULT layout hides only the redundant spawned_by", graphEdges === layoutEdges && layoutMod.computeLayout(model, { expansion: new Set([L1]) }).edges.every((e: any) => e.kind !== "spawned_by"), `${layoutEdges.length} vs ${graphEdges.length}`);
 		const doc = fakeDoc();
 		const root = doc.createElement("div");
 		canvasMod.renderCanvas(model, full, root, doc, {});
@@ -597,7 +597,7 @@ async function main(): Promise<void> {
 		const deadEl = index.nodes.get(deadId);
 		const deadMarker = deadEl.childNodes.find((c: any) => c.getAttribute && c.getAttribute("data-status-marker") !== null);
 		check("A8.6b patchCanvas repaints the status marker class/shape on a dead-reboot flip (in place)", deadEl.attributes["data-status"] === "dead" && deadMarker.attributes.class.includes("status-dead") && deadEl.attributes["data-x"] === deadX && deadEl.attributes["data-y"] === deadY, JSON.stringify({ status: deadEl.attributes["data-status"], marker: deadMarker.attributes.class }));
-		check("A8.7 topology growth appends deterministically (sorted by depth, then id)", (() => {
+		check("A8.7 topology growth appends deterministically (structural-family row order, round-1fix)", (() => {
 			const extra = { ...graph, nodes: graph.nodes.concat([sessionNode({ path: "/sessions/w9-9.jsonl", workerName: "w9-9", task: "milestone1", depth: 2, liveStatus: "idle" }) as never]), edges: graph.edges.concat([{ kind: "spawned_by", from: sessionIdFor("/sessions/w9-9.jsonl"), to: L1 }]) };
 			const grown = layoutMod.computeLayout(stateMod.buildDashboardState({ graph: extra, events, ownSessionPath, nowMs: NOW }), { expansion: new Set([L1]) });
 			const merged = layoutMod.computeLayout(stateMod.buildDashboardState({ graph: extra, events, ownSessionPath, nowMs: NOW }), { expansion: new Set([L1]) });

@@ -19,7 +19,11 @@
  *
  * Critical invariants:
  *   - a null/absent fleet id (the root view) returns the graph IDENTITY — the
- *     v1 unscoped behavior stays untouched;
+ *     v1 unscoped behavior stays untouched AT THIS FUNCTION: since the
+ *     round-1fix readability default the APP resolves the root view's fleet
+ *     id through `scopeFleetIdFor` (the own fleet by default, `all` only when
+ *     the operator toggles it), so the identity case is now the explicit
+ *     `all` choice plus the fallback when no own identity is known;
  *   - the fleet root is the SESSION node whose id is the URL's id segment; its
  *     fleet is that node plus every descendant over `spawned_by` edges
  *     (cycle-safe), so a foreign fleet's tree can never render;
@@ -134,8 +138,82 @@ export function scopeGraphToFleet(graph, rootId) {
 	}
 	const nodes = graph.nodes.filter((n) => n && ids.has(n.id));
 	const edges = (graph.edges ?? []).filter((e) => e && ids.has(e.from) && ids.has(e.to));
-	const orphans = (graph.orphans ?? []).filter((o) => o && ids.has(o.task));
+const orphans = (graph.orphans ?? []).filter((o) => o && ids.has(o.task));
 	return { ...graph, nodes, edges, orphans };
+}
+
+/**
+ * The graph-scope fleet id a page folds (round-1fix readability default): the
+ * URL's fleet id wins; the ROOT view defaults to the OWN fleet when the
+ * serving identity knows its `ownSessionId` and that node exists in the
+ * graph — `all` (null) is then an explicit user choice (`all: true`, the
+ * scope-view toggle). An unknown identity or an own id absent from the graph
+ * degrades to the unscoped root behavior. Pure.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: { fleetId, ownSessionId, graph, all } — the serving scope (null =
+ *   root view), the identity's session id, the raw wire graph and the scope
+ *   toggle state (`"all"` when the operator picked all fleets)
+ * Output: the fleet id to fold through `scopeGraphToFleet` (null = identity)
+ * Guarantees: pure; never throws; the URL fleet always wins
+ * Raises: never
+ */
+export function scopeFleetIdFor({ fleetId = null, ownSessionId = null, graph = null, all = false } = {}) {
+	if (fleetId) return fleetId;
+	if (all || !ownSessionId || !graph || !Array.isArray(graph.nodes)) return null;
+	return graph.nodes.some((n) => n && n.id === ownSessionId) ? ownSessionId : null;
+}
+
+/**
+ * The page's scope controller (round-1fix): ONE holder for the inputs that
+ * resolve the graph scope (serving identity, latest raw wire graph, fleet
+ * index, the own/all toggle) plus the scope-chrome sync. The only side effect
+ * is the injected `chrome.setScope` seam — the resolution RULE lives in
+ * `scopeFleetIdFor`, so the controller adds state-keeping, never a second
+ * spelling of the rule.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: { chrome, fleetId, ownSessionId, isAll } — the status chrome, the URL
+ *   scope (null = root view), the initial identity (the env seam; the fleets
+ *   envelope's `self` overrides via setIdentity) and the toggle getter
+ *   (ui.fleetView === "all")
+ * Output: { setIdentity, setGraph, setFleets, fleetId, ownable, sync }
+ * Guarantees: sync() is idempotent (a no-op while neither the resolved scope
+ *   nor the fleet index changes); never throws
+ * Raises: never
+ */
+export function createScopeController({ chrome, fleetId = null, ownSessionId = null, isAll = null } = {}) {
+	let own = ownSessionId;
+	let graph = null;
+	let fleets = [];
+	let applied = null;
+	return {
+		setIdentity(id) {
+			own = typeof id === "string" && id.length > 0 ? id : own;
+			return this;
+		},
+		setGraph(g) {
+			graph = g ?? null;
+			return this;
+		},
+		setFleets(rows) {
+			fleets = Array.isArray(rows) ? rows : [];
+			return this;
+		},
+		fleetId() {
+			return scopeFleetIdFor({ fleetId, ownSessionId: own, graph, all: isAll ? isAll() === true : false });
+		},
+		ownable() {
+			return fleetId === null && own !== null && Array.isArray(graph?.nodes) && graph.nodes.some((n) => n && n.id === own);
+		},
+		sync() {
+			const eff = this.fleetId();
+			const key = `${eff ?? "all"}\n${fleets.map((f) => f?.sessionId).join(",")}`;
+			if (key === applied) return;
+			applied = key;
+			chrome?.setScope(eff, fleets, { linkAll: fleetId !== null });
+		},
+	};
 }
 
 /**
@@ -144,22 +222,26 @@ export function scopeGraphToFleet(graph, rootId) {
  * scopes reachable from each other.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: { fleetId, fleets } — the serving scope (null = the root view) and the
- *   `GET /api/swarm/fleets` rows ({sessionId, own, tasks})
+ * Input: { fleetId, fleets, linkAll } — the serving scope (null = the root
+ *   view; since the round-1fix the APP passes the RESOLVED scope here), the
+ *   `GET /api/swarm/fleets` rows ({sessionId, own, tasks}) and whether the
+ *   switcher leads with the `all fleets` link back to `/` (default true; the
+ *   root's own-fleet default passes false — its `all` path is the in-page
+ *   scope-view toggle, never a `/` navigation)
  * Output: { fleetId, key, brandText, title, entries, show }
  * Guarantees: pure; the root view is `key: "all"` / `"all fleets"`; a scoped
- *   view always leads with the `all fleets` link back to `/`; fleet entries
- *   are own-first then id-sorted and never include the scope's own fleet;
- *   malformed rows are dropped; never throws
+ *   view leads with the `all fleets` link back to `/` unless `linkAll:false`;
+ *   fleet entries are own-first then id-sorted and never include the scope's
+ *   own fleet; malformed rows are dropped; never throws
  * Raises: never
  */
-export function chromeScope({ fleetId = null, fleets = [] } = {}) {
+export function chromeScope({ fleetId = null, fleets = [], linkAll = true } = {}) {
 	const current = typeof fleetId === "string" && fleetId.length > 0 ? fleetId : null;
 	const fleetEntries = (Array.isArray(fleets) ? fleets : [])
 		.filter((f) => f && typeof f.sessionId === "string" && f.sessionId !== current)
 		.map((f) => ({ href: `/fleets/${encodeURIComponent(f.sessionId)}/`, label: f.sessionId, own: f.own === true, current: false }))
 		.sort((a, b) => (a.own === b.own ? (a.label < b.label ? -1 : a.label > b.label ? 1 : 0) : a.own ? -1 : 1));
-	const entries = current ? [{ href: "/", label: "all fleets", own: false, current: false }, ...fleetEntries] : fleetEntries;
+	const entries = current ? (linkAll ? [{ href: "/", label: "all fleets", own: false, current: false }, ...fleetEntries] : fleetEntries) : fleetEntries;
 	return {
 		fleetId: current,
 		key: current ?? "all",

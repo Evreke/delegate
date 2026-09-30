@@ -358,6 +358,11 @@ Optional extras (all have safe defaults; see the operational notes above):
   scheduled wake may fire, default 1000 ms) and `maxActive` (cap on concurrent pending
   wakes per session, default 8). Both are read tolerantly; garbage falls back to the
   defaults.
+- `classifier` — opt-in, display-only triage note on validated worker reports
+  (`classifier.enabled`, default `false`; `classifier.model`, no default). With both set,
+  one inline classification appends `classifier: complete 0.93` / `classifier: suspect 0.41`
+  to the `delegate` tool result; disabled, incomplete or unavailable → silent skip. See
+  [docs/classifier.md](docs/classifier.md).
 - `"contextWindow": <number>` — override the worker context window used by the `ctx%`
   gauge when the model is not in the built-in table.
 - Environment variable `PI_DELEGATE_EXCHANGE_ROOT` (absolute path) — relocate the exchange

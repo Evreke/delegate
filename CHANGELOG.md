@@ -71,6 +71,39 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   (`data-rail-task-chip`) in addition to its counters; session rows keep the
   plain role label (`data-rail-role`). Additive visuals only — the #127 pins
   (keyboard operability, contrast, severity sort, settled fold) are intact.
+- **Drag-to-pan fixed (#137).** The canvas `onView` rebuilt the whole SVG +
+  listeners + gesture on every pan step, stalling the drag after the first
+  move and leaking a trailing select. `onView` now PATCHES the live
+  `<g data-view>` transform in place (a pan never re-renders), and a 4px
+  threshold over one render-persistent gesture (`createDragGesture`)
+  distinguishes pan from click: a pan's trailing click never selects, a
+  genuine click still does.
+- **Canvas tree derived from structural edges, root named by role (#136).**
+  Layout columns come from BFS over `owned_by` (task→owner) + `contains`
+  (task→worker) — orchestrator → task → worker — instead of the causal
+  `spawned_by`; the causal edges are still drawn. A non-worker root session
+  is labeled by ROLE (`orchestrator`) rather than its opaque session-id hash.
+- **Canvas readability (round-1fix).** Rows order by structural family (a
+  task's workers sit adjacent to its task, `contains` edges near-horizontal),
+  REDUNDANT causal `spawned_by` edges are hidden by default (a `causal`
+  toolbar toggle re-shows them), and the root view defaults to the OWN fleet
+  with `all` as an explicit toggle — cutting the default graph from 12 of 21
+  box-crossing edges to zero.
+- **Detail headline names the subject (#134).** A task panel is titled by the
+  task name (the picked worker is demoted to a sub-caption) and a session
+  panel by its worker name — never a worker's name on a task panel;
+  `data-detail-for`/`data-detail-kind` stay subject-consistent.
+- **Detail surfaces model + output tokens (#139).** The detail meta row
+  renders the worker's `model`/`provider` and the session's `outputTokens`
+  (honest `—` when absent), consuming the Round-0 embodiment projection.
+- **Brief tab serves the manifest `briefPath` (#141).** The brief route first
+  tries the resolved embodiment's manifest `briefPath` (absolute, NUL-free;
+  the `resolveConsoleTarget` ownership gate runs first and is unchanged),
+  falling back to the rebuilt `brief-<name>.md`, then to an honest `absent`.
+- **Console text is ANSI-stripped (#142).** A dependency-free `stripAnsi` runs
+  at serve time inside the ONE `consoleFrame` builder shared by the REST and
+  WS surfaces; the stored buffer and its `nextOffset`/`oldestOffset` stay in
+  raw transcript space while `chunk` is the stripped display view.
 
 ### Added
 

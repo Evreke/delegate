@@ -88,6 +88,11 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	/** Operator-token override (tests); default a fresh random token surfaced
 	 *  on stderr. */
 	operatorToken?: string;
+	/** Surface the operator-token + dashboard link on stderr (Law 11's ONLY
+	 *  channel for a human). Default TRUE (backward compatible); the composition
+	 *  root passes `ctx.hasUI === true` so HEADLESS worker sessions do not spam
+	 *  the terminal with an unreadable token/link. */
+	surfaceToken?: boolean;
 	/** The process environment (config + test tiers). */
 	env?: NodeJS.ProcessEnv;
 	/** Listener override (fault-injection seam — tests make binds fail). */
@@ -209,6 +214,10 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	// can gate on it; SURFACED on stderr only once the bind succeeds below
 	// (an unusable token for a failed mount is never announced).
 	const operatorToken = deps.operatorToken ?? generateOperatorToken();
+	// #surfaceToken: a headless session (worker/rpc) has no human to read the
+	// token/link — its stderr is the TUI spam this flag suppresses. Default true
+	// (a mount that predates the flag still announces).
+	const surfaceToken = deps.surfaceToken !== false;
 
 	const listen =
 		deps.listen ??
@@ -291,7 +300,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	let dashboardUrl = dashboardUrlFor(cfg.port);
 	const emitDashboard = (port: number): void => {
 		dashboardUrl = dashboardUrlFor(port);
-		logDashboard(dashboardUrl, dashboardLinkFor(port, operatorToken));
+		if (surfaceToken) logDashboard(dashboardUrl, dashboardLinkFor(port, operatorToken));
 	};
 
 	if (cfg.port === 0) {
@@ -350,7 +359,7 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	// ONLY channel (Law 11); the token rides in the fragment, never in the URL
 	// path/query. The link names the ACTUAL serving port when this session
 	// serves one, else the canonical primary port.
-	logOperatorToken(operatorToken);
+	if (surfaceToken) logOperatorToken(operatorToken);
 	emitDashboard(bound ? bound.port : cfg.port);
 
 	const handle: SwarmServerHandle = {

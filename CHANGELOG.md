@@ -104,12 +104,15 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   at serve time inside the ONE `consoleFrame` builder shared by the REST and
   WS surfaces; the stored buffer and its `nextOffset`/`oldestOffset` stay in
   raw transcript space while `chunk` is the stripped display view.
-- **Swarm-server mount is silent in headless sessions.** The operator-token and
-  dashboard-link stderr lines (Law 11's only channel) were printed by EVERY
-  session mount, so each headless delegate worker spammed the terminal with an
-  unreadable token/link. `mountSwarmServer` now takes `surfaceToken` (default
-  true); the composition root passes `ctx.hasUI === true`, so only sessions a
-  human can see announce themselves.
+- **Swarm-server mount is silent in headless and secondary sessions.** The
+  operator-token and dashboard-link stderr lines (Law 11's only channel) were
+  printed by EVERY session mount, so each headless delegate worker — and every
+  secondary session that found the primary already on the port — spammed the
+  terminal with an unreadable token/link. `mountSwarmServer` now takes
+  `surfaceToken` (default true) AND announces only when the session actually
+  SERVES (a bound listener): headless sessions (the composition root passes
+  `ctx.hasUI === true`) and secondary mounts (no listener) are silent, and a
+  takeover-promoted secondary re-announces its token/link once it binds.
 
 ### Added
 

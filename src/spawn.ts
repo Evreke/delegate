@@ -208,6 +208,15 @@ import {
 	type Transport,
 	type WorkerReport,
 } from "./host.ts";
+// Milestone #3 (issue #130): the display-only classifier triage note. The seam
+// is TOTAL (null = silent skip), so a skip contributes zero text and zero
+// details — a disabled classification is byte-invisible in the collect result.
+import {
+	classifyReport,
+	classifierDetail,
+	classifierNote,
+	type ClassifierRegistrySurface,
+} from "./classifier.ts";
 
 // ===========================================================================
 
@@ -1276,10 +1285,20 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 					report.status === "pass"
 						? `Report OK: status=pass — ${summaryCap.text}`
 						: `Report OK: status=fail (honest failure — the worker ran and reported) — ${summaryCap.text}`;
+				// Issue #130: display-only triage over the VALIDATED report. Total seam:
+				// null on disabled/unavailable/failure → the skip path contributes
+				// exactly "" text and no details key (byte-identical to pre-#130).
+				const triage = await classifyReport(ctx.modelRegistry as ClassifierRegistrySurface, {
+					status: report.status,
+					summary: report.summary,
+					artifacts: report.artifacts,
+				});
+				const classifierLine = triage ? `\n${classifierNote(triage)}` : "";
 				return textResult(
 					`${extraNote}Worker ${canonical} finished in ${elapsedMs} ms (${placementDesc}) · pi-delegate v${EXTENSION_VERSION}.\n` +
 						`${verdictLine}\n` +
 						`Artifacts: ${artifactsList ? artifactsCap.text : "(none)"}` +
+						classifierLine +
 						archiveNote +
 						collectedStampNote +
 						teardownNoteLine +
@@ -1303,6 +1322,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 						...(archivePath
 						? { archivePath }
 						: { archiveWarning: archiveError ? `archive unavailable: ${archiveError}` : "archive unavailable" }),
+						...(triage ? classifierDetail(triage) : {}),
 						...(reportDisplayTruncated ? { reportDisplayTruncated: true } : {}),
 						...(collectedNote ? { collectedAtWarning: collectedNote } : {}),
 						...(teardownNote ? { teardownAfterCollect: teardownNote } : {}),

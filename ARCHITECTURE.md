@@ -3,9 +3,13 @@
 > Binding layer for every agent — human or machine — that touches this
 > repository. Behavioral truth lives in the code's own contracts (ZSDoc at
 > the point of use); operational truth lives in `AGENTS.md`; history lives in
-> git commits and `CHANGELOG.md`. This document carries only current rules
-> and current plans. Where this document and `AGENTS.md` conflict, this
-> document outranks.
+> git commits and `CHANGELOG.md`. The domain language lives in `CONTEXT.md` —
+> the vocabulary (Task, Worker, Session, Placement, Fleet and their relations)
+> this document's rules and the read-model are expressed in. This document
+> carries only current rules and current plans. Where this document and
+> `AGENTS.md` conflict, this document outranks; where `CONTEXT.md` and a rule
+> here disagree on a term, `CONTEXT.md` defines the term — except the frozen
+> surface (section 3), which never moves.
 
 ## 0. Direction — what this codebase is for
 

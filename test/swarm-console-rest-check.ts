@@ -28,6 +28,9 @@
  *       composition — {sessionFile, transport} only) must still serve the
  *       REST console of a worker present in its own snapshot; a foreign /
  *       unknown id must still refuse E_CONSOLE_WORKER_REFUSED.
+ *   C9  #142: the served console chunk is ANSI-stripped at serve time; the
+ *       stored buffer stays raw and the offsets stay in RAW transcript
+ *       space (the pinned contract).
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; every fetch
  * is loopback and bounded by it. Exit 0 only if all checks pass.
@@ -201,7 +204,7 @@ type Handle = { stop(): void; port: number; address: string };
 async function main(): Promise<void> {
 	const { mountSwarmServer } = await import("../src/swarm-server/mount.ts");
 	const { ConsoleBacklog } = await import("../src/swarm-server/console-buffer.ts");
-	const { resolveConsoleTarget } = await import("../src/swarm-server/console.ts");
+	const { resolveConsoleTarget, stripAnsi } = await import("../src/swarm-server/console.ts");
 
 	const env = (): NodeJS.ProcessEnv => ({ ...process.env, SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" });
 	const get = async (port: number, path: string): Promise<{ status: number; body: string }> => {
@@ -412,6 +415,60 @@ async function main(): Promise<void> {
 			unknown.status === 404 && unknownJson.ok === false && unknownJson.error?.code === "E_CONSOLE_WORKER_REFUSED",
 			unknown.body,
 		);
+		h.stop();
+	}
+
+	// C9 — #142: the console surface is ANSI-stripped at SERVE time; the
+	// stored buffer and its offsets stay RAW. Contract (pinned here):
+	// `chunk` is the stripped DISPLAY view; `nextOffset`/`oldestOffset`
+	// remain character positions in the RAW transcript, so feeding
+	// nextOffset back replays exactly the later RAW bytes → no duplication
+	// or loss of DISPLAY text (the strip is deterministic over the same
+	// underlying text).
+	{
+		// Unit: the strip itself — SGR, OSC(BEL), OSC(ST), cursor moves, and a
+		// no-escape round-trip.
+		const cases: Array<[string, string]> = [
+			["\u001B[31mred\u001B[0m", "red"],
+			["a\u001B]0;title\u0007b", "ab"],
+			["a\u001B]8;;http://x\u001B\\link\u001B]8;;\u001B\\", "alink"],
+			["\u001B[2J\u001B[?25hclear", "clear"],
+			["\u009B31mC1\u009B0m", "C1"],
+			["plain text stays", "plain text stays"],
+		];
+		for (const [raw, want] of cases) {
+			const got = stripAnsi(raw);
+			check("C9.0 stripAnsi removes the escape family, keeps visible text", got === want, JSON.stringify({ raw, got, want }));
+		}
+
+		// Buffer stays RAW: the backlog's own read carries the escapes.
+		const backlog = new ConsoleBacklog();
+		backlog.append("\u001B[31mraw\u001B[0m");
+		const rawRead = backlog.read(0);
+		check(
+			"C9.1 the stored backlog stays raw (offsets and bytes untouched)",
+			rawRead.chunk === "\u001B[31mraw\u001B[0m" && rawRead.nextOffset === 5 + 3 + 4,
+			JSON.stringify(rawRead),
+		);
+
+		// REST: the served chunk is stripped; offsets stay in RAW space.
+		const t = new FakeConsoleTransport();
+		t.add("w1");
+		t.store.append("w1", "raw", "\u001B[31mred\u001B[0m and \u001B[1mplain\u001B[0m");
+		const h = await mount(t);
+		const first = await get(h.port, `/api/workers/${encodeURIComponent(workerId(W1))}/console`);
+		const j = JSON.parse(first.body) as { chunk: string; nextOffset: number; oldestOffset: number };
+		const rawLen = "\u001B[31mred\u001B[0m and \u001B[1mplain\u001B[0m".length;
+		check(
+			"C9.2 the served console chunk renders stripped (no ESC bytes)",
+			first.status === 200 && j.chunk === "red and plain" && !j.chunk.includes("\u001B"),
+			first.body,
+		);
+		check("C9.3 offsets stay RAW-space (nextOffset counts the escapes)", j.nextOffset === rawLen && j.oldestOffset === 0, `next=${j.nextOffset} raw=${rawLen}`);
+		t.store.append("w1", "raw", "!");
+		const second = await get(h.port, `/api/workers/${encodeURIComponent(workerId(W1))}/console?offset=${rawLen}`);
+		const j2 = JSON.parse(second.body) as { chunk: string; nextOffset: number };
+		check("C9.4 feeding raw nextOffset back → only the new display text (no dup/loss)", j2.chunk === "!" && j2.nextOffset === rawLen + 1, second.body);
 		h.stop();
 	}
 

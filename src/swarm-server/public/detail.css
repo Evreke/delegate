@@ -352,7 +352,12 @@
 .detail-name { color: var(--fg); font-size: var(--type-md); font-weight: 600; }
 
 .detail-id,
-.detail-task { color: var(--muted); font-family: var(--font-mono); font-size: var(--type-xs); }
+.detail-task,
+.detail-worker { color: var(--muted); font-family: var(--font-mono); font-size: var(--type-xs); }
+
+/* #134: the picked worker is the panel's CONTENT source (console/brief/
+   report), never the headline — it rides the .detail-worker sub-caption
+   on a task panel. */
 
 /* --- #90 flag shape channel: a distinct left-border accent + glyph ------- */
 

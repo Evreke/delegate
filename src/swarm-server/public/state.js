@@ -141,6 +141,12 @@ function buildSessionNode(node, ctx) {
 		name: !isWorker && ownsChildren ? ROOT_ROLE_LABELS[node.role] ?? node.id : node.id,
 		worker: workerName,
 		task: ctx.embodiments.get(node.id)?.task ?? (node.tasks ?? [])[0] ?? null, dir: ctx.embodiments.get(node.id)?.dir ?? null,
+		// #139: the spawn's resolved model identity, projected from THIS
+		// session's worker embodiment (honest null when no embodiment or a
+		// legacy manifest without the field).
+		model: worker?.model ?? null,
+		provider: worker?.provider ?? null,
+		thinking: worker?.thinking ?? null,
 		role: node.role,
 		isWorker,
 		ownsChildren,
@@ -184,6 +190,11 @@ function buildTaskNode(node, ctx) {
 			// #85a: a stable id + kind so a worker row is never an anonymous subject.
 			id: `${node.id}/${w.name ?? "worker"}`, kind: "worker", name: w.name, run: w.run ?? null,
 			sessionId: w.sessionId ?? null, task: node.id, dir: node.dir ?? null, role: null, depth: typeof node.depth === "number" ? node.depth : null,
+			// #139: the embodiment's resolved model identity (honest null on a
+			// legacy manifest entry without the fields).
+			model: w.model ?? null,
+			provider: w.provider ?? null,
+			thinking: w.thinking ?? null,
 			liveStatus: w.liveStatus ?? null,
 			status,
 			statusView: statusView(status),

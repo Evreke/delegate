@@ -102,6 +102,7 @@ import { consoleRoute, findWorkerEmbodiment, matchConsoleRestPath, matchConsoleS
 import { upgradeRefusal } from "./ws.ts";
 import { ConsoleHub } from "./console-ws.ts";
 import type { SwarmGraph } from "../swarm/graph.ts";
+import type { SwarmTaskNode } from "../swarm/nodes.ts";
 import { serveStaticFile } from "./static.ts";
 
 /** The HTTP surface's contract version (Law 7) — re-exported from the leaf
@@ -546,6 +547,42 @@ function exchangeDirFor(graph: SwarmGraph, task: string | undefined): string | u
 }
 
 /**
+ * The manifest `briefPath` of the RESOLVED worker embodiment (#141), when the
+ * read-model carries a non-empty one. The embodiment is the task node's
+ * `workers[]` entry matching the resolved worker — by `sessionId` first (the
+ * same-name-retry discriminator), then by name (legacy manifests without a
+ * session id). Pure and total.
+ */
+function manifestBriefPath(graph: SwarmGraph, target: { name: string; nodeId: string; task?: string }): string | undefined {
+	const tasks = graph.nodes.filter((n): n is SwarmTaskNode => n.kind === "task" && (target.task === undefined || n.id === target.task));
+	for (const want of ["session", "name"] as const) {
+		for (const t of tasks) {
+			const w = t.workers.find((x) => (want === "session" ? x.sessionId === target.nodeId : x.name === target.name));
+			if (w && typeof w.briefPath === "string" && w.briefPath.length > 0) return w.briefPath;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Containment discipline for a manifest-carried path (#141): absolute and
+ * NUL-free, or refused. (Existence is proven by the read itself — a missing
+ * file is the caller's fallback signal, not a refusal.)
+ */
+function serveableManifestPath(p: string): { ok: true; path: string } | { ok: false; reason: string } {
+	if (p.includes("\0")) return { ok: false, reason: "the manifest briefPath is not a usable path (NUL byte)" };
+	if (!isAbsolute(p)) return { ok: false, reason: "the manifest briefPath is not absolute" };
+	return { ok: true, path: p };
+}
+
+/** The ENOENT-family codes that mean "the file is not there" (a fallback
+ *  signal for the #141 manifest-briefPath leg), not an IO failure. */
+function isMissingFileCode(err: unknown): boolean {
+	const code = err !== null && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
+	return code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR";
+}
+
+/**
  * Rebuild ONE exchange-file path from graph-derived inputs, refusing any
  * input that could escape the task dir.
  * <p>
@@ -604,7 +641,13 @@ function exchangeFileEnvelope(kind: ExchangeFileKind, target: { name: string; no
  *     console route uses (unknown / non-worker / foreign refuse identically);
  *   - a task with no dir, or a file that does not exist, is an honest
  *     `absent:true` (200) — never fabricated content;
- *   - the file name/path is rebuilt + contained (see `exchangeFilePath`);
+ *   - #141: a BRIEF first tries the resolved embodiment's manifest
+ *     `briefPath` (when the read-model carries a non-empty one) under the
+ *     same containment discipline (absolute, NUL-free); a missing/invalid
+ *     manifest path falls back to the rebuilt `brief-<name>.md`, then to
+ *     `absent:true` — the ownership gate is untouched and runs FIRST;
+ *   - the canonical file name/path is rebuilt + contained (see
+ *     `exchangeFilePath`);
  *   - never throws
  * Raises: never
  */
@@ -619,6 +662,23 @@ export async function exchangeFileResponse(deps: SwarmServerDeps, rawId: string,
 	const resolved = resolveConsoleTarget(graph, id, deps.sessionFile);
 	if (!resolved.ok) return httpError(404, "E_EXCHANGE_FILE_REFUSED", resolved.message);
 	const { target } = resolved;
+	if (kind === "brief") {
+		const manifestPath = manifestBriefPath(graph, target);
+		if (manifestPath !== undefined) {
+			const safe = serveableManifestPath(manifestPath);
+			// An invalid manifest path (relative/NUL) FALLS BACK to the canonical
+			// name (#141) — the containment refusal below stays for the rebuilt
+			// path only. Existence is proven by the read itself.
+			if (safe.ok) {
+				try {
+					return { status: 200, body: exchangeFileEnvelope(kind, target, readFileSync(safe.path, "utf8")) };
+				} catch (err) {
+					if (!isMissingFileCode(err)) return httpError(500, "E_SWARM_IO", `could not read the worker brief: ${err instanceof Error ? err.message : String(err)}`);
+					// missing/invalid manifest briefPath → the canonical-name fallback
+				}
+			}
+		}
+	}
 	const dir = exchangeDirFor(graph, target.task);
 	if (dir === undefined) return { status: 200, body: exchangeFileEnvelope(kind, target, null) };
 	const file = exchangeFilePath(dir, target.name, kind);
@@ -627,8 +687,7 @@ export async function exchangeFileResponse(deps: SwarmServerDeps, rawId: string,
 	try {
 		text = readFileSync(file.path, "utf8");
 	} catch (err) {
-		const code = err !== null && typeof err === "object" && "code" in err ? String((err as { code?: unknown }).code) : "";
-		if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return { status: 200, body: exchangeFileEnvelope(kind, target, null) };
+		if (isMissingFileCode(err)) return { status: 200, body: exchangeFileEnvelope(kind, target, null) };
 		return httpError(500, "E_SWARM_IO", `could not read the worker ${kind}: ${err instanceof Error ? err.message : String(err)}`);
 	}
 	return { status: 200, body: exchangeFileEnvelope(kind, target, text) };

@@ -250,6 +250,77 @@ async function main(): Promise<void> {
 	}
 
 	// -----------------------------------------------------------------------
+	// M — #141: a manifest `briefPath` serves the REAL brief; a missing or
+	//     invalid manifest path falls back to the rebuilt brief-<name>.md;
+	//     the ownership gate still runs FIRST; report stays canonical.
+	// -----------------------------------------------------------------------
+	const MANIFEST_BRIEF = "# brief from the manifest briefPath\n";
+	const manifestBriefPath = join(SANDBOX, "130-consumer.md"); // non-canonical shape (not brief-<name>.md)
+	writeFileSync(manifestBriefPath, MANIFEST_BRIEF, "utf8");
+	const mSelf = "/sessions/brief-manifest.jsonl";
+	const mGraph = fixtureConsoleGraph(mSelf);
+	const mTask = mGraph.nodes.find((n: any) => n.kind === "task" && n.id === "alpha") as any;
+	mTask.dir = TASK_DIR;
+	mTask.workers[0].briefPath = manifestBriefPath;
+	const mForeign = mGraph.nodes.find((n: any) => n.kind === "task" && n.id === "beta") as any;
+	mForeign.workers[0].briefPath = manifestBriefPath;
+	const mId = fixtureConsoleWorkerId();
+	const hm = (await mountSwarmServer({ sessionFile: mSelf, graph: mGraph, env: env() })) as Handle | null;
+	check("M0 the manifest-briefPath mount returns a handle", hm !== null);
+	if (!hm) throw new Error("cannot continue without the manifest-briefPath server");
+	try {
+		const served = await get(hm.port, `/api/workers/${mId}/brief`);
+		check(
+			"M1 a manifest worker with a non-canonical briefPath serves ITS brief (not absent, not brief-<name>.md)",
+			served.status === 200 && served.json.ok === true && served.json.absent === false && served.json.text === MANIFEST_BRIEF,
+			JSON.stringify(served),
+		);
+
+		// Missing manifest file → the canonical-name fallback (already on disk
+		// from the R section).
+		mTask.workers[0].briefPath = join(SANDBOX, "gone.md");
+		const fallback = await get(hm.port, `/api/workers/${mId}/brief`);
+		check(
+			"M2 a MISSING manifest briefPath falls back to the rebuilt brief-<name>.md",
+			fallback.status === 200 && fallback.json.absent === false && fallback.json.text === BRIEF_TEXT,
+			JSON.stringify(fallback),
+		);
+
+		// Invalid manifest paths (relative / NUL) FALL BACK too — they never
+		// refuse and never escape.
+		for (const [label, bad] of [["relative", "exchange/rel.md"], ["nul", "a\u0000b"]] as const) {
+			mTask.workers[0].briefPath = bad;
+			const fb = await get(hm.port, `/api/workers/${mId}/brief`);
+			check(
+				`M3 an invalid (${label}) manifest briefPath falls back to the canonical name`,
+				fb.status === 200 && fb.json.absent === false && fb.json.text === BRIEF_TEXT,
+				JSON.stringify(fb),
+			);
+		}
+		mTask.workers[0].briefPath = manifestBriefPath;
+
+		// The report kind IGNORES briefPath: it stays on report-<name>.json.
+		writeFileSync(join(TASK_DIR, "report-w1.json"), REPORT_TEXT, "utf8");
+		const report = await get(hm.port, `/api/workers/${mId}/report`);
+		check(
+			"M4 the report kind ignores the manifest briefPath (canonical report-<name>.json)",
+			report.status === 200 && report.json.absent === false && report.json.text === REPORT_TEXT,
+			JSON.stringify(report),
+			);
+
+		// The ownership gate runs FIRST: a foreign worker's manifest briefPath
+		// serves nothing.
+		const foreignBrief = await get(hm.port, `/api/workers/${fixtureForeignWorkerId()}/brief`);
+		check(
+			"M5 a foreign worker is refused even when its embodiment carries a real briefPath",
+			foreignBrief.status === 404 && errorCode(foreignBrief.json) === "E_EXCHANGE_FILE_REFUSED",
+			JSON.stringify(foreignBrief),
+		);
+	} finally {
+		hm.stop();
+	}
+
+	// -----------------------------------------------------------------------
 	// D — the detail panel renders the files (or its honest states)
 	// -----------------------------------------------------------------------
 	{

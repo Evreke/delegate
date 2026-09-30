@@ -300,7 +300,9 @@ export default function (pi: ExtensionAPI) {
 		// its own gating (config tier, second-mount refusal, port fallback) and
 		// is TOTAL (a failure is a logged null; Law 8 — never blocks the
 		// session). The handle joins this session's context (Law 3).
-		const swarmServer = (await mountSwarmServer({ sessionFile, transport })) ?? undefined;
+		// Surface the token/link only when a human can read them (headless worker
+		// sessions stay silent on the TUI).
+		const swarmServer = (await mountSwarmServer({ sessionFile, transport, surfaceToken: ctx.hasUI === true })) ?? undefined;
 
 		// The store is exposed to the delegate_wake tool ONLY when the watcher is
 		// actually mounted: a session without a tick could accept a schedule that

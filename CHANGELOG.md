@@ -104,6 +104,12 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   at serve time inside the ONE `consoleFrame` builder shared by the REST and
   WS surfaces; the stored buffer and its `nextOffset`/`oldestOffset` stay in
   raw transcript space while `chunk` is the stripped display view.
+- **Swarm-server mount is silent in headless sessions.** The operator-token and
+  dashboard-link stderr lines (Law 11's only channel) were printed by EVERY
+  session mount, so each headless delegate worker spammed the terminal with an
+  unreadable token/link. `mountSwarmServer` now takes `surfaceToken` (default
+  true); the composition root passes `ctx.hasUI === true`, so only sessions a
+  human can see announce themselves.
 
 ### Added
 

@@ -13,12 +13,16 @@
  * `owned_by` (from = task → to = owner session — the task hangs under its
  * owner) and `contains` (from = task → to = worker session — the worker hangs
  * under its task), so the columns read orchestrator 0 → task 1 → worker 2.
- * `spawned_by` is CAUSAL lineage (worker → orchestrator session) — it is drawn
- * but never drives a column. The wire's `depth` is the authority TIER (0/1),
- * not tree depth (issue #80 — the live snapshot carries depth 0 on every
- * node), so it is kept on the node as a decorative attribute and never read
- * as a column. Node order inside a column is the model's deterministic order
- * (id-sorted), never insertion order.
+ * `spawned_by` is CAUSAL lineage (worker → orchestrator session) — it never
+ * drives a column and is HIDDEN by default when the structural chain
+ * (contains + owned_by through one task) already reaches the same orchestrator
+ * (round-1fix readability); the `showCausal` option re-shows every causal edge.
+ * The wire's `depth` is the authority TIER (0/1), not tree depth (issue #80 —
+ * the live snapshot carries depth 0 on every node), so it is kept on the node
+ * as a decorative attribute and never read as a column. Row order inside a
+ * column is the STRUCTURAL-FAMILY order (round-1fix): a deterministic DFS from
+ * the structural roots, children in id order — a task's workers sit in rows
+ * adjacent to their task's row, never id-scattered across the column.
  *
  * Pan/zoom/fit are the documented interaction range: wheel zoom 0.5×–2×,
  * cursor-anchored; pan by scroll/drag; `fit` resolves the whole graph into
@@ -81,8 +85,39 @@ export function fitView(bounds, viewport) {
 	return { zoom, panX, panY };
 }
 
-/** The node set the canvas shows for one expansion state (collapse applied). */
-export function visibleNodes(state, expansion) {
+/**
+ * The `spawned_by` edges whose story the structural chain already tells: a
+ * causal edge (w → o) is REDUNDANT when one task both `contains` w and is
+ * `owned_by` o — the canvas already draws task→w and task→o, so the causal
+ * curve only crosses the task column. A causal edge from a session NO task
+ * contains (an unembodied worker) is that node's only structural tie and is
+ * NEVER redundant. Pure; deterministic (first edge wins).
+ */
+function redundantSpawnedBy(state) {
+	const containsParent = new Map();
+	const taskOwner = new Map();
+	for (const e of state?.edges ?? []) {
+		if (e.kind === "contains") {
+			if (!containsParent.has(e.to)) containsParent.set(e.to, e.from);
+		} else if (e.kind === "owned_by") {
+			if (!taskOwner.has(e.from)) taskOwner.set(e.from, e.to);
+		}
+	}
+	const redundant = new Set();
+	for (const e of state?.edges ?? []) {
+		if (e.kind !== "spawned_by") continue;
+		const task = containsParent.get(e.from);
+		if (task !== undefined && taskOwner.get(task) === e.to) redundant.add(e);
+	}
+	return redundant;
+}
+
+/**
+ * The visible node set for one expansion state (collapse applied) + edges:
+ * structural always, causal `spawned_by` only when not redundant — unless
+ * `opts.showCausal` re-shows ALL of them.
+ */
+export function visibleNodes(state, expansion, opts = {}) {
 	const expanded = expansion instanceof Set ? expansion : new Set(Array.isArray(expansion) ? expansion : []);
 	const hidden = new Set();
 	const aggregates = [];
@@ -104,7 +139,9 @@ export function visibleNodes(state, expansion) {
 	}
 	const nodes = state.nodes.filter((n) => !hidden.has(n.id)).concat(aggregates);
 	const visibleIds = new Set(nodes.map((n) => n.id));
+	const redundant = opts.showCausal === true ? null : redundantSpawnedBy(state);
 	const edges = state.edges
+		.filter((e) => redundant === null || !redundant.has(e))
 		.map((e) => {
 			let from = e.from;
 			let to = e.to;
@@ -186,7 +223,7 @@ export function resolveDepths(state) {
  * Compute the deterministic layout for the current expansion state.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: state — buildDashboardState output; opts — { expansion }
+ * Input: state — buildDashboardState output; opts — { expansion, showCausal }
  * Output: { nodes, edges, columns, positions, aggregates, bounds, visibleIds }
  * Guarantees: identical topology + expansion → byte-identical positions; a
  *   collapsed lead contributes ONE aggregate node with the worst child
@@ -194,15 +231,70 @@ export function resolveDepths(state) {
  * Raises: never
  */
 export function computeLayout(state, opts = {}) {
-	const { nodes, edges } = visibleNodes(state, opts.expansion);
+	const { nodes, edges } = visibleNodes(state, opts.expansion, opts);
 	const depths = resolveDepths(state);
-	// A hidden subtree's aggregate sits one column right of its lead — it has no
-	// structural edge of its own, so it is placed by the lead's BFS column.
+	// A hidden subtree's aggregate sits one column right of its lead (no structural edge of its own).
 	const colOf = (node) => (node.kind === "aggregate" ? (depths.get(node.leadId) ?? 0) + 1 : (depths.get(node.id) ?? 0));
+	// Row order by STRUCTURAL FAMILY (round-1fix): a preorder DFS from the
+	// structural roots over owned_by (child = the task) + contains (child = the
+	// worker), children in id order. Rows are GLOBAL leaf slots: leaves (and
+	// collapse aggregates) take consecutive slots in DFS order, every non-leaf
+	// copies its subtree's FIRST slot — a task's row IS its worker block's first
+	// row (contains edges near-horizontal). The walk places visible nodes only,
+	// so a visible node under a hidden parent still lands in its family; nodes
+	// it cannot place (a pure structural cycle) take fresh slots below, in id
+	// order. Pure + deterministic.
+	const visible = new Set(nodes.map((n) => n.id));
+	const aggByLead = new Map(nodes.filter((n) => n.kind === "aggregate").map((n) => [n.leadId, n]));
+	const childrenOf = new Map();
+	const hasParent = new Set();
+	// FIRST structural parent wins (mirrors resolveDepths): the family walk is a forest.
+	const link = (child, par) => {
+		if (child === par || hasParent.has(child)) return;
+		if (!childrenOf.has(par)) childrenOf.set(par, []);
+		childrenOf.get(par).push(child);
+		hasParent.add(child);
+	};
+	for (const e of state?.edges ?? []) {
+		if (e.kind === "owned_by") link(e.from, e.to);
+		else if (e.kind === "contains") link(e.to, e.from);
+	}
+	for (const list of childrenOf.values()) list.sort();
+	const rank = new Map();
+	const seen = new Set();
+	let nextSlot = 0;
+	const slotOf = (id) => {
+		if (rank.has(id)) return rank.get(id);
+		if (seen.has(id)) return null;
+		seen.add(id);
+		const agg = aggByLead.get(id);
+		let first = null;
+		if (agg) {
+			// A collapsed subtree occupies ONE slot (the aggregate's).
+			first = nextSlot++;
+			rank.set(agg.id, first);
+		} else {
+			for (const child of childrenOf.get(id) ?? []) {
+				const r = slotOf(child);
+				if (first === null) first = r;
+			}
+			if (first === null && visible.has(id)) first = nextSlot++;
+		}
+		if (first !== null && visible.has(id)) rank.set(id, first);
+		return first;
+	};
+	for (const id of [...(state?.byId?.keys() ?? [])].sort()) if (!hasParent.has(id)) slotOf(id);
+	for (const n of [...nodes].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+		if (rank.has(n.id)) continue;
+		rank.set(n.id, nextSlot++);
+	}
 	const sorted = [...nodes].sort((a, b) => {
 		const ad = colOf(a);
 		const bd = colOf(b);
 		if (ad !== bd) return ad - bd;
+		const ar = rank.get(a.id) ?? 0;
+		const br = rank.get(b.id) ?? 0;
+		if (ar !== br) return ar - br;
 		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 	});
 	const columns = new Map();
@@ -210,8 +302,8 @@ export function computeLayout(state, opts = {}) {
 	for (const node of sorted) {
 		const col = colOf(node);
 		if (!columns.has(col)) columns.set(col, []);
-		const row = columns.get(col).length;
 		columns.get(col).push(node.id);
+		const row = rank.get(node.id) ?? 0;
 		positions[node.id] = { col, row, x: PAD + col * (NODE_W + COL_GAP), y: PAD + row * (NODE_H + ROW_GAP) };
 	}
 	const paths = [];

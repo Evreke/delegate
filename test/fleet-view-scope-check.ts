@@ -155,8 +155,8 @@ class FakeEl {
 		return this.text + this.childNodes.map((c) => c.textContent ?? "").join("");
 	}
 }
-function fakeDoc(): any {
-	const els: Record<string, any> = {};
+function fakeDoc(sink?: Record<string, any>): any {
+	const els: Record<string, any> = sink ?? {};
 	return {
 		createElement: (t: string) => new FakeEl(t),
 		createTextNode: (t: string) => ({ textContent: t, childNodes: [] }),
@@ -213,6 +213,13 @@ async function main(): Promise<void> {
 		check("R0.5 scopeGraphToFleet keeps the fleet root + its spawned_by subtree only", ids.join(",") === [HOME, HOME_W1, "home-task"].sort().join(","), ids.join(","));
 		check("R0.6 scopeGraphToFleet drops every edge/orphan that leaves the fleet", filtered.edges.length === 2 && filtered.orphans.length === 0 && filtered.edges.every((e: any) => ids.includes(e.from) && ids.includes(e.to)), JSON.stringify(filtered.edges));
 		check("R0.7 the root view is unscoped by construction (a null fleet id returns the graph identity)", scopeMod.scopeGraphToFleet(graph, null) === graph && scopeMod.scopeGraphToFleet(graph, undefined) === graph);
+		// Round-1fix (c): the root-view DEFAULT is the own fleet; `all` is explicit.
+		const scopeOf = (o: any) => scopeMod.scopeFleetIdFor({ fleetId: null, ownSessionId: HOME, graph, ...o });
+		check(
+			"R0.8 scopeFleetIdFor: the URL fleet always wins; the root view resolves to the OWN fleet when the identity's node exists in the graph; `all` is explicit; unknown/absent identity degrades to null",
+			scopeMod.scopeFleetIdFor({ fleetId: FOREIGN, ownSessionId: HOME, graph }) === FOREIGN && scopeOf({}) === HOME && scopeOf({ all: true }) === null && scopeMod.scopeFleetIdFor({ fleetId: null, ownSessionId: null, graph }) === null && scopeMod.scopeFleetIdFor({ fleetId: null, ownSessionId: "s:absent", graph }) === null && scopeMod.scopeFleetIdFor({ fleetId: null, ownSessionId: HOME, graph: null }) === null,
+			JSON.stringify({ own: scopeOf({}), all: scopeOf({ all: true }) }),
+		);
 	}
 
 	// -- R1 — the `/fleets/<id>/` view reads only the scoped doors ----------
@@ -326,6 +333,51 @@ async function main(): Promise<void> {
 			JSON.stringify([...rootApp.state.byId.keys()]),
 		);
 		check("R4.3 a foreign fleet's ask raises no attention at root (unchanged)", rootApp.state.attention.askCount === 1 && rootApp.state.attention.items.every((i: any) => i.worker !== "fw1"));
+		rootApp.close();
+	}
+
+	// -- R5 — round-1fix (c): the root view defaults to the OWN fleet; `all` --
+	// -- is the explicit scope-view toggle; the scope chrome stays honest ----
+	{
+		const rootEls: Record<string, any> = {};
+		const rootDoc = fakeDoc(rootEls);
+		const calls: string[] = [];
+		const rootApp = appMod.createFleetApp({
+			doc: rootDoc,
+			fetch: makeFetch(graph, events, calls, false),
+			storage: null,
+			location: { protocol: "http:", host: HOST, pathname: "/", search: "", hash: "" },
+			stream: () => ({ state: { lastSeq: 0 }, close() {} }),
+			consoleTail: () => ({ close() {} }),
+			ownSessionId: HOME,
+			nowMs: () => Date.parse("2026-09-25T12:00:00.000Z"),
+		});
+		await rootApp.start();
+		await new Promise((r) => setTimeout(r, 80));
+		const ids = () => [...rootApp.state.byId.keys()];
+		check(
+			"R5.1 the root view DEFAULTS to the own fleet when the serving identity is known (the foreign fleet never renders)",
+			ids().includes(HOME) && !ids().includes(FOREIGN) && !ids().includes(FOREIGN_W1) && rootApp.state.rail.groups.length === 1,
+			ids().join(","),
+			);
+		check(
+			"R5.2 the scope chrome is honest about it: data-fleet-id + brand carry the own fleet, and the scope-view toggle is visible with `own` pressed",
+			rootEls["fleet-tree"].attributes["data-fleet-id"] === HOME && rootEls["brand-sub"].textContent === HOME && rootEls["scope-view"].attributes.hidden === undefined && rootEls["scope-view"].attributes["data-scope-view"] === "own" && rootEls["scope-view-own"].attributes["aria-pressed"] === "true" && rootEls["scope-view-all"].attributes["aria-pressed"] === "false",
+			JSON.stringify({ id: rootEls["fleet-tree"].attributes["data-fleet-id"], brand: rootEls["brand-sub"].textContent, view: rootEls["scope-view"].attributes }),
+		);
+		check(
+			"R5.3 `all` is reachable ONLY through the explicit toggle: no misleading `/` link in the switcher, the per-fleet index stays",
+			byAttr(rootEls["scope-switch"], "data-fleet-link").every((a: any) => a.attributes.href !== "/"),
+			JSON.stringify(byAttr(rootEls["scope-switch"], "data-fleet-link").map((a: any) => a.attributes.href)),
+		);
+		rootApp.dispatch({ type: "set-fleet-view", view: "all" });
+		check(
+			"R5.4 the toggle flips the fold to ALL fleets in page (no navigation) and the chrome follows",
+			ids().includes(FOREIGN) && ids().includes(HOME_W1) && rootEls["fleet-tree"].attributes["data-fleet-id"] === "all" && rootEls["brand-sub"].textContent === "all fleets" && rootEls["scope-view"].attributes["data-scope-view"] === "all" && rootEls["scope-view-all"].attributes["aria-pressed"] === "true",
+			ids().join(","),
+		);
+		rootApp.dispatch({ type: "set-fleet-view", view: "own" });
+		check("R5.5 toggling back re-folds to the own fleet", !ids().includes(FOREIGN) && rootEls["fleet-tree"].attributes["data-fleet-id"] === HOME, ids().join(","));
 		rootApp.close();
 	}
 }

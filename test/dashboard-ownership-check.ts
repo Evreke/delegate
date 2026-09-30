@@ -207,9 +207,15 @@ async function main(): Promise<void> {
 		const untilResolved = Date.now() + 2000;
 		while (byAttr(shell, "data-attention-scoping").length === 1 && Date.now() < untilResolved) await new Promise((r) => setTimeout(r, 20));
 		check(
-			"#81 createFleetApp derives the identity from body.self (foreign marked, own-first, strip not scoping)",
-			app.state.byId.get(FOREIGN_ID).foreign === true && app.state.rail.foreign.map((g: any) => g.session.id).includes(FOREIGN_ID) && byAttr(shell, "data-attention-clear").length === 1 && byAttr(shell, "data-attention-scoping").length === 0,
-			JSON.stringify({ foreign: app.state.byId.get(FOREIGN_ID).foreign }),
+			"#81 createFleetApp derives the identity from body.self (strip not scoping) — and the round-1fix root view DEFAULTS to the own fleet (the foreign fleet stays folded away until `all`)",
+			byAttr(shell, "data-attention-clear").length === 1 && byAttr(shell, "data-attention-scoping").length === 0 && app.state.byId.get(FOREIGN_ID) === undefined && app.state.byId.get(OWN_ID) !== undefined,
+			JSON.stringify({ ids: [...app.state.byId.keys()] }),
+		);
+		app.dispatch({ type: "set-fleet-view", view: "all" });
+		check(
+			"#81 the `all` toggle re-folds both fleets: the foreign root is marked foreign and read-only (ownership semantics unchanged)",
+			app.state.byId.get(FOREIGN_ID).foreign === true && app.state.rail.foreign.map((g: any) => g.session.id).includes(FOREIGN_ID) && app.state.rail.own.map((g: any) => g.session.id).includes(OWN_ID),
+			JSON.stringify({ foreign: app.state.byId.get(FOREIGN_ID)?.foreign }),
 		);
 		app.close();
 	}

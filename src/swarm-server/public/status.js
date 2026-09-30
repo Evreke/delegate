@@ -150,9 +150,18 @@ export function tickerView(latest, nowMs) {
  *   throws on a well-formed call.
  * Raises: never
  */
-export function createStatusChrome({ doc = null, byId = () => null, nowMs = () => Date.now(), tickMs = 1000 } = {}) {
+export function createStatusChrome({ doc = null, byId = () => null, nowMs = () => Date.now(), tickMs = 1000, onScopeView = null } = {}) {
 	let latest = null;
 	let updatedMs = null;
+	// Round-1fix: the own/all scope-view toggle (root view only). The chrome owns
+	// the DOM wiring; the app owns the meaning through the `onScopeView` seam.
+	for (const [id, view] of [
+		["scope-view-own", "own"],
+		["scope-view-all", "all"],
+	]) {
+		const btn = byId(id);
+		if (btn && typeof btn.addEventListener === "function") btn.addEventListener("click", () => onScopeView?.(view));
+	}
 	const setConnection = (state) => {
 		const node = byId("connection-state");
 		if (!node) return;
@@ -201,9 +210,9 @@ export function createStatusChrome({ doc = null, byId = () => null, nowMs = () =
 		latest = event && typeof event === "object" ? { kind: typeof event.kind === "string" ? event.kind : null, seq: typeof event.seq === "number" ? event.seq : null, worker: typeof event.worker === "string" ? event.worker : null, tsMs } : null;
 		renderTicker();
 	};
-	const setScope = (fleetId, fleets) => {
+	const setScope = (fleetId, fleets, opts = {}) => {
 		if (!doc) return;
-		const scope = chromeScope({ fleetId, fleets });
+		const scope = chromeScope({ fleetId, fleets, linkAll: opts.linkAll !== false });
 		const shell = byId("fleet-tree");
 		if (shell) shell.setAttribute("data-fleet-id", scope.key);
 		const brand = byId("brand-sub");
@@ -219,6 +228,25 @@ export function createStatusChrome({ doc = null, byId = () => null, nowMs = () =
 		switcher.removeAttribute("hidden");
 		for (const entry of scope.entries) switcher.appendChild(el(doc, "a", { href: entry.href, class: "scope-link", "data-fleet-link": entry.href, "data-current": entry.current ? "1" : "0" }, entry.label));
 	};
+	/** The own/all scope-view toggle state (round-1fix): hidden unless the root
+	 *  view can default to the own fleet (identity known AND its node in the
+	 *  graph); `active` is the applied scope. Visible + honest, always. */
+	const setScopeView = (view) => {
+		const root = byId("scope-view");
+		if (!root) return;
+		if (!view || view.ownable !== true) {
+			root.setAttribute("hidden", "1");
+			root.setAttribute("data-scope-view", "unavailable");
+			return;
+		}
+		root.removeAttribute("hidden");
+		const active = view.active === "all" ? "all" : "own";
+		root.setAttribute("data-scope-view", active);
+		for (const key of ["own", "all"]) {
+			const btn = byId(`scope-view-${key}`);
+			if (btn) btn.setAttribute("aria-pressed", active === key ? "true" : "false");
+		}
+	};
 	const markUpdated = () => {
 		updatedMs = nowMs();
 		renderAge();
@@ -229,5 +257,5 @@ export function createStatusChrome({ doc = null, byId = () => null, nowMs = () =
 	};
 	const timer = typeof setInterval === "function" && tickMs > 0 ? setInterval(tick, tickMs) : null;
 	if (timer && typeof timer.unref === "function") timer.unref();
-	return { setConnection, setToken, setJournal, setLatestEvent, renderStatus, setScope, markUpdated, tick, close: () => timer && clearInterval(timer) };
+	return { setConnection, setToken, setJournal, setLatestEvent, renderStatus, setScope, setScopeView, markUpdated, tick, close: () => timer && clearInterval(timer) };
 }

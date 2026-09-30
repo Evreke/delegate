@@ -70,7 +70,9 @@ export function buildAttention(nodes, journal, expansion) {
 	// #83: a chip exists ONLY when its kind has a non-zero count — the strip is
 	// the "what needs me?" answer and a red `0 dead-reboot` reads as a death.
 	const chips = clear
-		? [{ kind: "clear", label: "all clear", count: 0 }]
+		// #135: the label is own-fleet-scoped — the strip aggregates OWN fleets
+		// only, so the wording must never claim the whole world is clear.
+		? [{ kind: "clear", label: "own fleets clear", count: 0 }]
 		: [
 				{ kind: "ask", label: `${askCount} ask${askCount === 1 ? "" : "s"} waiting`, count: askCount },
 				{ kind: "dead-reboot", label: `${deadCount} dead-reboot`, count: deadCount },

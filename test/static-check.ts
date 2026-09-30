@@ -82,6 +82,7 @@ import {
 	placementFromTabResult,
 } from "../src/herdr/host.ts";
 import { validateReport, TEARDOWN_LOG_NAME, teardownLogLine } from "../src/exchange.ts";
+import { SWARM_EDGE_KINDS } from "../src/swarm/edges.ts";
 import { registerDelegateTool, RETRY_MANDATE } from "../src/spawn.ts";
 import { registerCommands, registerStatusTool } from "../src/observe.ts";
 import { FakeWorkerHost } from "../src/host/fake.ts";
@@ -875,6 +876,7 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
 	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 	{ file: "src/swarm/journal-manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the pure replay/diff fold (replayManifest + diffManifestEvents) into a journal-manifest-replay.ts sibling" },
+	{ file: "src/swarm/graph-build.ts", owner: "operator", targetRelease: "1.19.0", plan: "#136's edge-vocabulary split (contains/owned_by emission + the model/briefPath field projection) pushed the projector over the threshold; extract the manifest-projection loop (embodiment literal + edge emission) into a graph-manifest.ts sibling — the graph-journal.ts split is the precedent" },
 	{ file: "src/swarm-server/server.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the #51 mutation-response cluster (auth + id/body validation + outcome mapping) into a server-mutation.ts sibling; the #51+#52 merge pushed the route layer over the threshold" },
 	{ file: "src/watch-schedule.ts", owner: "operator", targetRelease: "1.19.0", plan: "#12's durable fold (persistence port + mount restore + snapshot-on-mutation) pushed the store over the threshold; the file/version/identity rules already live in the watch-schedule-persist.ts sibling — remaining: move the pure wake-text formatters (formatScheduleWake/formatDurationMs) into a watch-schedule-text.ts sibling" },
 ];
@@ -1052,6 +1054,17 @@ check(
 	"T1.12b the journal family exemption is LIVE: src/swarm/journal-driver.ts exists and still carries the driver literals (adaptive bun/node seam)",
 	existsSync(resolve(ROOT, "src/swarm/journal-driver.ts")) &&
 		scanCodeForSqliteDriverRefs(readFileSync(resolve(ROOT, "src/swarm/journal-driver.ts"), "utf8")).length > 0,
+);
+
+// #136 frozen-surface pin (Law 6): the SwarmGraph edge vocabulary is a CLOSED
+// additive-only set — the three v1 kinds may never be renamed or removed, and
+// #136's `contains`/`owned_by` are the only lawful additions so far. A future
+// rename (or a sixth kind arriving unreviewed) turns this red. Behavioral:
+// the exported array IS the surface, not a source-text regex.
+check(
+	"T1.12c the SwarmGraph edge vocabulary is exactly the five frozen kinds (#136: spawned_by,collected,retired,contains,owned_by — additive-only)",
+	SWARM_EDGE_KINDS.join(",") === "spawned_by,collected,retired,contains,owned_by",
+	SWARM_EDGE_KINDS.join(","),
 );
 
 // Canaries (T1.9b): every driver-reference shape must be flagged.

@@ -7,7 +7,8 @@
  * Checks:
  *   G1  flat fleet: sessions + spawn/collect/retire edges + role labels.
  *   G2  depth-2 fleet (5 leads × 4 workers): 26 session nodes, the 5 leads
- *       labelled worker-orchestrator, depths 0/1, 26 spawned_by edges.
+ *       labelled worker-orchestrator, depths 0/1, the #136 edge split
+ *       (25 spawned_by + 1 owned_by + 25 contains).
  *   G3  legacy manifest without sessionPath → orphans + legacy-orphan /
  *       no-session-path degradation, no edges, no session nodes.
  *   G4  same-name retry → two embodiments with distinct manifestRefs.
@@ -16,6 +17,9 @@
  *   G6  deterministic output: two runs serialize byte-equal.
  *   G7  SessionId parity with the watcherKey convention (watch-store.ts).
  *   G8  never throws: every input failing still yields a valid graph.
+ *   G9  edge-vocabulary split (#136): contains task→worker + owned_by
+ *       task→owner + model/provider/thinking/briefPath projection; NO
+ *       task→owner `spawned_by` anywhere (the conflation regression).
  *
  * Fail-fast (AGENTS.md command discipline): a top-level watchdog exits
  * non-zero no matter what.
@@ -34,6 +38,7 @@ import {
 	type SwarmGraphDeps,
 } from "../src/swarm/graph.ts";
 import { sessionIdFor, type SwarmSessionNode, type SwarmTaskNode } from "../src/swarm/nodes.ts";
+import { SWARM_EDGE_KINDS } from "../src/swarm/edges.ts";
 import type { AgentStatus } from "../src/host.ts";
 import type { JournalEvent } from "../src/swarm/journal-read.ts";
 
@@ -133,7 +138,27 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 	check("G1 orchestrator role via canonical sessionRole", rootNode?.role === "orchestrator" && rootNode.ownsChildren, JSON.stringify(rootNode));
 	check("G1 worker roles are 'worker'", sessions(graph).filter((s) => s.id !== sessionIdFor(ROOT)).every((s) => s.role === "worker"));
 	const flatEdges = graph.edges.filter((e) => e.kind === "spawned_by");
-	check("G1 spawned_by edges: 3 workers→orchestrator + task→orchestrator", flatEdges.length === 4, JSON.stringify(flatEdges));
+	check(
+		"G1 spawned_by edges: ONLY 3 worker→orchestrator (causal lineage) — no task→owner spawned_by (#136 regression)",
+		flatEdges.length === 3 && flatEdges.every((e) => e.from !== "flat") && flatEdges.every((e) => e.to === sessionIdFor(ROOT)),
+		JSON.stringify(flatEdges),
+	);
+	check(
+		"G1 owned_by edge: task→orchestrator (#136)",
+		graph.edges.some((e) => e.kind === "owned_by" && e.from === "flat" && e.to === sessionIdFor(ROOT)),
+		JSON.stringify(graph.edges),
+	);
+	check(
+		"G1 contains edges: task→worker for every embodied worker session (#136)",
+		graph.edges.filter((e) => e.kind === "contains").length === 3 &&
+			["w1", "w2", "w3"].every((n) => graph.edges.some((e) => e.kind === "contains" && e.from === "flat" && e.to === sessionIdFor(`/sessions/${n}.jsonl`))),
+		JSON.stringify(graph.edges),
+	);
+	check(
+		"G1 embodiment projects model/provider/thinking/briefPath (#139/#141)",
+		taskNode(graph, "flat")?.workers.every((w) => w.model === "m" && w.provider === "p" && w.thinking === "low" && typeof w.briefPath === "string" && w.briefPath.length > 0) === true,
+		JSON.stringify(taskNode(graph, "flat")?.workers),
+	);
 	check("G1 collected edge carries the stamp time", graph.edges.some((e) => e.kind === "collected" && e.from === sessionIdFor("/sessions/w1.jsonl") && e.to === "flat" && e.at === "2026-01-02T00:00:00.000Z"));
 	check("G1 retired edge carries the stamp time", graph.edges.some((e) => e.kind === "retired" && e.from === sessionIdFor("/sessions/w2.jsonl") && e.to === "flat" && e.at === "2026-01-03T00:00:00.000Z"));
 	check("G1 live status attached to the worker session", sessions(graph).find((s) => s.id === sessionIdFor("/sessions/w2.jsonl"))?.liveStatus === "working");
@@ -184,7 +209,18 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 			return s?.role === "worker" && s.depth === 1;
 		})),
 	);
-	check("G2 spawned_by edges = 26 (25 worker→spawner + task→root)", graph.edges.filter((e) => e.kind === "spawned_by").length === 26, String(graph.edges.filter((e) => e.kind === "spawned_by").length));
+	check(
+		"G2 depth-2 edge split: 25 spawned_by (worker→spawner) + 1 owned_by (task→root) + 25 contains (task→worker) (#136)",
+		graph.edges.filter((e) => e.kind === "spawned_by").length === 25 &&
+			graph.edges.filter((e) => e.kind === "owned_by").length === 1 &&
+			graph.edges.filter((e) => e.kind === "contains").length === 25 &&
+			graph.edges.every((e) => !(e.kind === "spawned_by" && e.from === "deep")),
+		JSON.stringify({
+			spawned_by: graph.edges.filter((e) => e.kind === "spawned_by").length,
+			owned_by: graph.edges.filter((e) => e.kind === "owned_by").length,
+			contains: graph.edges.filter((e) => e.kind === "contains").length,
+		}),
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +311,9 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 	check("G5 journal-only: task node present", taskNode(journalOnly, "jtask") !== undefined);
 	check("G5 journal-only: child session node present", sessions(journalOnly).some((s) => s.id === stamped));
 	check(
-		"G5 journal-only: spawned_by + collected + retired edges",
+		"G5 journal-only: spawned_by lineage + owned_by owner + collected + retired edges",
 		journalOnly.edges.some((e) => e.kind === "spawned_by" && e.from === stamped && e.to === sid) &&
+			journalOnly.edges.some((e) => e.kind === "owned_by" && e.from === "jtask" && e.to === sid) &&
 			journalOnly.edges.some((e) => e.kind === "collected" && e.from === stamped && e.to === "jtask" && e.at === "2026-01-02T00:00:00.000Z") &&
 			journalOnly.edges.some((e) => e.kind === "retired" && e.from === stamped && e.to === "jtask" && e.at === "2026-01-03T00:00:00.000Z"),
 		JSON.stringify(journalOnly.edges),
@@ -350,6 +387,40 @@ const USAGE: SwarmGraphDeps["usage"] = () => ({ outputTokens: 7, contextPct: 12 
 		serializeThrew = true;
 	}
 	check("G8 emptyGraph is distinguishable and serializes without throwing", !serializeThrew && emptyGraph().available === false && emptyWire.includes('"available":false'));
+}
+
+// ---------------------------------------------------------------------------
+// G9 — edge-vocabulary split (#136): contains/owned_by, no task→owner spawned_by
+// ---------------------------------------------------------------------------
+{
+	check(
+		"G9 SWARM_EDGE_KINDS is exactly the five frozen kinds (additive-only)",
+		SWARM_EDGE_KINDS.join(",") === "spawned_by,collected,retired,contains,owned_by",
+		SWARM_EDGE_KINDS.join(","),
+	);
+	// Same-name retry WITHOUT a session id: the embodiment exists but there is
+	// no session node to contain — contains must be skipped for it (the orphan
+	// guard), while the still-spawned second run gets its edge.
+	const store = createMemoryManifestStore();
+	await seed(
+		store,
+		manifest(
+			"split",
+			[
+				worker({ name: "withpath", sessionPath: "/sessions/wp.jsonl", orchestratorSessionPath: ROOT }),
+				worker({ name: "nopath" }),
+			],
+			{ masterSessionPath: ROOT },
+		),
+	);
+	const graph = await buildSwarmGraph({ manifests: store, backendName: "fake", usage: USAGE });
+	check("G9 contains skips the session-less worker (it is already an orphan)", graph.edges.filter((e) => e.kind === "contains").length === 1 && graph.edges.some((e) => e.kind === "contains" && e.to === sessionIdFor("/sessions/wp.jsonl")), JSON.stringify(graph.edges));
+	check(
+		"G9 spawned_by NEVER names a task (the #136 conflation regression, both folds)",
+		graph.edges.every((e) => e.kind !== "spawned_by" || (e.from !== "split" && e.to !== "split")),
+		JSON.stringify(graph.edges.filter((e) => e.kind === "spawned_by")),
+	);
+	check("G9 owned_by task→master present for the manifest fleet", graph.edges.some((e) => e.kind === "owned_by" && e.from === "split" && e.to === sessionIdFor(ROOT)), JSON.stringify(graph.edges));
 }
 
 console.log(failures === 0 ? "\nALL SWARM-GRAPH CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

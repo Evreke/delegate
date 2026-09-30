@@ -127,7 +127,7 @@ export async function classifyReport(
 ): Promise<ClassifierVerdict | null> {
 	const cfg = config ?? resolveClassifierConfig();
 	if (!cfg.enabled || !cfg.model) return null;
-	if (typeof registry.getModelOfType !== "function") return null;
+	if (registry === null || typeof registry !== "object" || typeof registry.getModelOfType !== "function") return null;
 	let model: unknown;
 	try {
 		model = registry.getModelOfType("classifier", cfg.model.provider, cfg.model.id);

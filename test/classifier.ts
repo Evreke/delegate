@@ -131,6 +131,15 @@ const CFG_ON: ClassifierConfig = { enabled: true, model: { provider: "p", id: "m
 	check("C3 getModelOfType → undefined → null, no throw", v === null);
 }
 
+// C3b: a MISSING registry (undefined/null — the fake-host ctx shape) → null,
+// never the TypeError the old unguarded access produced on classifier-
+// configured hosts (Law 10 regression: classifyReport's contract is total).
+{
+	const vU = await classifyReport(undefined as unknown as ClassifierRegistrySurface, REPORT, CFG_ON);
+	const vN = await classifyReport(null as unknown as ClassifierRegistrySurface, REPORT, CFG_ON);
+	check("C3b registry undefined/null → null, no throw (contract: never raises)", vU === null && vN === null);
+}
+
 // C4: enabled false (model present) → null AND zero classify calls
 {
 	let classifyCalls = 0;

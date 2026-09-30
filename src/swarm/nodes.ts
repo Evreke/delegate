@@ -160,6 +160,13 @@ export interface SwarmWorkerEmbodiment {
 	depth?: number;
 	backend?: string;
 	startedAt?: string;
+	/** Projected manifest fields (#139/#141): the spawn's resolved model
+	 *  identity and the worker's brief location (the UI's brief fetch key).
+	 *  Present when the manifest record carries a non-empty value. */
+	model?: string;
+	provider?: string;
+	thinking?: string;
+	briefPath?: string;
 	collectedAt?: string;
 	retiredAt?: string;
 	/** Live transport status matched to this embodiment. */

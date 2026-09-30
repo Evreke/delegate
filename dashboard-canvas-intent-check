@@ -1,0 +1,128 @@
+PASS     test/collect-teardown-check.ts [load=0.21 memMB=24150 runners=5]
+PASS     test/composer-check.ts [load=0.21 memMB=24127 runners=5]
+PASS     test/dashboard-brief-report-check.ts [load=0.21 memMB=24086 runners=5]
+PASS     test/dashboard-canvas-intent-check.ts [load=0.21 memMB=24094 runners=5]
+PASS     test/dashboard-detail-check.ts [load=0.21 memMB=24077 runners=5]
+PASS     test/dashboard-layout-check.ts [load=0.21 memMB=24073 runners=5]
+PASS     test/dashboard-ownership-check.ts [load=0.21 memMB=24144 runners=5]
+FAIL     test/dashboard-v1-check.ts [load=0.21 memMB=24148 runners=5]
+PASS  A1.1 the shell carries a brand, connection state, token state and the statusbar data slots
+PASS  A1.2 no mode switcher / tab bar at the shell level (no data-mode, no data-screen, no top-level role=tablist)
+PASS  A1.3 the shell root and the module script are static (no build step)
+PASS  A1.4 app.js mounts the four in-shell regions (attention/rail/canvas/detail); the statusbar lives in the static frame
+PASS  A1.5 the shell carries the scope chrome, the source-health/age footer slots and a live connection pill (#79/#82/#86)
+PASS  A1.6 the footer pre-fetch placeholders are em dashes, never fabricated zeros (#86)
+PASS  A2.1 the six canonical statuses have distinct shapes and colors (color+shape+position)
+PASS  A2.2 running/ask pulse, terminal statuses do not
+PASS  A2.3 the marker position is documented as LEFT of the name
+PASS  A2.4 the four degradation flags map to distinct visuals with verbatim names on one severity ladder
+PASS  A2.5 the marker renders FIRST in the rail row (position LEFT of the name)
+PASS  A2.6 unknown is a real, honest state (label 'no live status'), never a faked healthy one
+PASS  A2.7 all four degradation flags render as distinct honest chips across the fixture
+PASS  A3.1 fixtures give exactly 2 asks / 1 dead-reboot / 3 degraded in OWN fleets
+PASS  A3.2 chips read exactly '2 asks waiting' / '1 dead-reboot' / '3 degraded'
+PASS  A3.3 the foreign fleet's ask and degraded flag are NOT counted
+PASS  A3.4 the queue is severity-ordered (crit first)
+PASS  A3.5 an empty queue renders the honest 'all clear' chip (never a zero-count chip row)
+PASS  A3.6 foreign fleets render read-only in the rail and after own fleets
+PASS  A3.7 a foreign-fleet ask that reuses an own worker name is NOT counted (attention never crosses fleets)
+PASS  A3.8 a zero-count kind never produces a chip (mixed: ask>0, dead=0, degraded=3)
+PASS  A3.9 the rendered strip carries no zero-count chip
+PASS  A4.1 clicking a chip renders the queue overlay
+PASS  A4.2 selecting an item dismisses the overlay and spotlights the affected nodes
+PASS  A4.3 the spotlight dims non-affected nodes and keeps the affected ones lit
+PASS  A4.4 outside-click dismissal is a pure UI action
+PASS  A4.5 a rail task tap selects the task with NO spotlight (R1: dimming comes only from the attention queue)
+PASS  A4.5b dismiss-overlay, chip-click and select-node each clear a live spotlight (nothing leaves the canvas stuck dimmed)
+PASS  A4.6 a collapsed lead toggles in place through the UI reducer
+PASS  A5.1 an ask worker renders the question banner with its options
+PASS  A5.2 the panel renders console/brief/report tabs and states the absent brief/report endpoint
+PASS  A5.3 the brief/report tabs say the endpoint is absent instead of faking content
+PASS  A5.4 the context-usage bar comes from the snapshot usage fold
+PASS  A5.5 the last progress event renders (phase + pct + note)
+PASS  A5.6 a usage-unavailable node renders the honest bar, never a fake percentage
+PASS  A5.7 a foreign worker shows disabled controls WITH the ownership reason
+PASS  A5.8 the model marks the foreign worker read-only
+PASS  A6.1 columns follow depth: orchestrator 0 → leads 1 → workers 2
+PASS  A6.2 edges match the graph's spawned_by set node-for-node
+PASS  A6.3 every graph node renders exactly once in the SVG
+PASS  A6.4 statuses are node-for-node with the model
+PASS  A6.5 the marker renders LEFT (before the name) of every canvas node
+PASS  A6.6 SVG only — no canvas/WebGL anywhere in the asset set
+PASS  A7.1 an all-terminal lead collapses to ONE aggregate child
+PASS  A7.2 collapsed children are hidden from the canvas
+PASS  A7.3 the aggregate surfaces the WORST child severity (degraded never hidden as healthy)
+PASS  A7.4 expanding restores the children in place
+PASS  A7.5 the expansion toggle is UI state only (never persisted) and carries no dead `toggled` field (#92)
+PASS  A7.6 a degraded child raises the aggregate severity to warn (never a green ✓)
+PASS  A7.7 a lead whose workers are all settled but one is dead-rebooted still collapses, worst severity crit
+PASS  A8.1 two renders of the same snapshot are byte-identical (golden coordinates)
+PASS  A8.2 a progress event leaves every node coordinate untouched (in-place update)
+PASS  A8.3 the progress event updates the node's sub-line data instead
+PASS  A8.4 a dead-reboot event flips the node status in place
+PASS  A8.5 the dead-reboot flip does not relayout
+PASS  A8.6 patchCanvas updates status text while leaving transform/x/y untouched
+PASS  A8.6b patchCanvas repaints the status marker class/shape on a dead-reboot flip (in place)
+PASS  A8.7 topology growth appends deterministically (sorted by depth, then id)
+PASS  A9.1 zoom clamps to the documented 0.5×–2× range
+PASS  A9.2 wheel zoom is cursor-anchored (the point under the cursor stays put)
+PASS  A9.3 pan is a pure screen-space delta
+PASS  A9.4 fit resolves the whole graph into the viewport at a clamped zoom
+PASS  A9.5 pan/zoom is applied as a view transform (node coordinates are never mutated) and a fit affordance exists
+PASS  A10.1 start() mounts the four in-shell regions inside one shell root (the statusbar lives in the static frame)
+PASS  A10.2 the rail renders node rows, the canvas renders graph nodes, the detail renders a panel
+PASS  A10.3 the attention strip shows exactly the non-zero fixture counts
+PASS  A10.4 the statusbar reflects the journal envelope + schema
+PASS  A10.5 an event frame updates the model without a relayout
+PASS  A10.6 a chip click opens the overlay through the UI reducer
+PASS  A12.1 chromeScope renders the root as 'all fleets' with a per-fleet index and a scoped page with the switch link back
+PASS  A12.2 the root page exposes data-fleet-id='all', the all-fleets brand, the title and a /fleets/<id>/ link
+PASS  A12.3 the /fleets/<id>/ page exposes its scope id, brand, title and the switch link back to all fleets
+PASS  A13.1 a false/unavailable source renders the honest 'journal: unavailable' footer state
+PASS  A13.2 before the first fetch the footer health is an em dash, not a fabricated 0
+PASS  A13.3 the ticker carries kind/seq/worker + a relative age and dims past the stale threshold
+PASS  A13.4 an empty journal renders the distinct 'no events yet' ticker
+PASS  A13.5 the live ticker reads '<kind> #<seq> <worker> · <age>' and marks the stale stream
+PASS  A13.6 the footer renders the read-model source health (all four rows)
+PASS  A11.1 zero external network calls (no CDN, no font download — system fallback stacks only)
+PASS  A11.2 SVG only — no canvas/WebGL anywhere in the asset set
+PASS  A11.3 no build artifacts (flat source assets only)
+FAIL  A11.4 no asset is a parking lot (every public module stays under 400 lines) — canvas.js
+PASS  A11.5 the status palette + type scale are CSS custom properties (no inline palette drift)
+PASS  A11.6 the system font stacks are declared (Inter + system-ui, JetBrains Mono + platform monospace)
+
+1 CHECK(S) FAILED
+PASS     test/double-mount-check.ts [load=0.18 memMB=24255 runners=5]
+PASS     test/error-code-check.ts [load=0.18 memMB=24290 runners=5]
+PASS     test/expaths-check.ts [load=0.18 memMB=24329 runners=5]
+PASS     test/fake-settle-check.ts [load=0.18 memMB=24291 runners=5]
+PASS     test/fleet-split-check.ts [load=0.18 memMB=24283 runners=5]
+PASS     test/fleet-usage-check.ts [load=0.18 memMB=24249 runners=5]
+PASS     test/fleet-view-scope-check.ts [load=0.18 memMB=24262 runners=5]
+PASS     test/grace-loop-check.ts [load=0.18 memMB=24296 runners=5]
+PASS     test/herdr-split-check.ts [load=0.18 memMB=24278 runners=5]
+PASS     test/host-fake-check.ts [load=0.33 memMB=24281 runners=5]
+PASS     test/host-parity-check.ts [load=0.33 memMB=24196 runners=5]
+PASS     test/journal-check.ts [load=0.33 memMB=24201 runners=5]
+PASS     test/lifecycle-check.ts [load=0.33 memMB=24201 runners=5]
+PASS     test/mailbox-check.ts [load=0.33 memMB=24227 runners=5]
+PASS     test/manifest-depth-check.ts [load=0.38 memMB=24004 runners=5]
+PASS     test/manifest-store-check.ts [load=0.51 memMB=24053 runners=5]
+PASS     test/mode-shared-alias-check.ts [load=0.36 memMB=24225 runners=5]
+PASS     test/ownership-check.ts [load=0.36 memMB=24272 runners=5]
+PASS     test/passport-check.ts [load=0.36 memMB=24247 runners=5]
+PASS     test/profile-check.ts [load=0.42 memMB=24008 runners=5]
+PASS     test/provider-empty-check.ts [load=0.30 memMB=24278 runners=5]
+PASS     test/reconcile-check.ts [load=0.30 memMB=24252 runners=5]
+PASS     test/release-on-started-check.ts [load=0.27 memMB=24084 runners=5]
+PASS     test/render-ui-check.ts [load=0.27 memMB=24116 runners=5]
+PASS     test/report-contract-check.ts [load=0.27 memMB=24114 runners=5]
+PASS     test/retire-check.ts [load=0.57 memMB=24030 runners=5]
+PASS     test/reverify-fixes.ts [load=0.57 memMB=24075 runners=5]
+PASS     test/rpc-classify-check.ts [load=0.69 memMB=24021 runners=5]
+PASS     test/rpc-host-check.ts [load=0.69 memMB=24038 runners=5]
+PASS     test/rpc-host-e2e-check.ts [load=0.69 memMB=24061 runners=5]
+PASS     test/rpc-host-unit-check.ts [load=0.69 memMB=24087 runners=5]
+PASS     test/rpc-jsonl-check.ts [load=0.69 memMB=24152 runners=5]
+PASS     test/rpc-place-probe-check.ts [load=0.69 memMB=24240 runners=5]
+PASS     test/rpc-resume-check.ts [load=0.58 memMB=24176 runners=5]

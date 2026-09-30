@@ -5,8 +5,11 @@
  * Production shape is the whole point of the #80 fixture: every node carries
  * `depth: 0` (the wire's `depth` is the authority TIER, not tree depth — the
  * live snapshot has it 0 on all 48 nodes) and the hierarchy exists ONLY as
- * `spawned_by` edges. The layout must derive its columns from BFS over those
- * edges, never from `node.depth`.
+ * `spawned_by` edges + node roles. Since R6 (canvas-intent) the layout
+ * derives its columns from the ROLES — orchestrator 0, tasks 1, workers 2
+ * grouped under their own task — never from `node.depth` and never from a
+ * BFS over the wire's sibling-shaped edges; B1.1/B1.3/B1.7 are amended to
+ * the ruled behavior.
  *
  * The #78 half drives the real `renderCanvas`/`attachCanvasControls` through a
  * fake DOM seam whose elements report a pixel box: the measured element box
@@ -141,9 +144,13 @@ function transformedBounds(bounds: any, view: { zoom: number; panX: number; panY
 /**
  * The #80 production shape: a root orchestrator, two sub-orchestrators, their
  * workers and two task nodes — every node `depth: 0`, hierarchy only as edges.
+ * R6 (canvas-intent): production sessions carry their wire ROLE fields
+ * (`isWorker`, plus the embodiment task association folded onto `task`) — the
+ * fixture models them now, because the ruled columns read roles, not BFS
+ * distance.
  */
 function productionShapedState() {
-	const node = (kind: string, id: string, name: string) => ({
+	const node = (kind: string, id: string, name: string, extra: Record<string, unknown> = {}) => ({
 		kind,
 		id,
 		name,
@@ -156,14 +163,17 @@ function productionShapedState() {
 		usage: null,
 		elapsedLabel: null,
 		progress: null,
+		...extra,
 	});
 	const nodes = [
-		node("session", "s:root", "root"),
-		node("session", "s:lead-a", "lead-a"),
-		node("session", "s:lead-b", "lead-b"),
-		node("session", "s:a1", "a1"),
-		node("session", "s:a2", "a2"),
-		node("session", "s:b1", "b1"),
+		node("session", "s:root", "root", { isWorker: false, ownsChildren: true, role: "orchestrator" }),
+		node("session", "s:lead-a", "lead-a", { isWorker: true, ownsChildren: true, role: "worker-orchestrator", task: "t:root" }),
+		node("session", "s:lead-b", "lead-b", { isWorker: true, ownsChildren: true, role: "worker-orchestrator", task: "t:root" }),
+		node("session", "s:a1", "a1", { isWorker: true, task: "t:lead-a" }),
+		node("session", "s:a2", "a2", { isWorker: true, task: "t:lead-a" }),
+		// b1's owning task is outside this fixture slice: it lands in the
+		// ungrouped worker tail — still column 2.
+		node("session", "s:b1", "b1", { isWorker: true, task: "t:lead-b" }),
 		node("task", "t:root", "root-task"),
 		node("task", "t:lead-a", "lead-a-task"),
 	];
@@ -187,18 +197,23 @@ function productionShapedState() {
 async function main(): Promise<void> {
 	const layoutMod = (await import(publicUrl("layout.js"))) as any;
 	const canvasMod = (await import(publicUrl("canvas.js"))) as any;
+	const canvasViewMod = (await import(publicUrl("canvas-view.js"))) as any;
 	const statusMod = (await import(publicUrl("status.js"))) as any;
 	const degradeMod = (await import(publicUrl("degrade.js"))) as any;
 	const uiMod = (await import(publicUrl("ui.js"))) as any;
 
-	// -- B1 — #80: columns come from BFS over spawned_by, never node.depth ---
+	// -- B1 — #80/R6: columns come from node roles, never node.depth --------
 	{
 		const state = productionShapedState();
 		const layout = layoutMod.computeLayout(state, { expansion: [] });
 		const col = (id: string): number | undefined => layout.positions[id]?.col;
+		// R6 (canvas-intent): the BFS column pin is amended to the ruled
+		// 3-column read — the wire makes a task and its workers SIBLINGS (both
+		// spawned_by the orchestrator), so BFS distance read as a hub of mixed
+		// siblings; the layout now synthesizes the prototype's grouping.
 		check(
-			"B1.1 a production-shaped fixture (every node depth 0) still forms depth columns from spawned_by edges",
-			col("s:root") === 0 && col("s:lead-a") === 1 && col("s:lead-b") === 1 && col("t:root") === 1 && col("s:a1") === 2 && col("s:a2") === 2 && col("s:b1") === 2 && col("t:lead-a") === 2,
+			"B1.1 a production-shaped fixture (every node depth 0) forms the ruled role columns: orchestrator 0, tasks 1, workers 2 (R6)",
+			col("s:root") === 0 && col("t:root") === 1 && col("t:lead-a") === 1 && col("s:lead-a") === 2 && col("s:lead-b") === 2 && col("s:a1") === 2 && col("s:a2") === 2 && col("s:b1") === 2,
 			JSON.stringify(layout.positions),
 		);
 		check(
@@ -206,9 +221,13 @@ async function main(): Promise<void> {
 			new Set(Object.values(layout.positions).map((p: any) => p.col)).size >= 3,
 			JSON.stringify([...new Set(Object.values(layout.positions).map((p: any) => p.col))]),
 		);
+		// R6: the one-column-per-hop pin is amended — the ruled synthesis groups
+		// workers under their task, so a worker→orchestrator edge spans 2
+		// columns and a sub-task→worker-orchestrator edge spans −1. Every edge
+		// still originates in the task/worker columns and targets a session.
 		check(
-			"B1.3 every spawned_by edge steps exactly one column (child = parent + 1)",
-			state.edges.every((e) => layout.positions[e.from].col === layout.positions[e.to].col + 1),
+			"B1.3 every spawned_by edge originates in a task/worker column and targets a session column (R6 synthesis; no edge enters column 0)",
+			state.edges.every((e) => [1, 2].includes(layout.positions[e.from].col) && [0, 2].includes(layout.positions[e.to].col)),
 			JSON.stringify(state.edges.map((e) => `${e.from}:${layout.positions[e.from].col}->${e.to}:${layout.positions[e.to].col}`)),
 		);
 		check(
@@ -216,7 +235,7 @@ async function main(): Promise<void> {
 			state.nodes.every((n) => n.depth === 0),
 		);
 		const again = layoutMod.computeLayout(state, { expansion: [] });
-		check("B1.5 the BFS layout is deterministic (byte-identical golden on two calls)", layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(again));
+		check("B1.5 the ruled layout is deterministic (byte-identical golden on two calls)", layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(again));
 
 		// A cycle is not a root: it must not loop forever and stays deterministic.
 		const cyclic = productionShapedState();
@@ -224,9 +243,13 @@ async function main(): Promise<void> {
 		const cyc = layoutMod.computeLayout(cyclic, { expansion: [] });
 		check("B1.6 a pure cycle terminates and stays deterministic", layoutMod.coordinateGolden(cyc) === layoutMod.coordinateGolden(layoutMod.computeLayout(cyclic, { expansion: [] })));
 
-		// The same heuristic on the REAL graph shape: all depth 0, edges only.
-		const depths = layoutMod.resolveDepths(state);
-		check("B1.7 resolveDepths is exported, pure and edge-derived", depths.get("s:root") === 0 && depths.get("s:lead-a") === 1 && depths.get("s:a1") === 2);
+		// The same derivation on the REAL graph shape: all depth 0, roles + edges only.
+		const cols = layoutMod.resolveColumns(state);
+		check(
+			"B1.7 resolveColumns is exported, pure and role-derived (R6: orchestrator 0, task 1, worker 2 — never node.depth)",
+			JSON.stringify([...cols.entries()]) === JSON.stringify([...layoutMod.resolveColumns(state).entries()]) && cols.get("s:root") === 0 && cols.get("t:root") === 1 && cols.get("t:lead-a") === 1 && cols.get("s:lead-a") === 2 && cols.get("s:a1") === 2 && cols.get("s:b1") === 2,
+			JSON.stringify([...cols.entries()]),
+		);
 	}
 
 	// -- B2 — #78: fit and the authoritative viewBox intersect ---------------
@@ -274,7 +297,7 @@ async function main(): Promise<void> {
 		// attachCanvasControls auto-fits an untouched view once the SVG reports a box.
 		index.svg.rect = { width: 900, height: 600 };
 		const attached: any[] = [];
-		canvasMod.attachCanvasControls(index, doc, { getView: () => ({ zoom: 1, panX: 0, panY: 0 }), onView: (v: any) => attached.push(v), viewport: () => ({ width: 1200, height: 720 }) });
+		canvasViewMod.attachCanvasControls(index, doc, { getView: () => ({ zoom: 1, panX: 0, panY: 0 }), onView: (v: any) => attached.push(v), viewport: () => ({ width: 1200, height: 720 }) });
 		check(
 			"B2.7 first measured attach frames the untouched view (and re-points the viewBox at the SVG's own box)",
 			attached.length === 1 && intersects(transformedBounds(bounds, attached[0]), { minX: 0, minY: 0, maxX: 900, maxY: 600 }) && index.svg.attributes.viewBox === "0 0 900 600",
@@ -285,7 +308,7 @@ async function main(): Promise<void> {
 		const index2 = canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1.5, panX: 12, panY: -8 }, viewport: () => ({ width: 1200, height: 720 }), onView: () => {} });
 		index2.svg.rect = { width: 900, height: 600 };
 		const attached2: any[] = [];
-		canvasMod.attachCanvasControls(index2, doc, { getView: () => ({ zoom: 1.5, panX: 12, panY: -8 }), onView: (v: any) => attached2.push(v) });
+		canvasViewMod.attachCanvasControls(index2, doc, { getView: () => ({ zoom: 1.5, panX: 12, panY: -8 }), onView: (v: any) => attached2.push(v) });
 		check("B2.8 a user view (non-initial) is never auto-fit (no surprise reset on re-attach)", attached2.length === 0, JSON.stringify(attached2));
 
 		// Headless: no measurable element → the injected viewport is honored,
@@ -388,15 +411,15 @@ async function main(): Promise<void> {
 
 	// -- B6 — #92a: wheel zoom anchors in USER units -------------------------
 	{
-		const identity = canvasMod.cursorToUser(120, 80, { width: 900, height: 600 }, { width: 900, height: 600 });
+		const identity = canvasViewMod.cursorToUser(120, 80, { width: 900, height: 600 }, { width: 900, height: 600 });
 		check("B6.1 cursorToUser is the identity when the viewBox IS the element box", identity.x === 120 && identity.y === 80, JSON.stringify(identity));
-		const scaled = canvasMod.cursorToUser(200, 100, { width: 900, height: 600 }, { width: 1800, height: 1200 });
+		const scaled = canvasViewMod.cursorToUser(200, 100, { width: 900, height: 600 }, { width: 1800, height: 1200 });
 		check("B6.2 cursorToUser divides by the viewBox scale (2x element box → half the offset)", Math.abs(scaled.x - 100) < 1e-9 && Math.abs(scaled.y - 50) < 1e-9, JSON.stringify(scaled));
-		const letterboxed = canvasMod.cursorToUser(100, 200, { width: 900, height: 600 }, { width: 900, height: 900 });
+		const letterboxed = canvasViewMod.cursorToUser(100, 200, { width: 900, height: 600 }, { width: 900, height: 900 });
 		check("B6.3 cursorToUser removes the xMidYMid meet letterbox gutters", Math.abs(letterboxed.x - 100) < 1e-9 && Math.abs(letterboxed.y - 50) < 1e-9, JSON.stringify(letterboxed));
 		check(
 			"B6.4 a malformed viewBox parses to null so the measured box is the fallback",
-			canvasMod.parseViewBox("0 0 900") === null && canvasMod.parseViewBox("garbage") === null && canvasMod.parseViewBox("0 0 900 600")?.width === 900,
+			canvasViewMod.parseViewBox("0 0 900") === null && canvasViewMod.parseViewBox("garbage") === null && canvasViewMod.parseViewBox("0 0 900 600")?.width === 900,
 		);
 
 		// End to end: a wheel event whose element box is 2x the viewBox must
@@ -409,7 +432,7 @@ async function main(): Promise<void> {
 		const start = { zoom: 1.5, panX: 12, panY: -8 };
 		const onView: any[] = [];
 		const index = canvasMod.renderCanvas(state, layout, root, doc, { view: start, viewport: () => ({ width: 900, height: 600 }), onView: (v: any) => onView.push(v) });
-		canvasMod.attachCanvasControls(index, doc, { getView: () => start, onView: (v: any) => onView.push(v) });
+		canvasViewMod.attachCanvasControls(index, doc, { getView: () => start, onView: (v: any) => onView.push(v) });
 		index.svg.rect = { width: 1800, height: 1200 };
 		index.svg.setAttribute("viewBox", "0 0 900 600");
 		index.svg.dispatch("wheel", { deltaY: -1, offsetX: 200, offsetY: 100, preventDefault() {} });

@@ -10,33 +10,40 @@
  *
  * `renderCanvas` paints the layout once; `patchCanvas` updates status/progress
  * text and severity attributes IN PLACE, leaving every `transform` untouched —
- * a status or progress event never relayouts. Spotlight (from the attention
- * queue) is an input contract: non-affected nodes are dimmed, never hidden.
+ * a status or progress event never relayouts.
+ *
+ * SELECTION AND SPOTLIGHT ARE TWO COLORS (canvas-intent, R1/R2): a selected
+ * node (`opts.selection`, `data-selected="1"`) wears the accent-blue stroke
+ * and keeps it while a spotlight dims the rest (sel+dim combine). The
+ * spotlight (`opts.spotlight`, set ONLY by the attention queue) is attention
+ * AMBER: stroke + glow on lit nodes, 0.35 dim on the rest, `.hot` amber
+ * edges into lit nodes (C8). A plain node click dispatches a bare
+ * `select-node` — it never dims.
  *
  * ONE coordinate space (issue #78): the SVG viewBox is the ELEMENT PIXEL BOX
  * (`0 0 width height`, measured from the element itself) and the inner
- * `<g data-view>` transform owns pan/zoom. `fitView`/`zoomAt` therefore work
- * in element pixels end to end — the injected `viewport` seam is used only as
- * a fallback when the element cannot be measured (headless), and the
- * hardcoded 1200x720 "fantasy" viewport is ignored whenever a real
- * measurement is available. The old double-fit (viewBox = layout bounds AND
- * an inner fit transform) is gone.
+ * `<g data-view>` transform owns pan/zoom, so `fitView`/`zoomAt` work in
+ * element pixels end to end — the injected `viewport` seam is only the
+ * fallback when the element cannot be measured (headless), and the hardcoded
+ * 1200x720 "fantasy" viewport is ignored whenever a real measurement exists.
+ *
+ * R5 (canvas-intent): the whole graph is ALWAYS reachable — fit zooms below
+ * the old 0.5 floor when a fleet only fits there (layout.js `zoomFloorFor`),
+ * and pointer gestures run through a drag-vs-click threshold
+ * (`canvas-view.js` `dragGesture`, exposed on the index as `index.gesture`):
+ * a pan tail suppresses its trailing synthetic click, so panning never
+ * selects the node it ended on.
  */
 
 import { el, on } from "./dom.js";
-import { NODE_H, NODE_W, fitView, panBy, zoomAt } from "./layout.js";
+import { NODE_H, NODE_W, fitView } from "./layout.js";
+import { viewportOf, viewTransform, dragGesture } from "./canvas-view.js";
 import { nodeSubLine, statusView } from "./status.js";
 
 /** SVG element creation (real namespace in a browser; createElement under a fake doc). */
 function svgEl(doc, tag, attrs, text) {
 	const node = typeof doc.createElementNS === "function" ? doc.createElementNS("http://www.w3.org/2000/svg", tag) : doc.createElement(tag);
-	if (attrs) {
-		for (const key of Object.keys(attrs)) {
-			const value = attrs[key];
-			if (value === undefined || value === null) continue;
-			if (typeof node.setAttribute === "function") node.setAttribute(key, String(value));
-		}
-	}
+	if (attrs) for (const [key, value] of Object.entries(attrs)) if (value !== undefined && value !== null && typeof node.setAttribute === "function") node.setAttribute(key, String(value));
 	if (text !== undefined && typeof doc.createTextNode === "function") node.appendChild(doc.createTextNode(String(text)));
 	return node;
 }
@@ -84,6 +91,9 @@ function nodeClasses(node) {
 
 function renderNodeGroup(doc, node, pos, opts) {
 	const dimmed = opts.spotlight && opts.spotlight.size > 0 && !opts.spotlight.has(node.id);
+	// R2: selection is a visible canvas state independent of the spotlight —
+	// a dimmed selected node keeps its stroke (sel+dim).
+	const selected = opts.selection === node.id;
 	const group = svgEl(doc, "g", {
 		class: nodeClasses(node),
 		"data-graph-node": node.id,
@@ -96,17 +106,22 @@ function renderNodeGroup(doc, node, pos, opts) {
 		"data-y": pos.y,
 		"data-dimmed": dimmed ? "1" : "0",
 		"data-spotlight": dimmed ? "0" : "1",
+		"data-selected": selected ? "1" : "0",
 		transform: `translate(${pos.x} ${pos.y})`,
 	});
 	if (node.kind === "aggregate") group.setAttribute("data-aggregate", node.leadId);
 	paintNodeContent(doc, group, node);
-	on(group, "click", () =>
+	// R1: a plain click selects — no spotlight payload, nothing dims.
+	// R5: the synthetic click after a drag-pan is swallowed — a pan never
+	// selects (nor toggles) the node it ended on (canvas-view.js threshold).
+	on(group, "click", () => {
+		if (opts.gesture?.suppressesClick()) return;
 		opts.dispatch?.(
 			node.kind === "aggregate" || opts.collapsedLeads?.has(node.id)
 				? { type: "toggle-collapse", leadId: node.kind === "aggregate" ? node.leadId : node.id }
-				: { type: "select-node", id: node.id, spotlightIds: [node.id, node.parentId].filter(Boolean) },
-		),
-	);
+				: { type: "select-node", id: node.id },
+		);
+	});
 	return group;
 }
 
@@ -126,7 +141,7 @@ function textEl(doc, attrs, value) {
 function paintNodeContent(doc, group, node) {
 	while (group.firstChild) group.removeChild(group.firstChild);
 	const view = node.kind === "aggregate" ? statusView("collected") : node.statusView;
-	const sub = node.kind === "aggregate" ? `worst: ${node.severity}` : subLineFor(node);
+	const sub = node.kind === "aggregate" ? `${node.collected}/${node.total} collected \u00b7 worst: ${node.severity} \u2014 click to expand` : subLineFor(node);
 	group.appendChild(svgEl(doc, "rect", { class: "graph-box", x: 0, y: 0, width: NODE_W, height: NODE_H, rx: 8 }));
 	group.appendChild(renderSvgMarker(doc, view, 12, NODE_H / 2));
 	group.appendChild(textEl(doc, { class: "graph-name", "data-node-name": "1", x: 24, y: 20 }, node.name));
@@ -168,9 +183,11 @@ export function subLineFor(node) {
  * Render the canvas (edges, then nodes) into `root`.
  * <p>
  * FUNCTION_CONTRACT: Input — state, layout (computeLayout), root, doc, opts
- *   ({ dispatch, spotlight }). Output — a node index ({ svg, nodes: Map }).
- * Guarantees: byte-identical coordinates for identical topology + expansion;
- *   the marker is the first child of each node group (position LEFT). Never
+ *   ({ dispatch, spotlight, selection, view, viewport, onView }). Output — a
+ *   node index ({ svg, nodes: Map }). Guarantees: byte-identical coordinates
+ *   for identical topology + expansion; the marker is the first child of each
+ *   node group (position LEFT); a selected node carries `data-selected="1"`
+ *   and an edge touching a spotlighted node carries `data-hot="1"`. Never
  *   throws on a well-formed layout.
  */
 export function renderCanvas(state, layout, root, doc, opts = {}) {
@@ -184,15 +201,25 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 		viewBox: `0 0 ${vp.width} ${vp.height}`,
 		preserveAspectRatio: "xMidYMid meet",
 	});
+	const spotlight = opts.spotlight ?? new Set();
+	// R5: one gesture object per canvas — the node click handlers and
+	// attachCanvasControls share it, so a pan tail suppresses the click.
+	const gesture = opts.gesture ?? dragGesture();
 	const edgeLayer = svgEl(doc, "g", { class: "graph-layer graph-edges", "data-graph-layer": "edges" });
 	for (const edge of layout.edges) {
+		// R4: the canvas draws the SPAWN tree only — collected/retired links
+		// stay in the model (and the layout) but add cross-column tangle here.
+		if (edge.kind !== "spawned_by") continue;
+		// C8: an edge into a spotlighted node turns amber (`.hot`) — the path
+		// cue from the attention queue to the affected nodes.
+		const hot = spotlight.size > 0 && (spotlight.has(edge.from) || spotlight.has(edge.to));
 		edgeLayer.appendChild(
-			svgEl(doc, "path", { class: "graph-edge", "data-edge": "1", "data-edge-kind": edge.kind, "data-edge-from": edge.from, "data-edge-to": edge.to, d: edge.d }),
+			svgEl(doc, "path", { class: "graph-edge", "data-edge": "1", "data-edge-kind": edge.kind, "data-edge-from": edge.from, "data-edge-to": edge.to, ...(hot ? { "data-hot": "1" } : {}), d: edge.d }),
 		);
 	}
 	const nodeLayer = svgEl(doc, "g", { class: "graph-layer graph-nodes", "data-graph-layer": "nodes" });
 	const nodes = new Map();
-	const nodeOpts = { ...opts, collapsedLeads: new Set(layout.collapsedLeadIds) };
+	const nodeOpts = { ...opts, gesture, collapsedLeads: new Set(layout.collapsedLeadIds) };
 	for (const node of layout.nodes) {
 		const pos = layout.positions[node.id];
 		const group = renderNodeGroup(doc, node, pos, nodeOpts);
@@ -210,159 +237,14 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	toolbar.appendChild(fit);
 	root.appendChild(toolbar);
 	root.appendChild(svg);
-	return { svg, nodes, layout, view, root };
+	return { svg, nodes, layout, view, root, gesture };
 }
 
-/** The view transform string for the SVG `<g data-view>` wrapper. */
-export function viewTransform(view) {
-	const v = view || { zoom: 1, panX: 0, panY: 0 };
-	return `translate(${v.panX} ${v.panY}) scale(${v.zoom})`;
-}
-
-/** The viewport box a stale hardcoded app.js seam reports (never authoritative). */
-export const FANTASY_VIEWPORT = Object.freeze({ width: 1200, height: 720 });
-
-/** True for the hardcoded 1200x720 "fantasy" viewport app.js still injects. */
-export function isFantasyViewport(vp) {
-	return !!vp && vp.width === FANTASY_VIEWPORT.width && vp.height === FANTASY_VIEWPORT.height;
-}
-
-/**
- * Measure a real element's pixel box. Guarded: a fake/headless seam without
- * layout has no `getBoundingClientRect`/`clientWidth` and yields null, so the
- * pure fit/zoom math stays checkable without a DOM.
- */
-export function measureViewport(element) {
-	if (!element) return null;
-	let width = 0;
-	let height = 0;
-	if (typeof element.getBoundingClientRect === "function") {
-		const rect = element.getBoundingClientRect();
-		width = rect?.width ?? 0;
-		height = rect?.height ?? 0;
-	}
-	if ((!width || !height) && typeof element.clientWidth === "number") {
-		width = element.clientWidth;
-		height = element.clientHeight;
-	}
-	if (!width || !height) return null;
-	return { width, height };
-}
-
-/**
- * The ONE authoritative viewport for fit/zoom math (issue #78).
- * <p>
- * FUNCTION_CONTRACT: Input — opts ({ viewport }), element (the SVG), fallback
- *   element (the region). Output — { width, height }. Guarantees: a real
- *   measured element box wins; the injected seam is consulted only when the
- *   element cannot be measured AND is not the hardcoded 1200x720 fantasy;
- *   the last resort is the same 1200x720 box. Raises: never.
- */
-export function viewportOf(opts = {}, element = null, fallbackElement = null) {
-	const measured = measureViewport(element) ?? measureViewport(fallbackElement);
-	if (measured) return measured;
-	if (typeof opts.viewport === "function") {
-		const external = opts.viewport();
-		if (external && external.width > 0 && external.height > 0 && !isFantasyViewport(external)) return { width: external.width, height: external.height };
-	}
-	return { ...FANTASY_VIEWPORT };
-}
-
-/** True for the untouched `initialView()` — the only state an auto-fit may replace. */
-function isInitialView(view) {
-	return !!view && view.zoom === 1 && view.panX === 0 && view.panY === 0;
-}
-
-/** Epsilon view equality (auto-fit re-entry guard — never loops). */
-export function sameView(a, b) {
-	return !!a && !!b && Math.abs(a.zoom - b.zoom) < 1e-9 && Math.abs(a.panX - b.panX) < 1e-9 && Math.abs(a.panY - b.panY) < 1e-9;
-}
-
-/** Parse an SVG `viewBox` ("minX minY width height") — null when malformed. */
-export function parseViewBox(value) {
-	const parts = String(value ?? "").trim().split(/[\s,]+/).map(Number);
-	return parts.length === 4 && parts.every(Number.isFinite) ? { x: parts[0], y: parts[1], width: parts[2], height: parts[3] } : null;
-}
-
-/** Convert a CSS-pixel pointer offset into the viewBox USER units (#92): scale
- *  by the viewBox ratio and remove the `xMidYMid meet` letterbox gutters.
- *  Identity when the viewBox IS the element box; degenerate input never NaNs. */
-export function cursorToUser(offsetX, offsetY, viewBox, box) {
-	const ox = Number.isFinite(offsetX) ? offsetX : 0;
-	const oy = Number.isFinite(offsetY) ? offsetY : 0;
-	const vbW = Math.max(1, Number(viewBox?.width) || 0) || 1;
-	const vbH = Math.max(1, Number(viewBox?.height) || 0) || 1;
-	const boxW = Math.max(1, Number(box?.width) || 0) || vbW;
-	const boxH = Math.max(1, Number(box?.height) || 0) || vbH;
-	if (boxW === vbW && boxH === vbH) return { x: ox, y: oy };
-	const scale = Math.min(boxW / vbW, boxH / vbH);
-	return { x: (ox - (boxW - vbW * scale) / 2) / scale, y: (oy - (boxH - vbH * scale) / 2) / scale };
-}
-
-/**
- * Wire the documented interactions onto a rendered canvas: wheel zoom
- * (0.5×–2×, cursor-anchored IN USER UNITS), drag pan, and the fit affordance. A
- * fake DOM without listeners is a no-op (the pure helpers stay checkable).
- * FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
- *   ({ getView, onView, viewport }). Output — none. Never throws.
- */
-export function attachCanvasControls(index, doc, opts = {}) {
-	if (!index || !index.svg || typeof index.svg.addEventListener !== "function") return;
-	const svg = index.svg;
-	const root = index.root ?? null;
-	const getView = opts.getView || (() => initialViewFallback());
-	// Remeasure on every attach: the element box is the authoritative viewBox
-	// (resize is picked up here), and a fresh SVG re-attaches after every render.
-	const applyViewport = () => {
-		const vp = viewportOf(opts, svg, root);
-		if (typeof svg.setAttribute === "function") svg.setAttribute("viewBox", `0 0 ${vp.width} ${vp.height}`);
-		return vp;
-	};
-	const vp = applyViewport();
-	// First measured attach: the identity ui.view is not a frame in element
-	// pixel space, so fit once and let onView persist it in ui state (only when
-	// the view is untouched AND the fit actually changes it — never a loop).
-	if (measureViewport(svg) && isInitialView(getView())) {
-		const fitted = fitView(index.layout.bounds, vp);
-		if (!sameView(fitted, getView())) opts.onView?.(fitted);
-	}
-	on(svg, "wheel", (event) => {
-		event?.preventDefault?.();
-		const factor = event && event.deltaY < 0 ? 1.1 : 0.9;
-		// #92: offsetX/offsetY are CSS pixels; zoomAt anchors in USER units.
-		// Convert through the live viewBox + measured box before anchoring.
-		const box = viewportOf(opts, svg, root);
-		const vb = parseViewBox(typeof svg.getAttribute === "function" ? svg.getAttribute("viewBox") : null) ?? { x: 0, y: 0, width: box.width, height: box.height };
-		const cursor = cursorToUser(event?.offsetX ?? 0, event?.offsetY ?? 0, vb, box);
-		opts.onView?.(zoomAt(getView(), factor, cursor.x, cursor.y));
-	});
-	let dragging = null;
-	on(svg, "pointerdown", (event) => {
-		dragging = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
-	});
-	on(svg, "pointermove", (event) => {
-		if (dragging === null) return;
-		const next = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
-		opts.onView?.(panBy(getView(), next.x - dragging.x, next.y - dragging.y));
-		dragging = next;
-	});
-	on(svg, "pointerup", () => {
-		dragging = null;
-	});
-	on(svg, "dblclick", () => opts.onView?.(fitView(index.layout.bounds, applyViewport())));
-}
-
-/** A defensive default view (the app always passes getView). */
-function initialViewFallback() {
-	return { zoom: 1, panX: 0, panY: 0 };
-}
-
-/**
- * Patch node status/progress/severity IN PLACE (no relayout, no transform
- * change). The aggregate severity and the degraded ⚠N marker update too.
- * FUNCTION_CONTRACT: Input — index (renderCanvas result), state. Output —
- * the same index. Guarantees: `data-x`/`data-y`/`transform` are untouched.
- */
+/** Patch node status/progress/severity/selection IN PLACE (no relayout, no
+ *  transform change). The aggregate severity + degraded badges update too.
+ *  FUNCTION_CONTRACT: Input — index (renderCanvas result), state, doc, opts
+ *    ({ spotlight, selection }). Output — the same index. Guarantees:
+ *    `data-x`/`data-y`/`transform` are untouched. */
 export function patchCanvas(index, state, doc, opts = {}) {
 	if (!index) return index;
 	const spotlight = opts.spotlight ?? new Set();
@@ -370,7 +252,7 @@ export function patchCanvas(index, state, doc, opts = {}) {
 		let node = state.byId.get(id);
 		if (!node && id.startsWith("agg:")) {
 			const decision = state.graph.collapse.get(id.slice(4));
-			if (decision) node = { id, kind: "aggregate", name: decision.label, status: "collected", severity: decision.worstSeverity, statusView: statusView("collected"), degraded: [], foreign: false, usage: null };
+			if (decision) node = { id, kind: "aggregate", name: decision.label, leadId: decision.leadId, status: "collected", severity: decision.worstSeverity, total: decision.total, collected: decision.collected, statusView: statusView("collected"), degraded: [], foreign: false, usage: null };
 		}
 		if (!node) continue;
 		if (group.setAttribute) {
@@ -380,15 +262,11 @@ export function patchCanvas(index, state, doc, opts = {}) {
 			const dimmed = spotlight.size > 0 && !spotlight.has(id);
 			group.setAttribute("data-dimmed", dimmed ? "1" : "0");
 			group.setAttribute("data-spotlight", dimmed ? "0" : "1");
+			group.setAttribute("data-selected", opts.selection === id ? "1" : "0");
 		}
-		// Repaint the content so the marker color/shape and the degraded ⚠N
-		// marker follow the status — the group's transform/x/y stay untouched.
+		// Repaint the content so the marker/degraded badges follow the status —
+		// the group's transform/x/y stay untouched.
 		paintNodeContent(doc, group, node);
 	}
 	return index;
-}
-
-/** The canvas node ids in render order (deterministic). */
-export function canvasNodeIds(layout) {
-	return [...layout.nodes].map((n) => n.id);
 }

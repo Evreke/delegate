@@ -202,108 +202,6 @@ body {
 	padding: var(--gap);
 }
 
-/* --- attention strip --------------------------------------------------- */
-
-.attention-strip {
-	display: flex;
-	gap: 0.5rem;
-	align-items: center;
-	padding: 0.35rem 0.75rem;
-	min-height: 2rem;
-}
-
-.attention-chip {
-	display: inline-flex;
-	gap: 0.4rem;
-	align-items: center;
-	background: var(--panel-2);
-	color: var(--fg);
-	border: 1px solid var(--border);
-	border-radius: 999px;
-	padding: 0.1rem 0.6rem;
-	cursor: pointer;
-	font: inherit;
-	font-size: var(--type-sm);
-}
-
-.attention-chip[data-active="1"] {
-	border-color: var(--accent);
-}
-
-.attention-chip-ask {
-	color: var(--amber);
-	border-color: #6b5a3f;
-}
-
-.attention-chip-dead-reboot {
-	color: var(--red);
-	border-color: #6b3f3f;
-}
-
-.attention-chip-degraded {
-	color: var(--sev-warn);
-}
-
-.attention-count {
-	font-family: var(--font-mono);
-	font-weight: 600;
-}
-
-.attention-clear {
-	color: var(--mint);
-	font-size: var(--type-sm);
-	font-family: var(--font-mono);
-}
-
-.attention-overlay {
-	position: absolute;
-	top: 2.1rem;
-	left: 0.75rem;
-	right: 0.75rem;
-	z-index: 5;
-	max-height: 60vh;
-	overflow: auto;
-	background: var(--panel-2);
-	border: 1px solid var(--border);
-	border-radius: 6px;
-	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-	padding: 0.5rem;
-}
-
-.attention-overlay-title {
-	color: var(--muted);
-	font-size: var(--type-xs);
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	margin-bottom: 0.35rem;
-}
-
-.attention-item {
-	display: flex;
-	gap: 0.5rem;
-	align-items: baseline;
-	width: 100%;
-	text-align: left;
-	background: transparent;
-	color: inherit;
-	border: 1px solid transparent;
-	border-radius: 4px;
-	padding: 0.25rem 0.4rem;
-	cursor: pointer;
-	font: inherit;
-}
-
-.attention-item:hover {
-	border-color: var(--border);
-	background: var(--panel);
-}
-
-.attention-empty {
-	color: var(--muted);
-	font-size: var(--type-sm);
-	padding: 0.35rem 0.4rem;
-}
-
 /* --- rail -------------------------------------------------------------- */
 
 .rail-inner {
@@ -347,6 +245,16 @@ body {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/* R8: the fleet/task title in a group header — takes the row's slack so the
+   role/counters stay flush right; muted like the counters family. */
+.rail-fleet-title {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--muted);
 }
 
 .rail-role {

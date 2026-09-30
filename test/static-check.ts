@@ -1919,15 +1919,18 @@ check(
 );
 
 {
-	// sessionStorage is the cursor store (app.js) + the operator token store
-	// (steer.js, #54) ONLY; localStorage is banned everywhere.
+	// sessionStorage is the cursor store (cursor.js — split out of app.js in
+	// the canvas-intent round, Law 5 size cap; app.js still injects the storage
+	// seam) + the operator token store (steer.js, #54) ONLY; localStorage is
+	// banned everywhere.
 	const app = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
+	const cursorJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "cursor.js"), "utf8");
 	const steerJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "steer.js"), "utf8");
 	const others = ["stream.js", "degrade.js", "console.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
 	const anyLocalStorage = listDashboardAssets(ROOT).some((f) => scanDashboardAsset(readFileSync(f, "utf8")).some((o) => o.rule === "local-storage"));
 	check(
-		"T1.22 sessionStorage is the cursor + operator-token store only (app.js cursor, steer.js token); no localStorage",
-		app.includes("swarm.dashboard.lastSeq") && steerJs.includes("swarm.dashboard.operatorToken") && others.length === 0 && !anyLocalStorage,
+		"T1.22 sessionStorage is the cursor + operator-token store only (cursor.js cursor, steer.js token; app.js injects the seam); no localStorage",
+		app.includes("sessionStorage") && cursorJs.includes("swarm.dashboard.lastSeq") && steerJs.includes("swarm.dashboard.operatorToken") && others.length === 0 && !anyLocalStorage,
 		others.join(", "),
 	);
 

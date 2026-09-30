@@ -473,6 +473,73 @@ worker writes its report through `swarm write-report`).
 
 ### Fixed
 
+- **Dashboard: R9 deep-link restore `#t=<token>&node=<id>` (canvas-intent
+  round).** A URL could bootstrap the operator token but never name a node,
+  so a deep link to a worker/task was gone and refresh always lost the
+  selection. The deep-link id rides the SAME `#t=` fragment as a further
+  `node=<id>` parameter (the token's ONE spelling is untouched — pins
+  T1.24b/T1.29 hold); `parseFragmentNode` reads it, the fragment is stripped
+  after reading (token OR node match), and app.js applies the selection
+  exactly once at first state — a known id selects + focuses the node (bare
+  select-node: stroke, no dim), unknown/missing ids are ignored, and the
+  token still travels only the fragment → sessionStorage path. Law 5 size
+  cap: the cursor store split from app.js into the new `cursor.js` (pin
+  T1.22 amended to the new file map, same guarantee). Check:
+  `test/dashboard-canvas-intent-check.ts` I11.
+
+- **Dashboard rail: R8 group header fleet title + done/total rollup
+  (canvas-intent round).** The rail's group header answered "which session"
+  but never "which epic/task fleet am I looking at" — the wire TaskNode's
+  `description` was never rendered. `buildTaskNode` now carries the
+  description through, `buildRail` titles each single-fleet group with it
+  (a multi-fleet group has no one honest headline and shows none) and sums
+  a `done/total` rollup across the group's fleets; the header row renders
+  both as additive spans — the rollup in the same right-aligned muted
+  `.rail-counters` treatment, the row's click/keyboard behavior untouched
+  (kept minimal to ease the merge with #127). Law 5 size cap: the attention
+  strip styles moved verbatim from app.css to the new region stylesheet
+  `attention.css` (linked right after app.css — same cascade), and the
+  attention fold moved from state.js to the new `attention-model.js`.
+  Check: `test/dashboard-canvas-intent-check.ts` I12.
+
+- **Dashboard canvas: R7 aggregate sub-line wording (canvas-intent round).**
+  A collapsed lead's aggregate node showed only `worst: <sev>` — the counts
+  lived in the name line and the node gave no cue that it is clickable. The
+  sub-line now reads `k/n collected · worst: <sev> — click to expand`: the
+  worst-severity stays honest and the affordance is stated in place. Check:
+  `test/dashboard-canvas-intent-check.ts` I10.
+
+- **Dashboard canvas: R6 ruled 3-column topology + worker role names
+  (canvas-intent round).** The graph read as a hub of mixed siblings: the
+  wire makes a task and its worker sessions SIBLINGS (both `spawned_by` the
+  orchestrator), so the old BFS-over-edges column derivation put tasks and
+  hash-named worker nodes in one column. The layout now synthesizes the
+  prototype's read — column 0 orchestrator sessions, column 1 task nodes,
+  column 2 worker sessions grouped under their own task (one task-major
+  band: the task first, then its workers top-to-bottom, then the next task;
+  grouping derived from the wire's embodiment `sessionId` association folded
+  onto `session.task`; the read model `src/swarm/{nodes,edges}.ts` is
+  untouched). Worker canvas nodes are now labeled by their ROLE name (the
+  same name the rail shows) instead of the session hash, while
+  `data-graph-node` identity keeps the hashes — ids are stable across the
+  relayout; a collapsed sub-fleet's aggregate sits in the worker column
+  right after its lead. Check: `test/dashboard-canvas-intent-check.ts` I9
+  (layout-check B1.1/B1.3/B1.7 and v1-check A6.1 amended to the ruled
+  columns).
+
+- **Dashboard canvas: R5 pan/zoom reachability + drag-vs-click threshold
+  (canvas-intent round).** A fleet too large for the 0.5× zoom floor was
+  unreachable behind the `overflow:hidden` canvas region: `fitView` now zooms
+  at the graph's own sub-0.5 ratio when that is what fits (the documented
+  0.5–2× wheel range keeps 0.5 as its floor EXCEPT that `zoomFloorFor`
+  lowers it to the fit ratio for the current fleet, so wheel-out always has a
+  path back to a full fit — `clampZoom` itself is unchanged). Pointer gestures
+  now run through a 4px drag-vs-click threshold (`dragGesture`): a move above
+  the threshold pans, and the synthetic click at the gesture's end is
+  suppressed so panning never selects the node it ends on; a sub-threshold
+  tap still selects. Check: `test/dashboard-canvas-intent-check.ts` I8
+  (v1-check A9.4 amended to the ruled sub-0.5 fit).
+
 - **Dashboard ownership, bounded reads and honest errors (#81, #88, #89).**
   (a) The serving identity is now derived from the `/api/swarm/fleets`
   envelope's `self` and wired into the read model, so foreign fleets are

@@ -409,8 +409,12 @@ async function main(): Promise<void> {
 		const lit = groups.filter((g) => g.attributes["data-spotlight"] === "1");
 		check("A4.3 the spotlight dims non-affected nodes and keeps the affected ones lit", dimmed.length === groups.length - lit.length && lit.length === next.spotlight.size && lit.every((g) => next.spotlight.has(g.attributes["data-graph-node"])), JSON.stringify({ groups: groups.length, dimmed: dimmed.length, lit: lit.length }));
 		check("A4.4 outside-click dismissal is a pure UI action", uiMod.uiReducer(next, { type: "dismiss-overlay" }).overlay === null);
-		const railFocus = uiMod.uiReducer(uiMod.createUiState(), { type: "select-node", id: "milestone1", spotlightIds: railMod.taskFocusIds(model.byId.get("milestone1")) });
-		check("A4.5 a rail task tap focuses the center view (spotlight = task + owner + worker sessions, never a screen switch)", railFocus.spotlight.has("milestone1") && railFocus.spotlight.has(sessionIdFor(LEAD(1))) && railFocus.selection === "milestone1");
+		const railFocus = uiMod.uiReducer(uiMod.createUiState(), { type: "select-node", id: "milestone1" });
+		check("A4.5 a rail task tap selects the task with NO spotlight (R1: dimming comes only from the attention queue)", railFocus.selection === "milestone1" && railFocus.spotlight.size === 0, JSON.stringify({ selection: railFocus.selection, spotlight: [...railFocus.spotlight] }));
+		// R1: the attention interaction owns the spotlight's whole lifetime —
+		// dismiss, chip-toggle and any later select-node all release it.
+		const spotlit = uiMod.uiReducer(railFocus, { type: "select-attention", item: model.attention.items.find((i: any) => i.kind === "ask") });
+		check("A4.5b dismiss-overlay, chip-click and select-node each clear a live spotlight (nothing leaves the canvas stuck dimmed)", spotlit.spotlight.size > 0 && uiMod.uiReducer(spotlit, { type: "dismiss-overlay" }).spotlight.size === 0 && uiMod.uiReducer(spotlit, { type: "chip-click", kind: "ask" }).spotlight.size === 0 && uiMod.uiReducer(spotlit, { type: "select-node", id: "milestone1" }).spotlight.size === 0, JSON.stringify([...spotlit.spotlight]));
 		check("A4.6 a collapsed lead toggles in place through the UI reducer", uiMod.uiReducer(uiMod.createUiState(), { type: "toggle-collapse", leadId: L1 }).expansion.has(L1));
 	}
 
@@ -452,7 +456,14 @@ async function main(): Promise<void> {
 	// -- A6 — graph: columns, edges, statuses, collapse, golden --------------
 	{
 		const layout = layoutMod.computeLayout(model, { expansion: [] });
-		check("A6.1 columns follow depth: orchestrator 0 → leads 1 → workers 2", layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions[L1].col === 1 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined && layout.positions[W41].col === 2, JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, lead: layout.positions[L1]?.col, w41: layout.positions[W41]?.col }));
+		// R6 (canvas-intent): amended from the BFS depth pin — a lead IS a worker
+		// of its task, so leads join the workers in column 2; tasks take column
+		// 1 and the orchestrator column 0 (the wire's sibling shape synthesized).
+		check(
+			"A6.1 columns follow the ruled roles: orchestrator 0 → tasks 1 → workers 2 (a lead is a worker of its task, R6)",
+			layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions["milestone1"].col === 1 && layout.positions["m1-lead-4"].col === 1 && layout.positions[L1].col === 2 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined && layout.positions[W41].col === 2,
+			JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, task: layout.positions["milestone1"]?.col, subtask: layout.positions["m1-lead-4"]?.col, lead: layout.positions[L1]?.col, w41: layout.positions[W41]?.col }),
+		);
 		const full = layoutMod.computeLayout(model, { expansion: new Set([L1]) });
 		const graphEdges = graph.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
 		const layoutEdges = full.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
@@ -554,7 +565,7 @@ async function main(): Promise<void> {
 		check("A9.2 wheel zoom is cursor-anchored (the point under the cursor stays put)", Math.abs((100 - zoomed.panX) / zoomed.zoom - worldX) < 1e-9 && Math.abs((50 - zoomed.panY) / zoomed.zoom - worldY) < 1e-9);
 		check("A9.3 pan is a pure screen-space delta", layoutMod.panBy(view, 10, -5).panX === 10 && layoutMod.panBy(view, 10, -5).panY === -5);
 		const fit = layoutMod.fitView({ minX: 0, minY: 0, width: 2000, height: 1000 }, { width: 800, height: 400 });
-		check("A9.4 fit resolves the whole graph into the viewport at a clamped zoom", fit.zoom === 0.5 && Number.isFinite(fit.panX) && Number.isFinite(fit.panY));
+		check("A9.4 fit resolves an oversized graph into the viewport at its own sub-0.5 ratio (R5: the 0.5 floor is the reachability exception — always fits)", fit.zoom === 0.4 && Number.isFinite(fit.panX) && Number.isFinite(fit.panY));
 		const doc = fakeDoc();
 		const root = doc.createElement("div");
 		const layout = layoutMod.computeLayout(model, { expansion: [] });

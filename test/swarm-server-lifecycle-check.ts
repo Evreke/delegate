@@ -177,6 +177,19 @@ async function main(): Promise<void> {
 			loud !== null && announced("operator-token") && announced("dashboard"),
 			gateLines.join(" | ").slice(0, 200),
 		);
+		// L2.5 a SECONDARY mount (default surfaceToken) also stays silent: it
+		// serves nothing, so announcing its token/link would be a lie (Law 2).
+		const P25 = 17853;
+		const prim25 = await mountSwarmServer({ sessionFile: "/sessions/lc-prim25.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P25) }), surfaceToken: false });
+		gateLines.length = 0;
+		const sec25 = await mountSwarmServer({ sessionFile: "/sessions/lc-sec25.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P25) }) });
+		check(
+			"L2.5 a secondary mount (default surfaceToken) announces nothing",
+			sec25 !== null && sec25.role === "secondary" && !announced("operator-token") && !announced("dashboard"),
+			gateLines.join(" | ").slice(0, 200),
+		);
+		prim25?.stop();
+		sec25?.stop();
 		(process.stderr as unknown as { write: (s: string) => boolean }).write = realWrite;
 		quiet?.stop();
 		loud?.stop();

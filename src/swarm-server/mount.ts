@@ -321,10 +321,10 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 			}
 			if (await probePrimary(cfg.port)) {
 				role = "secondary";
-				logAdvisory("secondary-mount", {
-					port: cfg.port,
-					reason: "a delegate primary holds the configured port; this session mounts no listener (its fleets are served read-only through the primary — D1)",
-				});
+				// #surfaceToken: a secondary mount is ROUTINE (D1) — no stderr line.
+				// The primary serves this session's fleets read-only; the absence of a
+				// token/dashboard announcement IS the honest signal that this session
+				// serves nothing.
 			} else {
 				try {
 					bound = await listen(0);
@@ -343,9 +343,10 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 				onPromoted: (promoted) => {
 					bound = promoted;
 					role = "primary";
-					// Only a real port CHANGE is re-announced: a secondary's link already
-					// names the canonical port (session churn never moves it).
-					if (dashboardUrl !== dashboardUrlFor(promoted.port)) emitDashboard(promoted.port);
+					// A secondary announced nothing (it serves nothing); on takeover it
+					// must announce token + link now (the SAME mount token, the real port).
+					if (surfaceToken) logOperatorToken(operatorToken);
+					emitDashboard(promoted.port);
 				},
 				log: logAdvisory,
 				intervalMs: deps.primaryWatch?.intervalMs,
@@ -359,8 +360,13 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	// ONLY channel (Law 11); the token rides in the fragment, never in the URL
 	// path/query. The link names the ACTUAL serving port when this session
 	// serves one, else the canonical primary port.
-	if (surfaceToken) logOperatorToken(operatorToken);
-	emitDashboard(bound ? bound.port : cfg.port);
+	// Announce ONLY when this session actually SERVES (bound). A secondary has
+	// no listener: its token is not the primary's token and its link would name
+	// a port it does not serve — announcing would be a lie (Law 2).
+	if (surfaceToken && bound) {
+		logOperatorToken(operatorToken);
+		emitDashboard(bound.port);
+	}
 
 	const handle: SwarmServerHandle = {
 		get role() {

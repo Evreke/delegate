@@ -55,6 +55,22 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   registry surface (the fake-host ctx shape on classifier-configured hosts)
   degrades to a silent skip per the function's own contract, instead of
   throwing a TypeError out of collect.
+- **Source-health spans are separated (#138).** The statusbar appended one
+  `source` span per read-model source with no separator, concatenating them
+  into one unreadable run; `#health-sources` is now an `inline-flex` row with
+  a `0.4rem` gap (wrapping on narrow bars). The per-source
+  `data-source` / `data-source-state` attributes stay.
+- **Attention clear-state wording is own-fleet-scoped (#135).** The strip
+  aggregates OWN fleets only, so its empty state no longer renders the bare
+  global claim "all clear" — it reads "own fleets clear" (strip span and
+  model chip label alike), honest even when a foreign fleet is visibly
+  degraded. The `scoping…` state while the serving identity is unknown is
+  unchanged.
+- **Rail task rows are visually distinct from session rows (#140).** Every
+  task row carries a bordered uppercase `task` glyph chip
+  (`data-rail-task-chip`) in addition to its counters; session rows keep the
+  plain role label (`data-rail-role`). Additive visuals only — the #127 pins
+  (keyboard operability, contrast, severity sort, settled fold) are intact.
 
 ### Added
 

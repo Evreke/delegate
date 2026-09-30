@@ -9,12 +9,16 @@
  * the expansion set produces a byte-identical layout (the in-place-update
  * rule).
  *
- * Column-by-depth comes from BFS over the `spawned_by` edges (child = from,
- * parent = to): the wire's `depth` is the authority TIER (0/1), not tree
- * depth (issue #80 — the live snapshot carries depth 0 on every node), so it
- * is kept on the node as a decorative attribute and never read as a column.
- * Node order inside a column is the model's deterministic order (id-sorted),
- * never insertion order.
+ * Column-by-depth comes from BFS over the STRUCTURAL edges (#136):
+ * `owned_by` (from = task → to = owner session — the task hangs under its
+ * owner) and `contains` (from = task → to = worker session — the worker hangs
+ * under its task), so the columns read orchestrator 0 → task 1 → worker 2.
+ * `spawned_by` is CAUSAL lineage (worker → orchestrator session) — it is drawn
+ * but never drives a column. The wire's `depth` is the authority TIER (0/1),
+ * not tree depth (issue #80 — the live snapshot carries depth 0 on every
+ * node), so it is kept on the node as a decorative attribute and never read
+ * as a column. Node order inside a column is the model's deterministic order
+ * (id-sorted), never insertion order.
  *
  * Pan/zoom/fit are the documented interaction range: wheel zoom 0.5×–2×,
  * cursor-anchored; pan by scroll/drag; `fit` resolves the whole graph into
@@ -113,27 +117,38 @@ export function visibleNodes(state, expansion) {
 }
 
 /**
- * Resolve each node's COLUMN by BFS over the `spawned_by` edges (child = from,
- * parent = to). Issue #80: the wire's `node.depth` is the authority tier
- * (manifestDepthFor returns 0 for a root orchestrator's workers), NOT tree
- * depth — trusting it collapses the whole graph into one strip. `node.depth`
- * is kept as a decorative attribute and used only as the fallback column for a
- * node unreachable from any root (a pure cycle).
+ * Resolve each node's COLUMN by BFS over the STRUCTURAL edges (#136):
+ * `owned_by` parents the task under its owner session, `contains` parents the
+ * worker session under its task — so the columns read orchestrator 0 → task 1
+ * → worker 2. `spawned_by` is CAUSAL lineage (worker → orchestrator, often
+ * skipping the task column) and deliberately does NOT drive a column; its
+ * edges are still drawn. Issue #80: the wire's `node.depth` is the authority
+ * tier (manifestDepthFor returns 0 for a root orchestrator's workers), NOT
+ * tree depth — trusting it collapses the whole graph into one strip.
+ * `node.depth` is kept as a decorative attribute and used only as the fallback
+ * column for a node unreachable from any root (a pure cycle).
  * <p>
  * FUNCTION_CONTRACT: Input — state (buildDashboardState output). Output — a
  *   Map(id → column). Guarantees: deterministic (roots and children visited
- *   in id order); a node whose parent chain reaches a root gets its distance
- *   from that root; never throws. Raises: never
+ *   in id order); a node whose structural parent chain reaches a root gets
+ *   its distance from that root; never throws. Raises: never
  */
 export function resolveDepths(state) {
 	const nodes = state?.nodes ?? [];
 	const ids = new Set(nodes.map((n) => n.id));
-	// parent[child] = parent (the first spawned_by edge that spawns the child).
+	// parent[child] = parent from the STRUCTURAL edges only (#136), each kind
+	// keying its CHILD end: owned_by hangs the task (from) under its owner (to);
+	// contains hangs the worker (to) under its task (from). spawned_by (causal)
+	// and the lifecycle stamps (collected/retired) never assign a column. First
+	// edge wins (deterministic input order).
 	const parent = new Map();
+	const adopt = (child, par) => {
+		if (child === par || !ids.has(child) || !ids.has(par)) return;
+		if (!parent.has(child)) parent.set(child, par);
+	};
 	for (const e of state?.edges ?? []) {
-		if (e.kind !== "spawned_by") continue;
-		if (e.from === e.to || !ids.has(e.from) || !ids.has(e.to)) continue;
-		if (!parent.has(e.from)) parent.set(e.from, e.to);
+		if (e.kind === "owned_by") adopt(e.from, e.to);
+		else if (e.kind === "contains") adopt(e.to, e.from);
 	}
 	const children = new Map();
 	for (const [child, par] of parent) {
@@ -144,7 +159,7 @@ export function resolveDepths(state) {
 
 	const depths = new Map();
 	const queue = [];
-	// Roots: no parent, visited in id order (deterministic BFS).
+	// Roots: no STRUCTURAL parent, visited in id order (deterministic BFS).
 	for (const id of [...ids].sort()) {
 		if (parent.has(id)) continue;
 		depths.set(id, 0);
@@ -182,7 +197,7 @@ export function computeLayout(state, opts = {}) {
 	const { nodes, edges } = visibleNodes(state, opts.expansion);
 	const depths = resolveDepths(state);
 	// A hidden subtree's aggregate sits one column right of its lead — it has no
-	// spawned_by edge of its own, so it is placed by the lead's BFS column.
+	// structural edge of its own, so it is placed by the lead's BFS column.
 	const colOf = (node) => (node.kind === "aggregate" ? (depths.get(node.leadId) ?? 0) + 1 : (depths.get(node.id) ?? 0));
 	const sorted = [...nodes].sort((a, b) => {
 		const ad = colOf(a);

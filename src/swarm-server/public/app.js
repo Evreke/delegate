@@ -28,36 +28,16 @@ import { createUiState, uiReducer } from "./ui.js";
 import { renderAttention, renderErrorBanner, clearErrorBanner, regionStateView, renderRegionState } from "./attention.js";
 import { renderRail } from "./rail.js";
 import { renderCanvas, patchCanvas, attachCanvasControls } from "./canvas.js";
+import { viewTransform, createDragGesture } from "./canvas-view.js";
 import { renderDetail, resolveDetailSubject, pickWorker } from "./detail.js";
 import { createSwarmStream, readEnvelope, foldEventStore, MAX_EVENT_STORE, isStructuralEventFrame } from "./stream.js";
 import { consoleBanner, createConsoleTail } from "./console.js";
 import { createPanels } from "./panels.js";
 import { createMutations, MAX_AUTH_RETRIES } from "./mutations.js";
+import { readCursor, writeCursor } from "./cursor.js";
 import { controlsView } from "./steer.js";
 
-export { MAX_AUTH_RETRIES };
-
-const STORAGE_KEY = "swarm.dashboard.lastSeq";
-
-/** Read the persisted cursor (sessionStorage only — the documented store). */
-export function readCursor(storage) {
-	try {
-		const raw = storage ? storage.getItem(STORAGE_KEY) : null;
-		const n = Number(raw);
-		return Number.isFinite(n) && n > 0 ? n : 0;
-	} catch {
-		return 0;
-	}
-}
-
-/** Persist the cursor (best effort — private-mode storage may throw). */
-export function writeCursor(storage, seq) {
-	try {
-		if (storage) storage.setItem(STORAGE_KEY, String(seq));
-	} catch {
-		/* persistence is best effort */
-	}
-}
+export { MAX_AUTH_RETRIES, readCursor, writeCursor };
 
 /** The shell regions, created inside the #fleet-tree shell root. */
 const REGIONS = [["attention", "attention-strip"], ["rail", "rail"], ["canvas", "center-canvas"], ["detail", "detail"]];
@@ -231,12 +211,24 @@ export function createFleetApp(env = {}) {
 	if (doc && typeof doc.addEventListener === "function") doc.addEventListener("keydown", onKeydown);
 
 	const viewport = () => ({ width: 1200, height: 720 });
-	const onView = (view) => { ui = uiReducer(ui, { type: "view", view }); renderRegions(); };
+	// #137: the drag gesture is ONE render-persistent record — the pan writes it,
+	// the node clicks read it, and a mid-drag re-render resets neither.
+	const canvasGesture = createDragGesture();
+	// #137: a view change (pan/zoom/fit) PATCHES the live `<g data-view>`
+	// transform IN PLACE — `renderRegions()` here rebuilt the whole canvas (new
+	// SVG + fresh listeners + fresh gesture) on every pan step, which stalled
+	// the drag after the first move and leaked a trailing select. Data changes
+	// still go through render()/renderRegions(), which re-renders with the
+	// panned `ui.view` as the initial transform.
+	const onView = (view) => {
+		ui = uiReducer(ui, { type: "view", view });
+		if (canvasIndex?.view?.setAttribute) canvasIndex.view.setAttribute("transform", viewTransform(view));
+	};
 	const renderRegions = () => {
 		if (regions.rail) renderRail(dash, regions.rail, doc, { dispatch, selection: ui.selection, focusWorker: ui.focusWorker, expansion: ui.expansion });
 		if (regions.canvas) {
-			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView });
-			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport });
+			canvasIndex = renderCanvas(dash, layout, regions.canvas, doc, { dispatch, spotlight: ui.spotlight, view: ui.view, viewport, onView, gesture: canvasGesture });
+			attachCanvasControls(canvasIndex, doc, { getView: () => ui.view, onView, viewport, gesture: canvasGesture });
 		}
 		if (regions.detail) renderDetail(detailView(), regions.detail, doc, detailOpts());
 		if (regions.attention) renderAttention(dash, regions.attention, doc, { dispatch, overlay: ui.overlay, scoping: !scopeKnown });

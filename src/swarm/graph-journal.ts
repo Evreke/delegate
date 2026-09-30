@@ -4,8 +4,9 @@
  * MODULE_CONTRACT — the journal-input fold of the SwarmGraph projector
  * (issue #29, ARCHITECTURE §4.1.2/§4.1.5). Pure and total: given the journal
  * events it contributes the task ids, session ids (+ paths learned from
- * `stamp` {field:"sessionPath"} rows) and the v1 edges (`spawned_by` from
- * `spawn`, `collected` from `collect`, `retired` from `retire`). NO writes,
+ * `stamp` {field:"sessionPath"} rows) and the v1 edges (`spawned_by`
+ * worker→orchestrator lineage and `owned_by` task→owner from `spawn`,
+ * `collected` from `collect`, `retired` from `retire`). NO writes,
  * never throws. Law 5 split out of ./graph-build.ts.
  *
  * The manifest projection remains the primary source for worker embodiments;
@@ -94,7 +95,9 @@ export function projectJournal(events: JournalEvent[]): JournalProjection {
 					else list.push(depth);
 				}
 			}
-			edges.push({ kind: "spawned_by", from: task, to: sessionId });
+			// #136: the task→owner relation from a spawn is `owned_by` (authority);
+			// `spawned_by` stays causal lineage (worker→orchestrator) only.
+			edges.push({ kind: "owned_by", from: task, to: sessionId });
 			if (depth !== undefined) {
 				const current = taskDepths.get(task);
 				taskDepths.set(task, current === undefined ? depth : Math.min(current, depth));

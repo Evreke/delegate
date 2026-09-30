@@ -6,8 +6,8 @@
  * and the journal event rows) into ONE screen model:
  *
  *   - nodes    — the graph nodes enriched with a resolved status (ask / dead /
- *                live / collected / retired / unknown), unified severity, the
- *                latest progress, usage, elapsed and ownership;
+ *                live / collected / retired / unknown; benign non-worker `idle`,
+ *                #133 role-aware), severity, progress, usage, elapsed, ownership;
  *   - rail     — fleets grouped by owning session (own first, foreign marked), each
  *                with its TaskNodes, done/total counters and severity-first workers;
  *   - attention— chips + a severity-ordered queue, aggregated over OWN fleets
@@ -90,8 +90,8 @@ function resolveStatus({ node, worker, journal, degradedFlags }) {
 		const mapped = liveStatusToName(node.liveStatus);
 		if (mapped !== "unknown") return mapped;
 	}
-	if (degradedFlags.includes("no-live-status")) return "unknown";
-	return "unknown";
+	// #133 role-aware: a worker (or a no-live-status flag) stays honest `unknown`; a NON-worker root is benign `idle`.
+	return degradedFlags.includes("no-live-status") || worker || node.isWorker === true ? "unknown" : "idle";
 }
 
 function buildSessionNode(node, ctx) {

@@ -61,8 +61,7 @@ A session whose role cannot be resolved (degraded self-id / no session path).
 ### Relationships
 
 **contains**:
-Task → Worker. Structural: the task's manifest lists its workers. (Target —
-not yet an edge; see "Known divergence".)
+Task → Worker. Structural: the task's manifest lists its workers.
 _Avoid_: has, includes
 
 **spawned_by**:
@@ -71,7 +70,6 @@ _Avoid_: created_by, started_by
 
 **owned_by**:
 Task → owner session. Authority: which session owns this task's fleet.
-(Target — today the read-model mislabels it `spawned_by`.)
 _Avoid_: master, belongs_to
 
 **collected** / **retired**:
@@ -100,11 +98,3 @@ running in a session — the point where the two axes meet.
 
 placed → started → working → (ask/answer) → report → collected → closed.
 (The manifest field `retiredAt` maps to the terminal `closed` phase.)
-
-### Known divergence (target vs today)
-
-The read-model's edge vocabulary today is `spawned_by` / `collected` /
-`retired`. `contains` and `owned_by` are the TARGET: today `graph-build.ts`
-emits `spawned_by` for BOTH worker→orchestrator (lineage) and task→owner (the
-conflation `owned_by` is meant to fix). This glossary is the target language;
-the code is mid-migration (#136, #141).

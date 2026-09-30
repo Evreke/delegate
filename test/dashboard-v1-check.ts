@@ -196,15 +196,24 @@ function buildFixture(): { graph: SwarmGraph; events: Array<Record<string, unkno
 		workers: [embodiment(foreignWorker)],
 		degraded: [] as Deg[],
 	};
+	// #136 edge vocabulary: the task→owner relation is `owned_by` (authority),
+	// the task→worker relation is `contains` (structure) — `spawned_by` stays
+	// CAUSAL lineage (worker/lead session → orchestrator session) only. The old
+	// fixture spelled task edges as spawned_by; that conflation is gone.
 	const edges: Array<{ kind: string; from: string; to: string }> = [
-		{ kind: "spawned_by", from: "milestone1", to: sessionIdFor(SELF) },
-		{ kind: "spawned_by", from: "foreign-task", to: sessionIdFor(FOREIGN) },
+		{ kind: "owned_by", from: "milestone1", to: sessionIdFor(SELF) },
+		{ kind: "owned_by", from: "foreign-task", to: sessionIdFor(FOREIGN) },
 	];
-	for (const lead of leadSpecs) edges.push({ kind: "spawned_by", from: sessionIdFor(lead.path), to: sessionIdFor(SELF) });
+	for (const lead of leadSpecs) edges.push({ kind: "contains", from: "milestone1", to: sessionIdFor(lead.path) });
 	for (let i = 1; i <= 5; i++) {
-		edges.push({ kind: "spawned_by", from: `m1-lead-${i}`, to: sessionIdFor(LEAD(i)) });
-		for (let j = 1; j <= 4; j++) edges.push({ kind: "spawned_by", from: sessionIdFor(WORK(i, j)), to: sessionIdFor(LEAD(i)) });
+		edges.push({ kind: "owned_by", from: `m1-lead-${i}`, to: sessionIdFor(LEAD(i)) });
+		edges.push({ kind: "spawned_by", from: sessionIdFor(LEAD(i)), to: sessionIdFor(SELF) });
+		for (let j = 1; j <= 4; j++) {
+			edges.push({ kind: "contains", from: `m1-lead-${i}`, to: sessionIdFor(WORK(i, j)) });
+			edges.push({ kind: "spawned_by", from: sessionIdFor(WORK(i, j)), to: sessionIdFor(LEAD(i)) });
+		}
 	}
+	edges.push({ kind: "contains", from: "foreign-task", to: sessionIdFor(foreignWorker.path) });
 	edges.push({ kind: "spawned_by", from: sessionIdFor(foreignWorker.path), to: sessionIdFor(FOREIGN) });
 
 	const graph: SwarmGraph = {
@@ -494,11 +503,11 @@ async function main(): Promise<void> {
 	// -- A6 — graph: columns, edges, statuses, collapse, golden --------------
 	{
 		const layout = layoutMod.computeLayout(model, { expansion: [] });
-		check("A6.1 columns follow depth: orchestrator 0 → leads 1 → workers 2", layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions[L1].col === 1 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined && layout.positions[W41].col === 2, JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, lead: layout.positions[L1]?.col, w41: layout.positions[W41]?.col }));
+		check("A6.1 columns follow the structural edges (#136): orchestrator 0 → task 1 → lead 2 (lead-task 3) → worker 4; the collapsed worker has no slot", layout.positions[sessionIdFor(SELF)].col === 0 && layout.positions["milestone1"].col === 1 && layout.positions[L1].col === 2 && layout.positions[`m1-lead-4`].col === 3 && layout.positions[W41].col === 4 && layout.positions[sessionIdFor(WORK(1, 1))] === undefined, JSON.stringify({ orch: layout.positions[sessionIdFor(SELF)]?.col, task: layout.positions["milestone1"]?.col, lead: layout.positions[L1]?.col, leadTask: layout.positions[`m1-lead-4`]?.col, w41: layout.positions[W41]?.col }));
 		const full = layoutMod.computeLayout(model, { expansion: new Set([L1]) });
 		const graphEdges = graph.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
 		const layoutEdges = full.edges.map((e: any) => `${e.kind}:${e.from}->${e.to}`).sort().join(",");
-		check("A6.2 edges match the graph's spawned_by set node-for-node", graphEdges === layoutEdges, `${layoutEdges.length} vs ${graphEdges.length}`);
+		check("A6.2 edges match the graph's full edge set node-for-node (contains + owned_by + causal spawned_by)", graphEdges === layoutEdges, `${layoutEdges.length} vs ${graphEdges.length}`);
 		const doc = fakeDoc();
 		const root = doc.createElement("div");
 		canvasMod.renderCanvas(model, full, root, doc, {});
@@ -513,13 +522,23 @@ async function main(): Promise<void> {
 			return marker >= 0 && name >= 0 && marker < name;
 		}));
 		check("A6.6 SVG only — no canvas/WebGL anywhere in the asset set", byAttr(root, "data-graph").length === 1);
+		// #136 root label: the non-worker root renders by ROLE, never as an
+		// opaque session hash; the raw id stays reachable on the node; actual
+		// worker sessions (L1 is a worker-orchestrator) are NOT relabeled.
+		const rootGroup = byAttr(root, "data-graph-node").find((g) => g.attributes["data-graph-node"] === sessionIdFor(SELF));
+		const rootName = rootGroup?.childNodes.find((c: any) => c.getAttribute && c.getAttribute("data-node-name") !== null)?.attributes["data-text"];
+		check(
+			"A6.7 the non-worker root is named by ROLE (orchestrator) on the model AND the canvas; the raw id survives; worker sessions keep their own name",
+			model.byId.get(sessionIdFor(SELF)).name === "orchestrator" && model.byId.get(sessionIdFor(SELF)).id === sessionIdFor(SELF) && model.byId.get(sessionIdFor(FOREIGN)).name === "orchestrator" && model.byId.get(L1).name === L1 && rootName === "orchestrator",
+			JSON.stringify({ modelName: model.byId.get(sessionIdFor(SELF)).name, canvasName: rootName, lead: model.byId.get(L1).name }),
+		);
 	}
 
 	// -- A7 — adaptive collapse ---------------------------------------------
 	{
 		const collapsed = layoutMod.computeLayout(model, { expansion: [] });
 		const agg = collapsed.nodes.find((n: any) => n.kind === "aggregate");
-		check("A7.1 an all-terminal lead collapses to ONE aggregate child", agg !== undefined && agg.leadId === L1 && agg.total === 5 && agg.collected === 5 && /^\d+\/\d+ collected \u2713$/.test(agg.name), JSON.stringify(collapsed.aggregates));
+		check("A7.1 an all-terminal lead collapses to ONE aggregate child (its 4 worker sessions — the lead-task is owned_by, not a child)", agg !== undefined && agg.leadId === L1 && agg.total === 4 && agg.collected === 4 && /^\d+\/\d+ collected \u2713$/.test(agg.name), JSON.stringify(collapsed.aggregates));
 		check("A7.2 collapsed children are hidden from the canvas", !collapsed.visibleIds.has(sessionIdFor(WORK(1, 1))) && collapsed.visibleIds.has(`agg:${L1}`));
 		check("A7.3 the aggregate surfaces the WORST child severity (degraded never hidden as healthy)", typeof agg.severity === "string" && degradeMod.severityRank(agg.severity) >= 0);
 		const expanded = layoutMod.computeLayout(model, { expansion: new Set([L1]) });

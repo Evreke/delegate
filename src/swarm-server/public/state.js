@@ -25,6 +25,7 @@ import { degradeViews, severityFor, worstSeverity, severityRank } from "./degrad
 import { isTerminalStatus, liveStatusToName, statusSeverity, statusView } from "./status.js";
 import { foldJournal, humanizeDuration } from "./journal.js";
 import { computeCollapse } from "./layout.js";
+import { buildAttention } from "./attention-model.js";
 
 function tsOf(value) {
 	if (typeof value !== "string") return null;
@@ -54,6 +55,22 @@ function parentIndex(graph) {
 		parents.set(e.from, e.to);
 	}
 	return parents;
+}
+
+/**
+ * The fleet-root ancestry: spawned_by (worker → orchestrator session) PLUS
+ * owned_by (task → owner session, #136). Parentage stays spawned_by-only
+ * (parentIndex — the causal chain), but the foreign/own verdict must climb
+ * BOTH: a task reaches its owner session only through the authority edge, and
+ * dropping it made every task's journal row read as foreign.
+ */
+function ancestryIndex(graph) {
+	const ancestry = new Map();
+	for (const e of graph.edges ?? []) {
+		if (!e || (e.kind !== "spawned_by" && e.kind !== "owned_by") || ancestry.has(e.from)) continue;
+		ancestry.set(e.from, e.to);
+	}
+	return ancestry;
 }
 
 /** Walk to the root ancestor (cycle-safe). */
@@ -94,6 +111,15 @@ function resolveStatus({ node, worker, journal, degradedFlags }) {
 	return degradedFlags.includes("no-live-status") || worker || node.isWorker === true ? "unknown" : "idle";
 }
 
+/**
+ * #136 root label: a NON-WORKER root session is named by its ROLE — an opaque
+ * session-id hash is not a name a human can read on the canvas. The raw id
+ * stays reachable via `data-graph-node` / the node `id`. Actual worker
+ * sessions are NEVER relabeled here (their worker name is theirs; this map is
+ * only consulted for an `isWorker:false && ownsChildren:true` root).
+ */
+const ROOT_ROLE_LABELS = Object.freeze({ orchestrator: "orchestrator" });
+
 function buildSessionNode(node, ctx) {
 	const worker = ctx.embodiments.get(node.id)?.worker ?? null;
 	const degradedFlags = (node.degraded ?? []).map((d) => d.flag);
@@ -105,15 +131,19 @@ function buildSessionNode(node, ctx) {
 	const ask = workerName ? ctx.journal.asks.get(workerName) ?? null : null;
 	const severity = worstSeverity([statusSeverity(status), ...degradedFlags.map(severityFor)]);
 	const contextPct = node.usage && typeof node.usage.contextPct === "number" ? node.usage.contextPct : null;
+	const isWorker = node.isWorker === true;
+	const ownsChildren = node.ownsChildren === true;
 	return {
 		id: node.id,
 		kind: "session",
-		name: node.id,
+		// #136: the non-worker root renders by ROLE; every other session keeps
+		// its id (the canvas node carries the raw id either way).
+		name: !isWorker && ownsChildren ? ROOT_ROLE_LABELS[node.role] ?? node.id : node.id,
 		worker: workerName,
 		task: ctx.embodiments.get(node.id)?.task ?? (node.tasks ?? [])[0] ?? null, dir: ctx.embodiments.get(node.id)?.dir ?? null,
 		role: node.role,
-		isWorker: node.isWorker === true,
-		ownsChildren: node.ownsChildren === true,
+		isWorker,
+		ownsChildren,
 		depth: typeof node.depth === "number" ? node.depth : null,
 		sessionPath: node.sessionPath ?? null,
 		status,
@@ -233,6 +263,7 @@ export function buildDashboardState(input = {}) {
 	const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
 	const edges = Array.isArray(graph.edges) ? graph.edges : [];
 	const parents = parentIndex(graph);
+	const ancestry = ancestryIndex(graph);
 	const children = new Map();
 	for (const [from, to] of parents) {
 		if (!children.has(to)) children.set(to, []);
@@ -243,20 +274,21 @@ export function buildDashboardState(input = {}) {
 	const byIdRaw = new Map(nodes.map((n) => [n.id, n]));
 	const nowMs = typeof input.nowMs === "number" ? input.nowMs : null;
 	/** Is this node id outside this session's fleets? (console refusals mark a
-	 *  whole branch foreign; otherwise the root session's path decides.) */
+	 *  whole branch foreign; otherwise the root session's path decides.) The
+	 *  climb follows the fleet ancestry (spawned_by + owned_by, #136). */
 	const isForeignId = (id) => {
 		if (input.foreignSessionIds && input.foreignSessionIds.size > 0) {
 			let cur = id;
 			const seen = new Set([cur]);
 			for (;;) {
 				if (input.foreignSessionIds.has(cur)) return true;
-				const next = parents.get(cur);
+				const next = ancestry.get(cur);
 				if (next === undefined || seen.has(next)) break;
 				seen.add(next);
 				cur = next;
 			}
 		}
-		const rootId = rootOf(id, parents);
+		const rootId = rootOf(id, ancestry);
 		const root = byIdRaw.get(rootId);
 		return ownedBy(input, root && root.sessionPath, rootId);
 	};
@@ -278,7 +310,7 @@ export function buildDashboardState(input = {}) {
 	const byId = new Map(enriched.map((n) => [n.id, n]));
 	for (const n of enriched) n.childIds = (children.get(n.id) ?? []).filter((id) => byId.has(id));
 	const sorted = [...enriched].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-	const rail = buildRail(enriched, children, byId);
+	const rail = buildRail(enriched, taskOwnership(graph), byId);
 	const attention = buildAttention(sorted, journal, input.expansion);
 	const collapse = computeCollapse(enriched, children, byId, journal);
 	return {
@@ -300,21 +332,37 @@ export function buildDashboardState(input = {}) {
 }
 
 /** Group fleet owners (rail): own first, then foreign; each with its TaskNodes. */
-function buildRail(nodes, children, byId) {
+/**
+ * Task ownership per owner session (#136): `owned_by` (task → owner session)
+ * is the AUTHORITY edge — the rail groups a fleet's tasks under the session
+ * that owns them. The old shape read this off spawned_by children (the
+ * conflation #136 removed); ownership is not causal lineage.
+ */
+function taskOwnership(graph) {
+	const owned = new Map();
+	for (const e of graph.edges ?? []) {
+		if (!e || e.kind !== "owned_by" || typeof e.to !== "string") continue;
+		if (!owned.has(e.to)) owned.set(e.to, []);
+		owned.get(e.to).push(e.from);
+	}
+	for (const list of owned.values()) list.sort();
+	return owned;
+}
+
+function buildRail(nodes, ownedTasks, byId) {
 	const owners = new Set();
 	for (const n of nodes) {
 		if (n.kind !== "session") continue;
-		const ownsTask = (children.get(n.id) ?? []).some((id) => byId.get(id)?.kind === "task");
+		const ownsTask = (ownedTasks.get(n.id) ?? []).length > 0;
 		const isRoot = n.parentId === null;
 		if (ownsTask || isRoot) owners.add(n.id);
 	}
 	const groups = [...owners]
 		.map((id) => {
 			const session = byId.get(id);
-			const fleets = (children.get(id) ?? [])
-				.map((childId) => byId.get(childId))
-				.filter((child) => child && child.kind === "task")
-				.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+			const fleets = (ownedTasks.get(id) ?? [])
+				.map((taskId) => byId.get(taskId))
+				.filter((child) => child && child.kind === "task");
 			return { session, fleets, foreign: session.foreign };
 		})
 		.sort((a, b) => {
@@ -324,73 +372,6 @@ function buildRail(nodes, children, byId) {
 	const own = groups.filter((g) => !g.foreign);
 	const foreign = groups.filter((g) => g.foreign);
 	return { groups, own, foreign, taskCount: groups.reduce((n, g) => n + g.fleets.length, 0) };
-}
-
-/** Attention strip + queue: OWN fleets only, one item per worker/node. */
-function buildAttention(nodes, journal, expansion) {
-	const items = [];
-	const seenWorkers = new Set();
-	const degradeItem = (node) => {
-		if (!node.degraded || node.degraded.length === 0) return;
-		items.push({
-			kind: "degraded",
-			nodeId: node.id,
-			worker: node.worker ?? null,
-			severity: worstSeverity(node.degraded.map((d) => d.severity)),
-			label: `degraded: ${node.id}`,
-			detail: node.degraded.map((d) => d.flag).join(", "),
-			focusIds: [node.id, node.parentId].filter(Boolean),
-		});
-	};
-	const workerItem = (kind, workerName, taskId, sessionId, parentId, severity, detail) => {
-		const key = `${taskId}:${workerName}`;
-		if (seenWorkers.has(key)) return;
-		seenWorkers.add(key);
-		items.push({
-			kind,
-			nodeId: sessionId || taskId,
-			worker: workerName,
-			severity,
-			label: `${kind}: ${workerName}`,
-			detail,
-			focusIds: [sessionId, taskId, parentId].filter(Boolean),
-		});
-	};
-	for (const n of nodes) {
-		if (n.foreign) continue;
-		if (n.kind === "session") {
-			if (n.worker) {
-				if (n.ask) workerItem("ask", n.worker, n.task ?? n.id, n.id, n.parentId, "warn", n.ask.question);
-				if (n.status === "dead") workerItem("dead-reboot", n.worker, n.task ?? n.id, n.id, n.parentId, "crit", "worker reaped as dead");
-			}
-			degradeItem(n);
-		} else if (n.kind === "task") {
-			for (const w of n.workers) {
-				if (w.ask) workerItem("ask", w.name, n.id, w.sessionId, n.parentId, "warn", w.ask.question);
-				if (w.status === "dead") workerItem("dead-reboot", w.name, n.id, w.sessionId, n.parentId, "crit", "worker reaped as dead");
-			}
-			degradeItem(n);
-		}
-	}
-	items.sort((a, b) => {
-		if (severityRank(a.severity) !== severityRank(b.severity)) return severityRank(b.severity) - severityRank(a.severity);
-		if (a.label !== b.label) return a.label < b.label ? -1 : 1;
-		return a.nodeId < b.nodeId ? -1 : a.nodeId > b.nodeId ? 1 : 0;
-	});
-	const askCount = items.filter((i) => i.kind === "ask").length;
-	const deadCount = items.filter((i) => i.kind === "dead-reboot").length;
-	const degradedCount = items.filter((i) => i.kind === "degraded").length;
-	const clear = items.length === 0;
-	// #83: a chip exists ONLY when its kind has a non-zero count — the strip is
-	// the "what needs me?" answer and a red `0 dead-reboot` reads as a death.
-	const chips = clear
-		? [{ kind: "clear", label: "all clear", count: 0 }]
-		: [
-				{ kind: "ask", label: `${askCount} ask${askCount === 1 ? "" : "s"} waiting`, count: askCount },
-				{ kind: "dead-reboot", label: `${deadCount} dead-reboot`, count: deadCount },
-				{ kind: "degraded", label: `${degradedCount} degraded`, count: degradedCount },
-			].filter((chip) => chip.count > 0);
-	return { items, chips, clear, askCount, deadCount, degradedCount, expansion: expansion ?? null };
 }
 
 /** The attention queue's spotlight consumer contract (center module input). */

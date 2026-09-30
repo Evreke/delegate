@@ -197,7 +197,8 @@ export function subLineFor(node) {
  * Render the canvas (edges, then nodes) into `root`.
  * <p>
  * FUNCTION_CONTRACT: Input — state, layout (computeLayout), root, doc, opts
- *   ({ dispatch, spotlight }). Output — a node index ({ svg, nodes: Map }).
+ *   ({ dispatch, spotlight, view, viewport, onView, gesture, showCausal }).
+ *   Output — a node index ({ svg, nodes: Map }).
  * Guarantees: byte-identical coordinates for identical topology + expansion;
  *   the marker is the first child of each node group (position LEFT). Never
  *   throws on a well-formed layout.
@@ -234,6 +235,12 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	view.appendChild(nodeLayer);
 	svg.appendChild(view);
 	const toolbar = el(doc, "div", { class: "canvas-toolbar", "data-canvas-toolbar": "1" });
+	// Round-1fix: the causal toggle next to `fit` — off (default) hides the
+	// redundant spawned_by curves (layout.js already filtered them), on
+	// re-shows ALL causal edges. aria-pressed keeps the state honest.
+	const causal = el(doc, "button", { class: "canvas-causal", "data-canvas-causal": "1", type: "button", "aria-pressed": opts.showCausal ? "true" : "false", title: "show all causal spawned_by edges" }, "causal");
+	on(causal, "click", () => opts.dispatch?.({ type: "toggle-causal" }));
+	toolbar.appendChild(causal);
 	const fit = el(doc, "button", { class: "canvas-fit", "data-canvas-fit": "1", type: "button" }, "fit");
 	on(fit, "click", () => opts.onView?.(fitView(layout.bounds, viewportOf(opts, svg, root))));
 	toolbar.appendChild(fit);

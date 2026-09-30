@@ -14,7 +14,10 @@
 
 import { initialView } from "./layout.js";
 
-/** The initial UI state (nothing selected, nothing spotlit, nothing open). */
+/** The initial UI state (nothing selected, nothing spotlit, nothing open).
+ *  Round-1fix: `showCausal` hides redundant causal `spawned_by` edges by
+ *  default (the toggle re-shows all); `fleetView` picks the root view's graph
+ *  scope — the OWN fleet by default, `all` only explicitly. */
 export function createUiState() {
 	return {
 		overlay: null,
@@ -24,6 +27,8 @@ export function createUiState() {
 		expansion: new Set(),
 		view: initialView(),
 		detailTab: "console",
+		showCausal: false,
+		fleetView: "own",
 	};
 }
 
@@ -57,5 +62,9 @@ export function uiReducer(state, action) {
 	}
 	if (type === "view") return { ...cur, view: action.view ?? cur.view };
 	if (type === "detail-tab") return { ...cur, detailTab: action.tab ?? cur.detailTab };
+	// Round-1fix: the canvas-toolbar causal toggle (layout re-folds with all
+	// spawned_by edges drawn) and the root scope view (own fleet | all fleets).
+	if (type === "toggle-causal") return { ...cur, showCausal: !cur.showCausal };
+	if (type === "set-fleet-view") return { ...cur, fleetView: action.view === "all" ? "all" : "own" };
 	return cur;
 }

@@ -417,7 +417,7 @@ async function main(): Promise<void> {
 				{ kind: "session", id: "s1", role: "orchestrator", isWorker: false, ownsChildren: true, tasks: ["t1"], degraded: [] },
 				...(n > 1 ? [{ kind: "task", id: `t${n}`, workers: [], degraded: [] }] : []),
 			],
-			edges: n > 1 ? [{ kind: "spawned_by", from: `t${n}`, to: "s1" }] : [],
+			edges: n > 1 ? [{ kind: "owned_by", from: `t${n}`, to: "s1" }] : [],
 			orphans: [],
 		});
 		const els: Record<string, FakeElement> = {};

@@ -1935,12 +1935,16 @@ check(
 	// sessionStorage is the cursor store (app.js) + the operator token store
 	// (steer.js, #54) ONLY; localStorage is banned everywhere.
 	const app = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "app.js"), "utf8");
+	// T1.22 amendment (r1-canvas, #137 round): the cursor store moved app.js →
+	// cursor.js (Law 5 decomposition) — the KEY now lives there; app.js must
+	// still be the module that wires it. The token spelling stays in steer.js.
+	const cursorStore = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "cursor.js"), "utf8");
 	const steerJs = readFileSync(resolve(ROOT, "src", "swarm-server", "public", "steer.js"), "utf8");
 	const others = ["stream.js", "degrade.js", "console.js"].filter((n) => readFileSync(resolve(ROOT, "src", "swarm-server", "public", n), "utf8").includes("sessionStorage"));
 	const anyLocalStorage = listDashboardAssets(ROOT).some((f) => scanDashboardAsset(readFileSync(f, "utf8")).some((o) => o.rule === "local-storage"));
 	check(
-		"T1.22 sessionStorage is the cursor + operator-token store only (app.js cursor, steer.js token); no localStorage",
-		app.includes("swarm.dashboard.lastSeq") && steerJs.includes("swarm.dashboard.operatorToken") && others.length === 0 && !anyLocalStorage,
+		"T1.22 sessionStorage is the cursor + operator-token store only (cursor.js cursor — extracted from app.js; steer.js token); no localStorage",
+		cursorStore.includes("swarm.dashboard.lastSeq") && app.includes(`from "./cursor.js"`) && steerJs.includes("swarm.dashboard.operatorToken") && others.length === 0 && !anyLocalStorage,
 		others.join(", "),
 	);
 

@@ -148,6 +148,39 @@ async function main(): Promise<void> {
 		);
 		b1?.stop();
 
+		// L2.3 surfaceToken gate: a headless session (surfaceToken:false) must not
+		// spam the terminal with the token/link; the default (and explicit true)
+		// still announces — Law 11's ONLY channel for a human.
+		const gateLines: string[] = [];
+		(process.stderr as unknown as { write: (s: string) => boolean }).write = (s: string) => {
+			gateLines.push(s);
+			return true;
+		};
+		const announced = (ev: string) =>
+			gateLines.some((l) => {
+				try {
+					return (JSON.parse(l) as { event?: string }).event === ev;
+				} catch {
+					return false;
+				}
+			});
+		const quiet = await mountSwarmServer({ sessionFile: "/sessions/lc-quiet.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }), surfaceToken: false });
+		check(
+			"L2.3 surfaceToken:false mounts with NO operator-token/dashboard stderr line (headless silence)",
+			quiet !== null && !announced("operator-token") && !announced("dashboard"),
+			gateLines.join(" | ").slice(0, 200),
+		);
+		gateLines.length = 0;
+		const loud = await mountSwarmServer({ sessionFile: "/sessions/lc-loud.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: "0" }), surfaceToken: true });
+		check(
+			"L2.4 surfaceToken:true still announces operator-token AND dashboard",
+			loud !== null && announced("operator-token") && announced("dashboard"),
+			gateLines.join(" | ").slice(0, 200),
+		);
+		(process.stderr as unknown as { write: (s: string) => boolean }).write = realWrite;
+		quiet?.stop();
+		loud?.stop();
+
 		// L3 + L4 (issue #65 item 3 D1): two parallel sessions on the SAME
 		// configured port → ONE primary (the port holder) + ONE secondary (no
 		// listener; the primary serves its fleets read-only). Stopping the

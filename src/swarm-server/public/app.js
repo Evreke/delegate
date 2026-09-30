@@ -51,8 +51,7 @@ const REGIONS = [["attention", "attention-strip"], ["rail", "rail"], ["canvas", 
  * Output: { start(), close(), get state(), get ui(), get lastSeq(),
  *   sendSteer(), sendAnswer(), get pending(), dispatch() }
  * Guarantees: a fetch/render failure is surfaced in #error and never throws
- *   out of start(); the shell renders one screen with no mode switcher; an
- *   event frame patches the canvas without relayout.
+ *   out of start(); the shell renders one screen with no mode switcher; an event frame patches the canvas without relayout.
  * Raises: never
  */
 export function createFleetApp(env = {}) {
@@ -65,8 +64,7 @@ export function createFleetApp(env = {}) {
 	const streamFactory = env.stream || createSwarmStream;
 	const promptImpl = env.prompt || (typeof window !== "undefined" && typeof window.prompt === "function" ? window.prompt.bind(window) : null);
 	const nowMs = typeof env.nowMs === "function" ? env.nowMs : () => Date.now();
-	// #65 item 2: a `#t=<token>` link fragment bootstraps the operator token
-	// (sessionStorage) and is stripped from the address bar before any request.
+	// #65 item 2: a `#t=<token>` link fragment bootstraps the operator token (sessionStorage) and is stripped from the address bar before any request.
 	bootstrapFragmentToken({ location, history: env.history || (typeof window !== "undefined" ? window.history : null), storage });
 
 	let ui = createUiState();
@@ -110,10 +108,7 @@ export function createFleetApp(env = {}) {
 	const noteFailure = (err) => { readError = err; renderRegionStates(); showError(err); };
 	const noteSuccess = () => { readError = null; if (errorEl) clearErrorBanner(errorEl); };
 	const renderRegionStates = () => { const view = regionStateView(readError); for (const name of ["rail", "canvas", "detail"]) renderRegionState(regions[name], view, doc); };
-	const dispatch = (action) => {
-		ui = uiReducer(ui, action);
-		render();
-	};
+	const dispatch = (action) => { ui = uiReducer(ui, action); render(); };
 
 	// --- panels + mutations ------------------------------------------------
 	let panels = null;
@@ -141,8 +136,7 @@ export function createFleetApp(env = {}) {
 	chrome.setToken(mutations.tokenState);
 
 	// --- model + render ----------------------------------------------------
-	// Round-1fix: scope controller (fleet-scope.js) — URL fleet wins; the root
-	// view defaults to the OWN fleet; `all` is the explicit toggle.
+	// Round-1fix: scope controller (fleet-scope.js) — URL fleet wins; the root view defaults to the OWN fleet; `all` is the explicit toggle.
 	const scope = createScopeController({ chrome, fleetId, ownSessionId, isAll: () => ui.fleetView === "all" });
 	const refreshModel = () => {
 		if (!rawSnapshot) return;
@@ -165,7 +159,6 @@ export function createFleetApp(env = {}) {
 	};
 
 	const updateStatusbar = () => chrome.renderStatus(dash, stateVersion);
-
 	const detailView = () => {
 		const subject = resolveDetailSubject(dash, ui);
 		if (!subject) return null;
@@ -174,6 +167,15 @@ export function createFleetApp(env = {}) {
 		const sessionId = worker ? worker.sessionId : subject.kind === "session" ? subject.id : null;
 		const consoleState = sessionId && panels ? panels.get(sessionId) : null;
 		const ask = (worker && worker.ask) || subject.ask || null;
+		// #139: the meta row — model identity from the picked worker embodiment (a session subject carries its own embodiment's fields), the token
+		// count from the worker's session node (the subject itself when the subject IS that session). Honest nulls when absent.
+		const usage = ((worker && worker.sessionId ? dash.byId.get(worker.sessionId) : null) ?? (subject.kind === "session" ? subject : null))?.usage ?? null;
+		const meta = {
+			model: worker?.model ?? subject.model ?? null,
+			provider: worker?.provider ?? subject.provider ?? null,
+			thinking: worker?.thinking ?? subject.thinking ?? null,
+			outputTokens: usage && typeof usage.outputTokens === "number" ? usage.outputTokens : null,
+		};
 		// #85: a non-worker node keeps a VISIBLE controls box with its disabled reason.
 		const ctl = worker
 			? controlsView({
@@ -187,6 +189,7 @@ export function createFleetApp(env = {}) {
 			subject,
 			worker: workerName,
 			workerSessionId: sessionId,
+			meta,
 			console: consoleState && sessionId ? { ...consoleBanner(consoleState), worker: workerName, nodeId: sessionId } : null,
 			controls: ctl,
 			pending: workerName ? mutations.latestPending(workerName, "steer") : null,
@@ -217,15 +220,11 @@ export function createFleetApp(env = {}) {
 	if (doc && typeof doc.addEventListener === "function") doc.addEventListener("keydown", onKeydown);
 
 	const viewport = () => ({ width: 1200, height: 720 });
-	// #137: the drag gesture is ONE render-persistent record — the pan writes it,
-	// the node clicks read it, and a mid-drag re-render resets neither.
+	// #137: the drag gesture is ONE render-persistent record — the pan writes it, the node clicks read it, and a mid-drag re-render resets neither.
 	const canvasGesture = createDragGesture();
-	// #137: a view change (pan/zoom/fit) PATCHES the live `<g data-view>`
-	// transform IN PLACE — `renderRegions()` here rebuilt the whole canvas (new
-	// SVG + fresh listeners + fresh gesture) on every pan step, which stalled
-	// the drag after the first move and leaked a trailing select. Data changes
-	// still go through render()/renderRegions(), which re-renders with the
-	// panned `ui.view` as the initial transform.
+	// #137: a view change (pan/zoom/fit) PATCHES the live `<g data-view>` transform IN PLACE — `renderRegions()` here rebuilt the whole canvas (new
+	// SVG + fresh listeners + fresh gesture) on every pan step, which stalled the drag after the first move and leaked a trailing select. Data
+	// changes still go through render()/renderRegions(), which re-renders with the panned `ui.view` as the initial transform.
 	const onView = (view) => {
 		ui = uiReducer(ui, { type: "view", view });
 		if (canvasIndex?.view?.setAttribute) canvasIndex.view.setAttribute("transform", viewTransform(view));
@@ -387,8 +386,7 @@ export function createFleetApp(env = {}) {
 	};
 }
 
-// Self-start in a browser (a document exists); the module stays importable
-// headlessly (the check imports createFleetApp without a document).
+// Self-start in a browser (a document exists); the module stays importable headlessly (the check imports createFleetApp without a document).
 if (typeof document !== "undefined" && typeof window !== "undefined") {
 	createFleetApp()
 		.start()

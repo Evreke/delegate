@@ -334,6 +334,28 @@ async function main(): Promise<void> {
 		h.stop();
 	}
 
+	// S3A — #142: the WS tail serves the SAME frame as REST — the chunk is
+	// ANSI-stripped, the offsets stay in RAW transcript space (feed nextOffset
+	// back → exactly the later raw bytes, no dup/loss of display text).
+	{
+		const t = new FakeConsoleTransport();
+		t.add("w1");
+		const payload = "\u001B[32mgreen\u001B[0m tail";
+		t.store.append("w1", "raw", payload);
+		const h = await mount(t);
+		const c = await WsClient.connect(h.port, pathFor(w1Id), "?offset=0");
+		const frames = await c.waitFrames(2);
+		const f = frames.length > 0 ? (JSON.parse(frames[0]!) as Frame) : null;
+		check(
+			"S3A.1 the WS tail frame's chunk is ANSI-stripped",
+			f !== null && f.state === "live" && f.chunk === "green tail" && !f.chunk.includes("\u001B"),
+			frames[0] ?? "no frame",
+		);
+		check("S3A.2 the WS tail frame's offsets stay RAW-space", f !== null && f.nextOffset === payload.length, frames[0] ?? "no frame");
+		c.close();
+		h.stop();
+	}
+
 	// S4 — fail-closed refusal over WS
 	{
 		const t = new FakeConsoleTransport();

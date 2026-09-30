@@ -7,16 +7,18 @@
  * context-usage bar (or an honest `usage-unavailable`), the last progress
  * event, the open-question banner and the optimistic steer/answer controls.
  *
- * Honesty rules: `model` and provider are NOT in the read-model — the panel
- * says so instead of inventing a value; a foreign or terminal worker renders
- * its controls DISABLED WITH THE REASON, never hidden (Law 8).
+ * Honesty rules: `model`/`provider`/`thinking` ride the worker embodiment and
+ * the token count its session node (#139) — real values, an honest `—` when
+ * absent, never an invented one; a foreign or terminal worker renders its
+ * controls DISABLED WITH THE REASON, never hidden (Law 8).
  * #85 adds the panel header (name + id + task), the per-kind pending lines and
  * the no-session console pane; #93 marks a truncated console and makes ask
  * options fill the answer input. #87 turns the brief/report tabs into the real
  * exchange files: when the subject carries a worker id + name + exchange dir
  * the panel fetches `GET /api/workers/:id/brief|report` and renders the text,
  * with an honest absent/refused/error state (the console banner's template);
- * a node with no resolvable worker keeps the unavailable pane.
+ * a node with no resolvable worker keeps the unavailable pane. #134: the
+ * headline names the SUBJECT; the picked worker rides a sub-caption.
  * No framework; a pure view over the model + the #54 console/steer views.
  */
 
@@ -28,17 +30,23 @@ const TABS = ["console", "brief", "report"];
 export const FILE_KINDS = ["brief", "report"];
 
 /**
- * #85a: the panel NAMES its subject — name, id and task. A stable header is
- * what tells the operator whose console this is when 25 workers are on screen;
- * `data-detail-for` alone was never a name and could render `undefined`.
+ * #85a: the panel NAMES its subject — name, id and task (a stable header is
+ * what tells the operator whose console this is when 25 workers are on
+ * screen; `data-detail-for` alone was never a name). #134: the HEADLINE is
+ * the SUBJECT (a task → its task name; a session → its own name — for a
+ * worker session that IS the worker name), never the merely-picked worker;
+ * the picked worker is only the CONTENT source and rides the
+ * `data-detail-worker` sub-caption on a task panel.
  */
 function renderHeader(doc, node, view) {
 	const box = el(doc, "div", { class: "detail-header", "data-detail-header": "1" });
-	const name = view.worker || node.worker || node.name || node.id || "unnamed";
+	const name = node.worker || node.name || node.id || "unnamed";
 	box.appendChild(el(doc, "span", { class: "detail-name", "data-detail-name": "1" }, name));
 	box.appendChild(el(doc, "span", { class: "detail-id", "data-detail-id": "1" }, node.id ?? "unknown"));
 	const task = node.task || view.task || (node.kind === "task" ? node.id : null);
 	if (task) box.appendChild(el(doc, "span", { class: "detail-task", "data-detail-task": "1" }, `task: ${task}`));
+	// #134: on a task panel the picked worker is the content source, never the headline.
+	if (node.kind === "task" && view.worker) box.appendChild(el(doc, "span", { class: "detail-worker", "data-detail-worker": "1" }, `worker: ${view.worker}`));
 	return box;
 }
 
@@ -66,8 +74,14 @@ function renderFields(doc, view) {
 		if (value === null || value === undefined || value === "") continue;
 		box.appendChild(el(doc, "span", { class: "detail-field", "data-field": label }, `${label}: ${value}`));
 	}
-	// The read-model carries no provider/model for a node — say so, never guess.
-	box.appendChild(el(doc, "span", { class: "detail-field detail-field-unavailable", "data-field": "model", "data-field-unavailable": "1" }, "model: not in read-model"));
+	// #139: model identity + token count are real read-model fields now —
+	// render them present, an honest `—` absent (never a guess).
+	const meta = view.meta && typeof view.meta === "object" ? view.meta : {};
+	const hasModel = typeof meta.model === "string" && meta.model.length > 0;
+	const modelText = hasModel ? `model: ${meta.model}${typeof meta.provider === "string" && meta.provider ? ` · ${meta.provider}` : ""}` : "model: \u2014";
+	box.appendChild(el(doc, "span", { class: `detail-field${hasModel ? "" : " detail-field-unavailable"}`, "data-field": "model", "data-field-model": hasModel ? meta.model : "" }, modelText));
+	const hasTokens = typeof meta.outputTokens === "number";
+	box.appendChild(el(doc, "span", { class: `detail-field${hasTokens ? "" : " detail-field-unavailable"}`, "data-field": "output-tokens", "data-field-output-tokens": hasTokens ? String(meta.outputTokens) : "" }, hasTokens ? `out: ${meta.outputTokens} tok` : "out: \u2014"));
 	return box;
 }
 
@@ -100,15 +114,11 @@ function renderProgress(doc, node) {
 function renderConsolePane(doc, view) {
 	const panel = view.console;
 	if (!panel) {
-		// #85 ride-along: a worker with no session id can never open a stream —
-		// an honest terminal pane, never an infinite 'waiting for the first frame'.
+		// #85 ride-along: no session id → an honest terminal pane, never an
+		// infinite 'waiting for the first frame'.
 		const noSession = Boolean(view.worker) && !view.workerSessionId;
-		return el(
-			doc,
-			"div",
-			{ class: "detail-pane", "data-pane": "console", "data-pane-state": noSession ? "no-session" : "loading" },
-			noSession ? "console: this worker has no session id \u2014 there is no stream to read" : "console: waiting for the first frame",
-		);
+		const text = noSession ? "console: this worker has no session id \u2014 there is no stream to read" : "console: waiting for the first frame";
+		return el(doc, "div", { class: "detail-pane", "data-pane": "console", "data-pane-state": noSession ? "no-session" : "loading" }, text);
 	}
 	const node = el(doc, "div", {
 		class: "console",
@@ -202,8 +212,7 @@ function paintFilePane(doc, pane, kind, state) {
 	const s = state && typeof state === "object" ? state : {};
 	const status = typeof s.status === "string" ? s.status : "loading";
 	pane.setAttribute("data-pane-state", status);
-	// `data-pane-unavailable` = "no file content in this pane right now"
-	// (idle/loading/absent/refused/error); `ready` clears it.
+	// `data-pane-unavailable` = "no file content right now"; `ready` clears it.
 	pane.setAttribute("data-pane-unavailable", status === "ready" ? "0" : "1");
 	const banner = (variant, text) => pane.appendChild(el(doc, "div", { class: `file-banner${variant ? ` file-banner-${variant}` : ""}`, "data-file-banner": variant || status }, text));
 	if (status === "ready") {
@@ -248,8 +257,7 @@ function renderAskBanner(doc, view) {
 	if (!ask) return null;
 	const box = el(doc, "div", { class: "ask-banner", "data-ask-banner": view.worker || view.subject.id, "data-ask-seq": ask.seq });
 	box.appendChild(el(doc, "span", { class: "ask-question", "data-ask-question": "1" }, ask.question));
-	// #93: an option is a CLICK affordance that fills the answer input, not an
-	// inert span; the text rides an attribute so the click never parses markup.
+	// #93: an option is a CLICK affordance that fills the answer input, not an inert span (the text rides an attribute so the click never parses markup).
 	for (const option of ask.options || []) box.appendChild(el(doc, "button", { class: "ask-option", "data-ask-option": "1", "data-ask-option-text": option, type: "button" }, option));
 	return box;
 }
@@ -266,12 +274,8 @@ function renderControls(doc, view, ctx) {
 	if (ctl.disabled) box.appendChild(el(doc, "span", { class: "reason", "data-disabled-reason": ctl.reasonCode || "disabled" }, ctl.reason));
 	const input = el(doc, "input", { class: "steer-input", "data-steer-input": "1", type: "text", value: view.draft || "", placeholder: "steer this worker\u2026" });
 	const send = el(doc, "button", { class: "steer-send", "data-steer-send": "1", type: "button" }, "steer");
-	if (ctl.disabled) {
-		input.setAttribute("disabled", "disabled");
-		send.setAttribute("disabled", "disabled");
-	}
-	// #85c/#93: the send outcome is STRUCTURED — the input clears only on a
-	// confirmed send, and a dismissed token prompt keeps its `aborted` marker.
+	if (ctl.disabled) { input.setAttribute("disabled", "disabled"); send.setAttribute("disabled", "disabled"); }
+	// #85c/#93: the send outcome is STRUCTURED — the input clears only on a confirmed send.
 	on(input, "input", () => ctx.onDraft?.(view.worker, input.value));
 	on(send, "click", async () => {
 		const outcome = await ctx.onSend?.("steer", view.worker, input.value);
@@ -287,10 +291,7 @@ function renderControls(doc, view, ctx) {
 		const form = el(doc, "div", { class: "answer", "data-answer-worker": view.worker, "data-answer-seq": String(view.ask.seq) });
 		const aInput = el(doc, "input", { class: "answer-input", "data-answer-input": "1", type: "text", value: view.answerDraft || "", placeholder: "answer\u2026" });
 		const aSend = el(doc, "button", { class: "answer-send", "data-answer-send": "1", type: "button" }, "answer");
-		if (ctl.disabled) {
-			aInput.setAttribute("disabled", "disabled");
-			aSend.setAttribute("disabled", "disabled");
-		}
+		if (ctl.disabled) { aInput.setAttribute("disabled", "disabled"); aSend.setAttribute("disabled", "disabled"); }
 		on(aInput, "input", () => ctx.onDraft?.(`${view.worker}:answer`, aInput.value));
 		on(aSend, "click", async () => {
 			const outcome = await ctx.onSend?.("answer", view.worker, aInput.value);
@@ -308,8 +309,7 @@ function renderControls(doc, view, ctx) {
 	return box;
 }
 
-/** Every descendant carrying `attr` (a tiny querySelector for the headless
- *  seam — the check's fake document implements no querySelector). */
+/** Every descendant carrying `attr` (the headless seam's tiny querySelector — the check's fake document implements none). */
 function findAttr(node, attr, out = []) {
 	for (const child of node.childNodes ?? []) {
 		if (child && child.attributes && child.attributes[attr] !== undefined) out.push(child);
@@ -322,13 +322,14 @@ function findAttr(node, attr, out = []) {
  * Render the detail panel into `root`.
  * <p>
  * FUNCTION_CONTRACT: Input — view ({ subject, worker, workerSessionId,
- *   console, controls, pending, answerPending, ask, tab, draft, answerDraft }),
- *   root, doc, opts ({ dispatch, onSend(kind, worker, text), onDraft(key,
- *   text) }). Output — none (root mutated).
+ *   console, controls, pending, answerPending, ask, tab, draft, answerDraft,
+ *   meta }), root, doc, opts ({ dispatch, onSend(kind, worker, text),
+ *   onDraft(key, text) }). Output — none (root mutated).
  * Guarantees: a degraded/absent usage renders the honest `usage-unavailable`
- *   bar; foreign/terminal controls are disabled WITH their reason; the
- *   brief/report tabs render the real exchange file when the subject carries
- *   a worker id + name + dir, else the honest unavailable pane (#87).
+ *   bar; model/provider/tokens render real values or an honest `—` (#139);
+ *   the headline names the SUBJECT, the picked worker rides the sub-caption
+ *   (#134); foreign/terminal controls are disabled WITH their reason; the
+ *   brief/report tabs render the real exchange file when resolvable (#87).
  *   Raises: never on a well-formed view.
  */
 export function renderDetail(view, root, doc, opts = {}) {

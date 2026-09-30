@@ -38,6 +38,16 @@
  * fell below it. Feeding `nextOffset` back yields exactly the later bytes —
  * no duplication, no loss, inside the retained window.
  *
+ * ANSI (#142): the raw transcript may carry terminal escape sequences
+ * (`\x1b[...m` and friends); the DETAIL console tab renders them as garbage.
+ * `stripAnsi` removes them at SERVE time only — inside `consoleFrame`, the one
+ * frame builder both the REST route and the WS hub share. The stored buffer
+ * and its offsets stay RAW: `nextOffset`/`oldestOffset` remain positions in
+ * the unstripped transcript, while `chunk` is the stripped DISPLAY view.
+ * The strip is deterministic over the same underlying text, so a client that
+ * feeds `nextOffset` back still replays exactly the later display text — no
+ * duplication, no loss of visible characters, inside the retained window.
+ *
  * ADVISORY BY CONTRACT (Law 8): every failure here is a frame or a refusal —
  * never a throw into the HTTP core, never a server crash, never a pipeline
  * dependency. Console text is EPHEMERAL display data: it is never written to
@@ -262,6 +272,30 @@ async function probeRetained(transport: ConsoleTransport, name: string): Promise
 	return false;
 }
 
+/**
+ * Remove ANSI escape sequences (SGR colors, cursor moves, OSC strings) from
+ * one text chunk (#142) — the console surface is an HTML `<pre>`, where the
+ * raw bytes render as garbage. Pure, dependency-free: the classic C1/CSI/OSC
+ * pattern (C1 `\u009B` included), extended so OSC strings may terminate with
+ * BEL, ST (`\u001B\\`) or C1-ST (`\u009C`) — hyperlink/title payloads use
+ * all three. No external package.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: text — any string (may be empty, may carry no escapes)
+ * Output: the text with every ANSI escape sequence removed
+ * Guarantees:
+ *   - pure: identical input → identical output, no side effects;
+ *   - deterministic over the same underlying text (the serve-time strip
+ *     therefore never breaks the nextOffset replay contract);
+ *   - text with no escapes round-trips byte-exact
+ * Raises: never
+ */
+export function stripAnsi(text: string): string {
+	// eslint-disable-next-line no-control-regex — the control range IS the subject
+	const ANSI_RE = /[\u001B\u009B][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?(?:\u0007|\u001B\\|\u009C))|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+	return text.replace(ANSI_RE, "");
+}
+
 /** One serialized console frame (fixed key order — golden-pinned). */
 export function consoleFrame(
 	target: ConsoleTarget,
@@ -277,7 +311,9 @@ export function consoleFrame(
 	};
 	if (target.task !== undefined) body.task = target.task;
 	body.state = state;
-	body.chunk = read.chunk;
+	// #142: the chunk is the DISPLAY view (ANSI-stripped); the offsets stay in
+	// the RAW transcript's character space (see the module contract above).
+	body.chunk = stripAnsi(read.chunk);
 	body.nextOffset = read.nextOffset;
 	body.oldestOffset = read.oldestOffset;
 	body.dropped = read.dropped;

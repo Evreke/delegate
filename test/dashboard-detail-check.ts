@@ -19,6 +19,11 @@
  *   D7 #93  — a truncated console tail is marked; a refusal is labelled
  *      `refused — foreign`; a dismissed token prompt emits `no token — nothing
  *      sent`; an ask option fills the answer input.
+ *   D8 — app wiring: non-worker controls, focus, Escape, send seams.
+ *   D9 — #134/#139: the headline names the SUBJECT (task → task name,
+ *      session → its own worker name; the picked worker rides the
+ *      sub-caption); model/provider + outputTokens surface in the meta row
+ *      with an honest `—` when absent.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -202,7 +207,7 @@ function fixture() {
 		sources: { journal: true, manifests: true, liveStatus: true, usage: true },
 		nodes: [
 			{ kind: "session", id: "orch", sessionPath: SELF, role: "orchestrator", isWorker: false, ownsChildren: true, tasks: ["t1"], degraded: [] },
-			{ kind: "session", id: "w1-node", sessionPath: WORKERPATH, role: "worker", isWorker: true, ownsChildren: false, tasks: ["t1"], liveStatus: "working", degraded: [] },
+			{ kind: "session", id: "w1-node", sessionPath: WORKERPATH, role: "worker", isWorker: true, ownsChildren: false, tasks: ["t1"], liveStatus: "working", degraded: [], usage: { outputTokens: 4242, contextPct: 31 } },
 			{ kind: "session", id: "w2-node", sessionPath: "/sessions/w2.jsonl", role: "worker", isWorker: true, ownsChildren: false, tasks: ["t1"], liveStatus: "working", degraded: [{ flag: "no-session-path" }] },
 			{
 				kind: "task",
@@ -210,7 +215,8 @@ function fixture() {
 				dir: "/exchange/t1",
 				depth: 0,
 				workers: [
-					{ name: "w1", run: 1, sessionId: "w1-node", sessionPath: WORKERPATH, liveStatus: "working", degraded: [] },
+					// #139: the embodiment carries the spawn's resolved model identity.
+					{ name: "w1", run: 1, sessionId: "w1-node", sessionPath: WORKERPATH, liveStatus: "working", degraded: [], model: "glm-4.6", provider: "zhipu", thinking: "low" },
 					{ name: "w2", run: 1, sessionId: "w2-node", sessionPath: "/sessions/w2.jsonl", liveStatus: "working", degraded: [] },
 				],
 				degraded: [{ flag: "no-live-status" }],
@@ -264,9 +270,9 @@ async function main(): Promise<void> {
 			{},
 		);
 		check(
-			"D1.2 the panel renders a header with name + id + task",
-			byAttr(root, "data-detail-header").length === 1 && byAttr(root, "data-detail-name")[0].textContent === "w1" && byAttr(root, "data-detail-id")[0].textContent === "t1" && byAttr(root, "data-detail-task")[0].textContent.includes("t1"),
-			JSON.stringify(byAttr(root, "data-detail-name").map((e: any) => e.textContent)),
+			"D1.2 the header names the SUBJECT — a task panel is titled by the TASK name, the picked worker rides the sub-caption (#134)",
+			byAttr(root, "data-detail-header").length === 1 && byAttr(root, "data-detail-name")[0].textContent === "t1" && byAttr(root, "data-detail-worker")[0].textContent === "worker: w1" && byAttr(root, "data-detail-id")[0].textContent === "t1" && byAttr(root, "data-detail-task")[0].textContent.includes("t1"),
+			JSON.stringify({ name: byAttr(root, "data-detail-name").map((e: any) => e.textContent), worker: byAttr(root, "data-detail-worker").map((e: any) => e.textContent) }),
 		);
 		check("D1.3 data-detail-for is the node id, never 'undefined'", byAttr(root, "data-detail-for")[0].attributes["data-detail-for"] === "t1");
 
@@ -517,6 +523,86 @@ async function main(): Promise<void> {
 		check("D8.5 app.sendSteer returns the structured outcome (no token → not sent)", sendResult.sent === false && sendResult.reason === "no-token");
 		check("D8.6 app.pending exposes the aborted marker for the panel", app.pending.length === 1 && app.pending[0].status === "aborted");
 		void keydowns;
+		app.close();
+	}
+
+	// -- D9 — #134/#139: subject-naming headline + model/tokens meta row ------
+	{
+		// View-level: a worker SESSION subject's headline is its OWN name (the
+		// worker name) with NO worker sub-caption (it IS the worker).
+		const doc0 = fakeDoc();
+		const root0 = doc0.createElement("div");
+		detailMod.renderDetail({ subject: model.byId.get("w1-node"), worker: "w1", workerSessionId: "w1-node", console: null, controls: { disabled: false, reasonCode: null, reason: "" }, pending: null, ask: null, draft: "", tab: "console", meta: { model: "glm-4.6", provider: "zhipu", thinking: "low", outputTokens: 4242, contextPct: 31 } }, root0, doc0, {});
+		check(
+			"D9.1 a session subject's headline is its own worker name, no sub-caption",
+			byAttr(root0, "data-detail-name")[0].textContent === "w1" && byAttr(root0, "data-detail-worker").length === 0,
+			JSON.stringify({ name: byAttr(root0, "data-detail-name").map((e: any) => e.textContent) }),
+		);
+		const modelField0 = byAttr(root0, "data-field").find((f: any) => f.attributes["data-field"] === "model");
+		const tokensField0 = byAttr(root0, "data-field").find((f: any) => f.attributes["data-field"] === "output-tokens");
+		check(
+			"D9.2 #139 present values render (model · provider, the token count)",
+			modelField0 !== undefined && modelField0.textContent === "model: glm-4.6 \u00b7 zhipu" && tokensField0 !== undefined && tokensField0.textContent === "out: 4242 tok" && !String(modelField0.attributes.class).includes("detail-field-unavailable"),
+			JSON.stringify({ model: modelField0?.textContent, tokens: tokensField0?.textContent }),
+		);
+
+		// View-level honest absence: no meta → `—`, never a guess.
+		const doc1 = fakeDoc();
+		const root1 = doc1.createElement("div");
+		detailMod.renderDetail({ subject: task, worker: null, workerSessionId: null, console: null, controls: { disabled: true, reasonCode: "not-a-worker", reason: "x" }, pending: null, ask: null, draft: "", tab: "console" }, root1, doc1, {});
+		const modelField1 = byAttr(root1, "data-field").find((f: any) => f.attributes["data-field"] === "model");
+		const tokensField1 = byAttr(root1, "data-field").find((f: any) => f.attributes["data-field"] === "output-tokens");
+		check(
+			"D9.3 #139 absent values render the honest — (unavailable styling)",
+			modelField1 !== undefined && modelField1.textContent === "model: \u2014" && tokensField1 !== undefined && tokensField1.textContent === "out: \u2014" && String(modelField1.attributes.class).includes("detail-field-unavailable"),
+			JSON.stringify({ model: modelField1?.textContent, tokens: tokensField1?.textContent }),
+		);
+
+		// App-driven: the default subject is the task — the header names the
+		// TASK, the picked worker rides the sub-caption, and the meta row is
+		// wired from the embodiment + the worker's session usage.
+		const doc = fakeDoc();
+		const shell = doc.getElementById("fleet-tree");
+		const app = appMod.createFleetApp({
+			doc,
+			fetch: async (url: string) => {
+				if (url.includes("/api/swarm/fleets")) return { json: async () => ({ ok: true, fleets: [] }) };
+				if (url.startsWith("/api/swarm/snapshot")) return { json: async () => ({ ok: true, snapshot: graph }) };
+				if (url.startsWith("/api/swarm/events")) return { json: async () => ({ ok: true, events, journal: { count: 1, dbSizeBytes: 2 } }) };
+				if (url.includes("/console")) return { json: async () => ({ ok: true, worker: "w1", nodeId: "w1-node", state: "live", chunk: "hi", nextOffset: 2, oldestOffset: 0, dropped: false }) };
+				throw new Error(`unexpected fetch ${url}`);
+			},
+			storage: null,
+			location: { protocol: "http:", host: "h", pathname: "/", search: "", hash: "" },
+			stream: () => ({ state: { lastSeq: 0 }, close() {} }),
+			consoleTail: () => ({ close() {} }),
+			ownSessionPath: SELF,
+			prompt: () => null,
+		});
+		await app.start();
+		const nameEl = byAttr(shell, "data-detail-name")[0];
+		check(
+			"D9.4 a started app titles the task panel by the TASK name + worker sub-caption, kind-consistent (#134)",
+			nameEl !== undefined && nameEl.textContent === "t1" && byAttr(shell, "data-detail-worker")[0].textContent === "worker: w1" && byAttr(shell, "data-detail-for")[0].attributes["data-detail-for"] === "t1" && byAttr(shell, "data-detail-kind")[0].attributes["data-detail-kind"] === "task",
+			JSON.stringify({ name: nameEl?.textContent, worker: byAttr(shell, "data-detail-worker").map((e: any) => e.textContent) }),
+		);
+		const appModel = byAttr(shell, "data-field").find((f: any) => f.attributes["data-field"] === "model");
+		const appTokens = byAttr(shell, "data-field").find((f: any) => f.attributes["data-field"] === "output-tokens");
+		check(
+			"D9.5 #139 the app wires meta from the embodiment + session usage (model · provider, token count)",
+			appModel !== undefined && appModel.textContent === "model: glm-4.6 \u00b7 zhipu" && appTokens !== undefined && appTokens.textContent === "out: 4242 tok",
+			JSON.stringify({ model: appModel?.textContent, tokens: appTokens?.textContent }),
+		);
+
+		// A worker SESSION subject via the app: headline = the worker's own
+		// name; meta flows from the session's own embodiment.
+		app.dispatch({ type: "select-node", id: "w1-node" });
+		const sessName = byAttr(shell, "data-detail-name")[0];
+		check(
+			"D9.6 selecting the worker session titles the panel by the WORKER name (session kind, no sub-caption)",
+			sessName !== undefined && sessName.textContent === "w1" && byAttr(shell, "data-detail-kind")[0].attributes["data-detail-kind"] === "session" && byAttr(shell, "data-detail-worker").length === 0,
+			JSON.stringify({ name: sessName?.textContent }),
+		);
 		app.close();
 	}
 }

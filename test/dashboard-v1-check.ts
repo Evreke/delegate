@@ -373,6 +373,28 @@ async function main(): Promise<void> {
 			return row && row.childNodes[0] && row.childNodes[0].attributes["data-status-marker"] !== undefined;
 		})());
 		check("A2.6 unknown is a real, honest state (label 'no live status'), never a faked healthy one", statusMod.statusView("unknown").label === "no live status" && statusMod.statusView("made-up") === statusMod.statusView("unknown"));
+		// #133 (role-aware status): a NON-WORKER root session with no live-status
+		// source is BENIGN — `idle`/info, never the fabricated `unknown`/warn the
+		// old fallthrough produced; a WORKER with `no-live-status` stays honest.
+		const orchNode = model.nodes.find((n: any) => n.kind === "session" && n.sessionPath === SELF);
+		const foreignOrchNode = model.nodes.find((n: any) => n.kind === "session" && n.sessionPath === FOREIGN);
+		const noLiveWorker = model.nodes.find((n: any) => n.kind === "session" && (n.degraded ?? []).some((d: any) => d.flag === "no-live-status"));
+		check(
+			"A2.6b a non-worker root session resolves BENIGN (idle/info), not unknown/warn (#133)",
+			orchNode?.status === "idle" && orchNode?.severity === "info" && orchNode?.isWorker === false &&
+				foreignOrchNode?.status === "idle" && foreignOrchNode?.severity === "info",
+			JSON.stringify([orchNode, foreignOrchNode].map((n: any) => [n?.sessionPath, n?.status, n?.severity, n?.degraded])),
+		);
+		check(
+			"A2.6c a worker flagged no-live-status still resolves honest unknown/warn (#133)",
+			noLiveWorker?.isWorker === true && noLiveWorker?.status === "unknown" && noLiveWorker?.severity === "warn",
+			JSON.stringify([noLiveWorker?.sessionPath, noLiveWorker?.status, noLiveWorker?.severity]),
+		);
+		check(
+			"A2.6d a worker EMBODIMENT is only ever `idle` from a live reading, never from the #133 fallthrough",
+			model.nodes.filter((n: any) => n.kind === "worker").every((n: any) => n.status !== "idle" || n.liveStatus !== null),
+			JSON.stringify(model.nodes.filter((n: any) => n.kind === "worker").map((n: any) => [n.name, n.status, n.liveStatus])),
+		);
 		check("A2.7 all four degradation flags render as distinct honest chips across the fixture", (() => {
 			const flags = new Set();
 			for (const n of model.nodes) for (const d of n.degraded) flags.add(d.flag);

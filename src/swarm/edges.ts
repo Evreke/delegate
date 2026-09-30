@@ -8,9 +8,17 @@
  * Edge direction convention (binding for every producer, so two producers
  * cannot disagree): an edge points FROM the derived/subject entity TO its
  * owner or container.
- *   - `spawned_by`: from = the spawned entity (a worker SESSION whose own
- *     sessionPath is known, or the TASK whose fleet was spawned) → to = the
- *     spawning orchestrator SESSION.
+ *   - `spawned_by`: CAUSAL lineage ONLY — from = the worker SESSION whose
+ *     own sessionPath is known → to = the spawning orchestrator SESSION.
+ *     The task→owner relation is NOT spelled `spawned_by` (that conflation
+ *     is issue #136); it is `owned_by`.
+ *   - `owned_by` (#136): authority — from = the TASK → to = the owner
+ *     session (the master/owner SESSION that spawned and answers for the
+ *     fleet). Same from/to ids the old task-level `spawned_by` carried;
+ *     only the kind differs.
+ *   - `contains` (#136): structure — from = the TASK → to = a WORKER
+ *     SESSION embodied in the task (a worker with no session id has no
+ *     node to point at and is skipped — it already lands in `orphans`).
  *   - `collected`: from = the worker SESSION → to = the owning TASK (the
  *     `collectedAt` stamp source).
  *   - `retired`: from = the worker SESSION → to = the owning TASK (the
@@ -25,10 +33,11 @@
 
 import type { SwarmDegradedFlag } from "./nodes.ts";
 
-export type SwarmEdgeKind = "spawned_by" | "collected" | "retired";
+export type SwarmEdgeKind = "spawned_by" | "collected" | "retired" | "contains" | "owned_by";
 
-/** The closed v1 edge set (additive-only; mailbox edges are v2). */
-export const SWARM_EDGE_KINDS = ["spawned_by", "collected", "retired"] as const;
+/** The closed edge set (additive-only; mailbox edges are v2). #136 added
+ *  `contains`/`owned_by`; the existing kinds are frozen — never renamed. */
+export const SWARM_EDGE_KINDS = ["spawned_by", "collected", "retired", "contains", "owned_by"] as const;
 
 export interface SwarmEdge {
 	kind: SwarmEdgeKind;
@@ -37,7 +46,8 @@ export interface SwarmEdge {
 	/** Target node id (SessionId or task id). */
 	to: string;
 	/** ISO 8601 event time when the edge's fact carries one (collect/retire
-	 *  stamps; journal event ts). Absent for structural `spawned_by` edges. */
+	 *  stamps; journal event ts). Absent for the structural edges (`spawned_by`,
+	 *  `contains`, `owned_by`). */
 	at?: string;
 }
 

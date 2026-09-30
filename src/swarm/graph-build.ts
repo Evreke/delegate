@@ -253,6 +253,13 @@ export async function projectSwarmGraph(
 				...(typeof w.depth === "number" ? { depth: w.depth } : {}),
 				...(nonEmpty(w.placement?.backend) === undefined ? {} : { backend: nonEmpty(w.placement?.backend) }),
 				...(nonEmpty(w.startedAt) === undefined ? {} : { startedAt: nonEmpty(w.startedAt) }),
+				// #139/#141: the manifest carries the spawn's model identity and the
+				// brief location — project them so the UI can render/fetch without
+				// re-reading the manifest (mirror the backend/startedAt spreads).
+				...(nonEmpty(w.model) === undefined ? {} : { model: nonEmpty(w.model) }),
+				...(nonEmpty(w.provider) === undefined ? {} : { provider: nonEmpty(w.provider) }),
+				...(nonEmpty(w.thinking) === undefined ? {} : { thinking: nonEmpty(w.thinking) }),
+				...(nonEmpty(w.briefPath) === undefined ? {} : { briefPath: nonEmpty(w.briefPath) }),
 				...(nonEmpty(w.collectedAt) === undefined ? {} : { collectedAt: nonEmpty(w.collectedAt) }),
 				...(nonEmpty(w.retiredAt) === undefined ? {} : { retiredAt: nonEmpty(w.retiredAt) }),
 				manifestRef: manifestRefFor(task, w),
@@ -270,6 +277,10 @@ export async function projectSwarmGraph(
 				edges.push({ kind: "retired", from: childId, to: task, at: nonEmpty(w.retiredAt)! });
 			}
 			if (childId !== undefined) {
+				// #136: the structural edge — the task CONTAINS this worker session.
+				// Emitted under the same guard as collected/retired: a worker with no
+				// session id has no node to point at (it is already an orphan).
+				edges.push({ kind: "contains", from: task, to: childId });
 				const childAcc = ensureSession(childId, childPath);
 				if (typeof w.depth === "number") childAcc.depths.push(w.depth);
 				childAcc.workerMeta =
@@ -281,7 +292,9 @@ export async function projectSwarmGraph(
 
 		const fleetOwner = masterPath ?? m.workers.map((w) => parentSessionPath(m, w)).find((p) => p !== undefined);
 		if (fleetOwner !== undefined) {
-			edges.push({ kind: "spawned_by", from: task, to: sessionIdFor(fleetOwner) });
+			// #136: the task→owner relation is `owned_by` (authority), never
+			// `spawned_by` — that kind is causal worker→orchestrator lineage only.
+			edges.push({ kind: "owned_by", from: task, to: sessionIdFor(fleetOwner) });
 		}
 	}
 

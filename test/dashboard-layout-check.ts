@@ -18,7 +18,10 @@
  * #84 adds the canvas degradation vocabulary (one badge per flag + tooltip)
  * and the status-marker stroke contract (unknown dashed vs idle solid, done
  * 2px vs collected 1.5px). #92 adds cursor-in-user-units wheel zoom and the
- * removal of the dead `ui.toggled` field.
+ * removal of the dead `ui.toggled` field. #137/AC8 adds the drag regression
+ * the #128 review found missing: a RE-RENDERING onView (the real app loop)
+ * must still accumulate the pan across moves, and a drag's trailing click
+ * must never dispatch select-node.
  *
  * Fail-fast (AGENTS.md command discipline): top-level watchdog; no unbounded
  * waits. Exit 0 only if all checks pass.
@@ -139,8 +142,13 @@ function transformedBounds(bounds: any, view: { zoom: number; panX: number; panY
 }
 
 /**
- * The #80 production shape: a root orchestrator, two sub-orchestrators, their
- * workers and two task nodes — every node `depth: 0`, hierarchy only as edges.
+ * The #136 production shape: a root orchestrator, two sub-orchestrators, their
+ * workers and three task nodes — every node `depth: 0`; the hierarchy is
+ * carried by the STRUCTURAL edges (`owned_by`: task→owner, `contains`:
+ * task→worker session) plus the CAUSAL `spawned_by` edges (worker session →
+ * orchestrator session, which skip the task column). The layout must derive
+ * its columns from BFS over the structural edges only — never from
+ * `node.depth`, never from `spawned_by`.
  */
 function productionShapedState() {
 	const node = (kind: string, id: string, name: string) => ({
@@ -166,12 +174,22 @@ function productionShapedState() {
 		node("session", "s:b1", "b1"),
 		node("task", "t:root", "root-task"),
 		node("task", "t:lead-a", "lead-a-task"),
+		node("task", "t:lead-b", "lead-b-task"),
 	];
 	const edges = [
-		{ kind: "spawned_by", from: "t:root", to: "s:root" },
+		// #136 structural: owned_by hangs the task under its owner session,
+		// contains hangs the worker session under its task.
+		{ kind: "owned_by", from: "t:root", to: "s:root" },
+		{ kind: "contains", from: "t:root", to: "s:lead-a" },
+		{ kind: "contains", from: "t:root", to: "s:lead-b" },
+		{ kind: "owned_by", from: "t:lead-a", to: "s:lead-a" },
+		{ kind: "contains", from: "t:lead-a", to: "s:a1" },
+		{ kind: "contains", from: "t:lead-a", to: "s:a2" },
+		{ kind: "owned_by", from: "t:lead-b", to: "s:lead-b" },
+		{ kind: "contains", from: "t:lead-b", to: "s:b1" },
+		// #136 causal lineage — still carried, still drawn, never a column.
 		{ kind: "spawned_by", from: "s:lead-a", to: "s:root" },
 		{ kind: "spawned_by", from: "s:lead-b", to: "s:root" },
-		{ kind: "spawned_by", from: "t:lead-a", to: "s:lead-a" },
 		{ kind: "spawned_by", from: "s:a1", to: "s:lead-a" },
 		{ kind: "spawned_by", from: "s:a2", to: "s:lead-a" },
 		{ kind: "spawned_by", from: "s:b1", to: "s:lead-b" },
@@ -191,14 +209,14 @@ async function main(): Promise<void> {
 	const degradeMod = (await import(publicUrl("degrade.js"))) as any;
 	const uiMod = (await import(publicUrl("ui.js"))) as any;
 
-	// -- B1 — #80: columns come from BFS over spawned_by, never node.depth ---
+	// -- B1 — #136: columns come from BFS over the structural edges ----------
 	{
 		const state = productionShapedState();
 		const layout = layoutMod.computeLayout(state, { expansion: [] });
 		const col = (id: string): number | undefined => layout.positions[id]?.col;
 		check(
-			"B1.1 a production-shaped fixture (every node depth 0) still forms depth columns from spawned_by edges",
-			col("s:root") === 0 && col("s:lead-a") === 1 && col("s:lead-b") === 1 && col("t:root") === 1 && col("s:a1") === 2 && col("s:a2") === 2 && col("s:b1") === 2 && col("t:lead-a") === 2,
+			"B1.1 a production-shaped fixture (every node depth 0) forms columns from the structural edges: orchestrator 0 → task 1 → lead 2 → lead-task 3 → worker 4",
+			col("s:root") === 0 && col("t:root") === 1 && col("s:lead-a") === 2 && col("s:lead-b") === 2 && col("t:lead-a") === 3 && col("t:lead-b") === 3 && col("s:a1") === 4 && col("s:a2") === 4 && col("s:b1") === 4,
 			JSON.stringify(layout.positions),
 		);
 		check(
@@ -207,9 +225,14 @@ async function main(): Promise<void> {
 			JSON.stringify([...new Set(Object.values(layout.positions).map((p: any) => p.col))]),
 		);
 		check(
-			"B1.3 every spawned_by edge steps exactly one column (child = parent + 1)",
-			state.edges.every((e) => layout.positions[e.from].col === layout.positions[e.to].col + 1),
-			JSON.stringify(state.edges.map((e) => `${e.from}:${layout.positions[e.from].col}->${e.to}:${layout.positions[e.to].col}`)),
+			"B1.3 every STRUCTURAL edge steps exactly one column (owned_by: task = owner+1; contains: worker = task+1)",
+			state.edges.filter((e) => e.kind === "owned_by" || e.kind === "contains").every((e) => (e.kind === "owned_by" ? layout.positions[e.from].col === layout.positions[e.to].col + 1 : layout.positions[e.to].col === layout.positions[e.from].col + 1)),
+			JSON.stringify(state.edges.filter((e) => e.kind !== "spawned_by").map((e) => `${e.from}:${layout.positions[e.from].col}->${e.to}:${layout.positions[e.to].col}`)),
+		);
+		check(
+			"B1.3b spawned_by does NOT set a column: the lead hangs at 2 by contains, not at 1 by its causal spawned_by — and the causal edges survive into the layout to draw",
+			col("s:lead-a") === col("t:root")! + 1 && col("s:lead-a") !== col("s:root")! + 1 && layout.edges.some((e: any) => e.kind === "spawned_by" && e.from === "s:a1" && e.to === "s:lead-a"),
+			JSON.stringify({ leadA: col("s:lead-a"), drawn: layout.edges.filter((e: any) => e.kind === "spawned_by").map((e: any) => `${e.from}->${e.to}`) }),
 		);
 		check(
 			"B1.4 node.depth stays a decorative attribute (the fixture nodes still carry depth 0)",
@@ -218,15 +241,30 @@ async function main(): Promise<void> {
 		const again = layoutMod.computeLayout(state, { expansion: [] });
 		check("B1.5 the BFS layout is deterministic (byte-identical golden on two calls)", layoutMod.coordinateGolden(layout) === layoutMod.coordinateGolden(again));
 
-		// A cycle is not a root: it must not loop forever and stays deterministic.
+		// A cycle in the STRUCTURAL parent space is not a root: it must not loop
+		// forever and stays deterministic.
 		const cyclic = productionShapedState();
-		cyclic.edges.push({ kind: "spawned_by", from: "s:root", to: "s:b1" });
+		cyclic.nodes.push({ kind: "session", id: "s:c1", name: "c1", depth: 0 } as any, { kind: "task", id: "t:c1", name: "c1-task", depth: 0 } as any);
+		cyclic.edges.push({ kind: "contains", from: "t:c1", to: "s:c1" }, { kind: "owned_by", from: "t:c1", to: "s:c1" });
 		const cyc = layoutMod.computeLayout(cyclic, { expansion: [] });
-		check("B1.6 a pure cycle terminates and stays deterministic", layoutMod.coordinateGolden(cyc) === layoutMod.coordinateGolden(layoutMod.computeLayout(cyclic, { expansion: [] })));
+		check("B1.6 a pure structural cycle terminates and stays deterministic", layoutMod.coordinateGolden(cyc) === layoutMod.coordinateGolden(layoutMod.computeLayout(cyclic, { expansion: [] })));
 
-		// The same heuristic on the REAL graph shape: all depth 0, edges only.
+		// The same heuristic on the REAL graph shape: all depth 0, structural
+		// + causal edges.
 		const depths = layoutMod.resolveDepths(state);
-		check("B1.7 resolveDepths is exported, pure and edge-derived", depths.get("s:root") === 0 && depths.get("s:lead-a") === 1 && depths.get("s:a1") === 2);
+		check("B1.7 resolveDepths is exported, pure and structural-edge-derived", depths.get("s:root") === 0 && depths.get("t:root") === 1 && depths.get("s:lead-a") === 2 && depths.get("s:a1") === 4);
+
+		// The causal edges are still DRAWN: every layout edge renders a path
+		// carrying its own data-edge-kind.
+		const doc = fakeDoc();
+		const root = doc.createElement("div");
+		canvasMod.renderCanvas(state, layout, root, doc, { view: { zoom: 1, panX: 0, panY: 0 }, viewport: () => ({ width: 900, height: 600 }), onView: () => {} });
+		const kinds = byAttr(root, "data-edge").map((p) => p.attributes["data-edge-kind"]).sort().join(",");
+		check(
+			"B1.8 the canvas still draws every edge kind: contains, owned_by AND the causal spawned_by paths",
+			kinds === "contains,contains,contains,contains,contains,owned_by,owned_by,owned_by,spawned_by,spawned_by,spawned_by,spawned_by,spawned_by",
+			kinds,
+		);
 	}
 
 	// -- B2 — #78: fit and the authoritative viewBox intersect ---------------
@@ -436,6 +474,121 @@ async function main(): Promise<void> {
 		const ui1 = uiMod.uiReducer(ui0, { type: "toggle-collapse", leadId: "L1" });
 		check("B7.1 createUiState carries no dead `toggled` field and the toggle still expands", !("toggled" in ui0) && ui1.toggled === undefined && ui1.expansion.has("L1"), JSON.stringify(Object.keys(ui0)));
 		check("B7.2 ui.js source has no `toggled` writer or reader left", !/\btoggled\b/.test(readAsset("ui.js")));
+	}
+
+	// -- B8 — #137/AC8: the pan accumulates and a drag never selects --------
+	{
+		const state = productionShapedState();
+		const layout = layoutMod.computeLayout(state, { expansion: [] });
+		const dispatchs: any[] = [];
+		const dispatch = (a: any) => dispatchs.push(a);
+		const viewport = () => ({ width: 900, height: 600 });
+
+		// The app loop the #128 review said the old I8 pin never exercised: onView
+		// updates the view state AND re-renders the canvas (renderRegions's data
+		// path). A real browser re-dispatches the pointer to the CURRENT svg under
+		// the cursor, so every move below is fired on the LIVE render's svg.
+		{
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			root.rect = { width: 900, height: 600 };
+			let view = { zoom: 1, panX: 0, panY: 0 };
+			const gesture = canvasMod.createDragGesture();
+			let live: any = null;
+			let renders = 0;
+			const onView = (v: any) => {
+				view = v;
+				renders++;
+				live = canvasMod.renderCanvas(state, layout, root, doc, { dispatch, view, viewport, onView, gesture });
+				canvasMod.attachCanvasControls(live, doc, { getView: () => view, onView, viewport, gesture });
+			};
+			live = canvasMod.renderCanvas(state, layout, root, doc, { dispatch, view, viewport, onView, gesture });
+			canvasMod.attachCanvasControls(live, doc, { getView: () => view, onView, viewport, gesture });
+			const firstSvg = live.svg;
+
+			let x = 100;
+			const y = 100;
+			live.svg.dispatch("pointerdown", { clientX: x, clientY: y });
+			for (let i = 0; i < 3; i++) {
+				x += 10;
+				live.svg.dispatch("pointermove", { clientX: x, clientY: y });
+			}
+			check(
+				"B8.1 the pan ACCUMULATES across three 10px moves under a re-rendering onView (3×10 → 30, not stalled at 10)",
+				Math.abs(view.panX - 30) < 1e-9 && Math.abs(view.panY) < 1e-9,
+				JSON.stringify({ view, renders }),
+			);
+			check(
+				"B8.2 the drag really survived mid-drag re-renders (every move re-rendered; the events landed on fresh SVGs)",
+				renders === 3 && live.svg !== firstSvg,
+				JSON.stringify({ renders, sameSvg: live.svg === firstSvg }),
+			);
+
+			// The trailing click of the drag: pointerup, then the click the browser
+			// fires on the node under the release point. It must NOT select.
+			live.svg.dispatch("pointerup", { clientX: x, clientY: y });
+			live.nodes.get("s:a1").dispatch("click");
+			check(
+				"B8.3 a drag's trailing click dispatches NOTHING (no select-node, no toggle-collapse)",
+				dispatchs.length === 0,
+				JSON.stringify(dispatchs),
+			);
+
+			// A genuine click (pointerdown+up, travel under the threshold) still selects.
+			live.svg.dispatch("pointerdown", { clientX: x, clientY: y });
+			live.svg.dispatch("pointerup", { clientX: x, clientY: y });
+			live.nodes.get("s:a1").dispatch("click");
+			check(
+				"B8.4 a genuine click still selects (the threshold is a drag verdict, not a click ban)",
+				dispatchs.length === 1 && dispatchs[0].type === "select-node" && dispatchs[0].id === "s:a1",
+				JSON.stringify(dispatchs),
+			);
+		}
+
+		// The FIXED app loop (AC1): onView PATCHES the live <g data-view>
+		// transform in place — a pan step never re-renders the canvas.
+		{
+			const doc = fakeDoc();
+			const root = doc.createElement("div");
+			root.rect = { width: 900, height: 600 };
+			let view = { zoom: 1, panX: 0, panY: 0 };
+			const gesture = canvasMod.createDragGesture();
+			let index: any = null;
+			let renders = 0;
+			const onView = (v: any) => {
+				view = v;
+				renders++;
+				if (index?.view?.setAttribute) index.view.setAttribute("transform", canvasMod.viewTransform(v));
+			};
+			index = canvasMod.renderCanvas(state, layout, root, doc, { view, viewport, onView, gesture });
+			canvasMod.attachCanvasControls(index, doc, { getView: () => view, onView, viewport, gesture });
+			const sameIndex = () => index.view.attributes.transform;
+
+			let x = 50;
+			const y = 50;
+			index.svg.dispatch("pointerdown", { clientX: x, clientY: y });
+			for (let i = 0; i < 3; i++) {
+				x += 10;
+				index.svg.dispatch("pointermove", { clientX: x, clientY: y });
+			}
+			check(
+				"B8.5 the in-place onView accumulates the pan (30) and the <g data-view> transform carries it",
+				Math.abs(view.panX - 30) < 1e-9 && sameIndex() === "translate(30 0) scale(1)",
+				JSON.stringify({ view, transform: sameIndex() }),
+			);
+			check(
+				"B8.6 a pan step never re-renders the canvas (onView ran 3×, renderCanvas once — the SVG identity is stable)",
+				renders === 3 && byAttr(root, "data-graph").length === 1,
+				JSON.stringify({ renders, svgs: byAttr(root, "data-graph").length }),
+			);
+		}
+
+		// The threshold decision itself (pure, headless).
+		check(
+			"B8.7 the 4px threshold: 3px of jitter is a click, exactly 4px stays a click, 5px of travel is a drag, degenerate input never drags",
+			canvasMod.DRAG_THRESHOLD_PX === 4 && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 3, y: 0 }) === false && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 4, y: 0 }) === false && canvasMod.isDragGesture({ x: 0, y: 0 }, { x: 5, y: 0 }) === true && canvasMod.isDragGesture(null, { x: 9, y: 9 }) === false,
+			JSON.stringify({ threshold: canvasMod.DRAG_THRESHOLD_PX }),
+		);
 	}
 
 	console.log(failures === 0 ? "\nALL DASHBOARD LAYOUT CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);

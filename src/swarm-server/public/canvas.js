@@ -21,11 +21,36 @@
  * hardcoded 1200x720 "fantasy" viewport is ignored whenever a real
  * measurement is available. The old double-fit (viewBox = layout bounds AND
  * an inner fit transform) is gone.
+ *
+ * Drag-vs-click (issue #137/AC8): the pan gesture records a render-persistent
+ * `gesture` (createDragGesture) and a 4px threshold (isDragGesture) — a
+ * pointer travel beyond 4px is a PAN whose trailing click never selects, and
+ * because the record outlives a re-render, a data snapshot mid-drag neither
+ * stalls the pan nor resurrects the suppressed click. `onView` (app.js) must
+ * patch the `<g data-view>` transform IN PLACE — a pan step never re-renders.
  */
 
 import { el, on } from "./dom.js";
 import { NODE_H, NODE_W, fitView, panBy, zoomAt } from "./layout.js";
+import {
+	viewTransform,
+	FANTASY_VIEWPORT,
+	isFantasyViewport,
+	measureViewport,
+	viewportOf,
+	isInitialView,
+	sameView,
+	parseViewBox,
+	cursorToUser,
+	createDragGesture,
+	DRAG_THRESHOLD_PX,
+	isDragGesture,
+} from "./canvas-view.js";
 import { nodeSubLine, statusView } from "./status.js";
+
+// The view/drag vocabulary is extracted (Law 5) but remains part of THIS
+// module's documented surface — every pin and consumer keeps its spelling.
+export { viewTransform, FANTASY_VIEWPORT, isFantasyViewport, measureViewport, viewportOf, sameView, parseViewBox, cursorToUser, createDragGesture, DRAG_THRESHOLD_PX, isDragGesture };
 
 /** SVG element creation (real namespace in a browser; createElement under a fake doc). */
 function svgEl(doc, tag, attrs, text) {
@@ -100,13 +125,17 @@ function renderNodeGroup(doc, node, pos, opts) {
 	});
 	if (node.kind === "aggregate") group.setAttribute("data-aggregate", node.leadId);
 	paintNodeContent(doc, group, node);
-	on(group, "click", () =>
+	on(group, "click", () => {
+		// AC8/#137: the trailing click of a pan gesture never selects — the click
+		// fires on whatever node sits under the release point, so the shared
+		// render-persistent gesture (opts.gesture) is the only honest verdict.
+		if (opts.gesture?.dragged) return;
 		opts.dispatch?.(
 			node.kind === "aggregate" || opts.collapsedLeads?.has(node.id)
 				? { type: "toggle-collapse", leadId: node.kind === "aggregate" ? node.leadId : node.id }
 				: { type: "select-node", id: node.id, spotlightIds: [node.id, node.parentId].filter(Boolean) },
-		),
-	);
+		);
+	});
 	return group;
 }
 
@@ -213,104 +242,22 @@ export function renderCanvas(state, layout, root, doc, opts = {}) {
 	return { svg, nodes, layout, view, root };
 }
 
-/** The view transform string for the SVG `<g data-view>` wrapper. */
-export function viewTransform(view) {
-	const v = view || { zoom: 1, panX: 0, panY: 0 };
-	return `translate(${v.panX} ${v.panY}) scale(${v.zoom})`;
-}
-
-/** The viewport box a stale hardcoded app.js seam reports (never authoritative). */
-export const FANTASY_VIEWPORT = Object.freeze({ width: 1200, height: 720 });
-
-/** True for the hardcoded 1200x720 "fantasy" viewport app.js still injects. */
-export function isFantasyViewport(vp) {
-	return !!vp && vp.width === FANTASY_VIEWPORT.width && vp.height === FANTASY_VIEWPORT.height;
-}
-
-/**
- * Measure a real element's pixel box. Guarded: a fake/headless seam without
- * layout has no `getBoundingClientRect`/`clientWidth` and yields null, so the
- * pure fit/zoom math stays checkable without a DOM.
- */
-export function measureViewport(element) {
-	if (!element) return null;
-	let width = 0;
-	let height = 0;
-	if (typeof element.getBoundingClientRect === "function") {
-		const rect = element.getBoundingClientRect();
-		width = rect?.width ?? 0;
-		height = rect?.height ?? 0;
-	}
-	if ((!width || !height) && typeof element.clientWidth === "number") {
-		width = element.clientWidth;
-		height = element.clientHeight;
-	}
-	if (!width || !height) return null;
-	return { width, height };
-}
-
-/**
- * The ONE authoritative viewport for fit/zoom math (issue #78).
- * <p>
- * FUNCTION_CONTRACT: Input — opts ({ viewport }), element (the SVG), fallback
- *   element (the region). Output — { width, height }. Guarantees: a real
- *   measured element box wins; the injected seam is consulted only when the
- *   element cannot be measured AND is not the hardcoded 1200x720 fantasy;
- *   the last resort is the same 1200x720 box. Raises: never.
- */
-export function viewportOf(opts = {}, element = null, fallbackElement = null) {
-	const measured = measureViewport(element) ?? measureViewport(fallbackElement);
-	if (measured) return measured;
-	if (typeof opts.viewport === "function") {
-		const external = opts.viewport();
-		if (external && external.width > 0 && external.height > 0 && !isFantasyViewport(external)) return { width: external.width, height: external.height };
-	}
-	return { ...FANTASY_VIEWPORT };
-}
-
-/** True for the untouched `initialView()` — the only state an auto-fit may replace. */
-function isInitialView(view) {
-	return !!view && view.zoom === 1 && view.panX === 0 && view.panY === 0;
-}
-
-/** Epsilon view equality (auto-fit re-entry guard — never loops). */
-export function sameView(a, b) {
-	return !!a && !!b && Math.abs(a.zoom - b.zoom) < 1e-9 && Math.abs(a.panX - b.panX) < 1e-9 && Math.abs(a.panY - b.panY) < 1e-9;
-}
-
-/** Parse an SVG `viewBox` ("minX minY width height") — null when malformed. */
-export function parseViewBox(value) {
-	const parts = String(value ?? "").trim().split(/[\s,]+/).map(Number);
-	return parts.length === 4 && parts.every(Number.isFinite) ? { x: parts[0], y: parts[1], width: parts[2], height: parts[3] } : null;
-}
-
-/** Convert a CSS-pixel pointer offset into the viewBox USER units (#92): scale
- *  by the viewBox ratio and remove the `xMidYMid meet` letterbox gutters.
- *  Identity when the viewBox IS the element box; degenerate input never NaNs. */
-export function cursorToUser(offsetX, offsetY, viewBox, box) {
-	const ox = Number.isFinite(offsetX) ? offsetX : 0;
-	const oy = Number.isFinite(offsetY) ? offsetY : 0;
-	const vbW = Math.max(1, Number(viewBox?.width) || 0) || 1;
-	const vbH = Math.max(1, Number(viewBox?.height) || 0) || 1;
-	const boxW = Math.max(1, Number(box?.width) || 0) || vbW;
-	const boxH = Math.max(1, Number(box?.height) || 0) || vbH;
-	if (boxW === vbW && boxH === vbH) return { x: ox, y: oy };
-	const scale = Math.min(boxW / vbW, boxH / vbH);
-	return { x: (ox - (boxW - vbW * scale) / 2) / scale, y: (oy - (boxH - vbH * scale) / 2) / scale };
-}
-
 /**
  * Wire the documented interactions onto a rendered canvas: wheel zoom
- * (0.5×–2×, cursor-anchored IN USER UNITS), drag pan, and the fit affordance. A
- * fake DOM without listeners is a no-op (the pure helpers stay checkable).
+ * (0.5×–2×, cursor-anchored IN USER UNITS), drag pan with the 4px drag-vs-click
+ * threshold, and the fit affordance. A fake DOM without listeners is a no-op
+ * (the pure helpers stay checkable).
  * FUNCTION_CONTRACT: Input — index (renderCanvas result), doc, opts
- *   ({ getView, onView, viewport }). Output — none. Never throws.
+ *   ({ getView, onView, viewport, gesture }). Output — none. Never throws.
  */
 export function attachCanvasControls(index, doc, opts = {}) {
 	if (!index || !index.svg || typeof index.svg.addEventListener !== "function") return;
 	const svg = index.svg;
 	const root = index.root ?? null;
 	const getView = opts.getView || (() => initialViewFallback());
+	// The gesture record: caller-owned (render-persistent, #137) when handed in,
+	// else one per index (a re-attach of the SAME render still shares it).
+	const gesture = opts.gesture ?? (index.gesture ??= createDragGesture());
 	// Remeasure on every attach: the element box is the authoritative viewBox
 	// (resize is picked up here), and a fresh SVG re-attaches after every render.
 	const applyViewport = () => {
@@ -336,18 +283,27 @@ export function attachCanvasControls(index, doc, opts = {}) {
 		const cursor = cursorToUser(event?.offsetX ?? 0, event?.offsetY ?? 0, vb, box);
 		opts.onView?.(zoomAt(getView(), factor, cursor.x, cursor.y));
 	});
-	let dragging = null;
 	on(svg, "pointerdown", (event) => {
-		dragging = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
+		const start = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
+		// A fresh gesture starts at every pointerdown: `dragged` resets here, so
+		// the NEXT genuine click selects (the previous drag's flag is consumed).
+		gesture.start = start;
+		gesture.dragging = start;
+		gesture.dragged = false;
 	});
 	on(svg, "pointermove", (event) => {
-		if (dragging === null) return;
+		if (gesture.dragging === null) return;
 		const next = { x: event?.clientX ?? 0, y: event?.clientY ?? 0 };
-		opts.onView?.(panBy(getView(), next.x - dragging.x, next.y - dragging.y));
-		dragging = next;
+		// The threshold verdict is measured from the pointerdown START (total
+		// travel), not the last move — jitter under 4px stays a click.
+		if (isDragGesture(gesture.start, next)) gesture.dragged = true;
+		opts.onView?.(panBy(getView(), next.x - gesture.dragging.x, next.y - gesture.dragging.y));
+		gesture.dragging = next;
 	});
 	on(svg, "pointerup", () => {
-		dragging = null;
+		gesture.dragging = null;
+		// `gesture.dragged` survives the pointerup ON PURPOSE: the browser fires
+		// the trailing click AFTER pointerup, and that click must stay suppressed.
 	});
 	on(svg, "dblclick", () => opts.onView?.(fitView(index.layout.bounds, applyViewport())));
 }

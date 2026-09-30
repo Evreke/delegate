@@ -217,7 +217,11 @@ function fixture() {
 			},
 		],
 		edges: [
-			{ kind: "spawned_by", from: "t1", to: "orch" },
+			// #136 wire shape: the task→owner relation is owned_by, the task→worker
+			// relation is contains; spawned_by stays causal worker→orchestrator.
+			{ kind: "owned_by", from: "t1", to: "orch" },
+			{ kind: "contains", from: "t1", to: "w1-node" },
+			{ kind: "contains", from: "t1", to: "w2-node" },
 			{ kind: "spawned_by", from: "w1-node", to: "orch" },
 			{ kind: "spawned_by", from: "w2-node", to: "orch" },
 		],

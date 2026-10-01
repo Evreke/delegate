@@ -396,9 +396,17 @@ function warnBadScheduleMaxRuns(v: unknown): void {
 // ---------------------------------------------------------------------------
 
 export const COLLECT_DEFAULT_TEARDOWN_AFTER_COLLECT = true;
+/** MS-SYM-CONTRACT-1 §5 default policy: a status=pass report whose proof
+ *  paths are all ephemeral (under the exchange root or OS temp dir, no
+ *  durable copy) is REJECTED by default. "warn" is the explicit rollout
+ *  downgrade for THIS rule only — rules 1–3 stay hard-fail. */
+export const COLLECT_DEFAULT_EPHEMERAL_PROOF = "fail";
 
 export interface CollectConfig {
 	teardownAfterCollect: boolean;
+	/** MS-SYM-CONTRACT-1 §5 ephemeral-proof policy: "fail" (default) |
+	 *  "warn" (downgrades ONLY the ephemeral rule to a warning). */
+	ephemeralProof: "fail" | "warn";
 }
 
 
@@ -412,7 +420,7 @@ export interface CollectConfig {
  * EXTERNAL_DEPENDENCY: the config file via readDelegateConfig (above).
  */
 export function resolveCollectConfig(): CollectConfig {
-	const fallback: CollectConfig = { teardownAfterCollect: COLLECT_DEFAULT_TEARDOWN_AFTER_COLLECT };
+	const fallback: CollectConfig = { teardownAfterCollect: COLLECT_DEFAULT_TEARDOWN_AFTER_COLLECT, ephemeralProof: COLLECT_DEFAULT_EPHEMERAL_PROOF };
 	try {
 		const e = readDelegateConfig()?.collect;
 		if (e === null || typeof e !== "object") return fallback;
@@ -423,6 +431,9 @@ export function resolveCollectConfig(): CollectConfig {
 				typeof c.teardownAfterCollect === "boolean"
 					? c.teardownAfterCollect
 					: fallback.teardownAfterCollect,
+			// MS-SYM-CONTRACT-1 §5: only the explicit "warn" moves off the
+			// hard-fail default; garbage/missing → "fail".
+			ephemeralProof: c.ephemeralProof === "warn" ? "warn" : "fail",
 		};
 	} catch {
 		return fallback; // defensive — readDelegateConfig already absorbs throws

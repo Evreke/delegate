@@ -116,6 +116,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **Symmetric orchestrator contract — Brief Minimum + collect proof-path hard-fail +
+  merge verify triggers (MS-SYM-CONTRACT-1 §4–§6; #155 #156 #157).** The
+  orchestrator↔worker contract is now symmetric on both sides. **(1) Brief Minimum:**
+  the delegate skill requires every real-worker brief to carry B1–B7 (Goal, Inputs,
+  Acceptance, Evidence required, Out of scope, Stop conditions, Report contract) plus
+  the E1–E3 escalation classes, and the worker prompt names the ask-don't-guess stop
+  conditions (`swarm ask`, never a status channel). **(2) Collect hard-fail:** after
+  JSON/schema validation and before `collectedAt`, a `status=pass` report whose proof
+  paths (every `artifacts[]` entry and every non-pseudo `evidence[].file`, after
+  stripping a `:line`/`:start-end` suffix) do not exist at collect time — or whose
+  proof paths are all ephemeral under the exchange root or OS temp dir — is rejected
+  with a new `E_PROOF_MISSING` code, distinct from `E_REPORT_INVALID` (schema).
+  `status=fail` reports are never blocked or converted. Relative paths resolve against
+  the orchestrator project cwd (one rule). Config `collect.ephemeralProof` (`"fail"`
+  default | `"warn"`) downgrades only the ephemeral rule (rollout). **(3) Merge verify
+  triggers:** the skill's merge step gates merges of executor passes on V1 (ephemeral
+  proof) / V2 (branch-ephemeral proof, no surviving SHA) / V3 (unversioned deliverable)
+  until a `verify-<executorName>` pass or an operator-logged per-B3 check on a named
+  commit SHA. Regression coverage: `test/proof-paths-check.ts` (unit + fake-backend
+  collect-drive), plus durable-path fixtures in the existing collect drives.
+
 - **Classifier triage, display-only — opt-in note on validated worker reports
   (#129 #130).** A new top-level `classifier` config section
   (`classifier.enabled`, default `false`; `classifier.model` `{provider, id}`,

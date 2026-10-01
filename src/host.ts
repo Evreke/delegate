@@ -457,6 +457,11 @@ export type DelegateErrorCode =
 	 *  cause. */
 	| "E_PROVIDER_EMPTY"
 	| "E_REPORT_INVALID"
+	/** MS-SYM-CONTRACT-1 §5: a status=pass report whose listed proof paths
+	 *  (artifacts + evidence files) fail collect-time existence checks —
+	 *  distinct from E_REPORT_INVALID (schema). The report JSON/schema is
+	 *  valid; the PATHS it claims are not. */
+	| "E_PROOF_MISSING"
 	| "E_BUDGET"
 	| "E_CONTEXT"
 	// One-shot scheduled wakes (issue #10): a bad schedule input (empty text,
@@ -830,6 +835,7 @@ export const GUIDANCE: Record<DelegateErrorCode, string> = {
 	E_PROVIDER_EMPTY:
 		"The worker settled with no report and produced ZERO non-empty assistant output — the provider returned no content. Diagnosed retry (never verbatim) with a DIFFERENT provider/model; read the console to confirm the empty turns before switching.",
 	E_REPORT_INVALID: "Report exists but fails the JSON schema; attach validator output; treated identically to missing.",
+	E_PROOF_MISSING: "The report's schema is valid but a status=pass report's proof paths (artifacts/evidence files) failed collect-time existence checks — re-point them at durable, existing files.",
 	E_BUDGET:
 		"Worker over output budget — pick a NEW worker name or pass an explicit higher budgetTokens; budget decline across diagnosed retries is orchestrator policy.",
 	E_CONTEXT:

@@ -14,7 +14,7 @@
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { readManifest, reportPathFor, updateManifest } from "../src/exchange.ts";
 import { registerDelegateTool } from "../src/spawn.ts";
 import type { Transport } from "../src/host.ts";
@@ -37,12 +37,18 @@ const briefPath = join(ROOT, `brief-${NAME}.md`);
 writeFileSync(briefPath, `# brief ${NAME}\n\nDo the thing. OUTPUT: report-${NAME}.json\n`);
 
 const reportPath = reportPathFor(ROOT, NAME);
+// MS-SYM-CONTRACT-1 §5: a status=pass report's proof paths must EXIST at
+// collect time and at least one must be durable (not under the exchange root
+// or the OS temp dir). Point the fixture at a real, durable repo file so the
+// teardown matrix still exercises the VALID-collect path (not a proof
+// rejection).
+const DURABLE_FILE = join(resolve(dirname(process.argv[1] ?? "."), ".."), "package.json");
 const validReport = JSON.stringify({
 	worker: NAME,
 	status: "pass",
 	summary: "one-paragraph outcome",
-	artifacts: ["a.ts"],
-	evidence: [{ claim: "c", file: "f.ts:1" }],
+	artifacts: [DURABLE_FILE],
+	evidence: [{ claim: "c", file: DURABLE_FILE }],
 });
 if (CASE === "valid" || CASE === "q-pending" || CASE === "teardown-throws" || CASE === "probe") {
 	if (CASE !== "probe") writeFileSync(reportPath, validReport); // probes never write reports

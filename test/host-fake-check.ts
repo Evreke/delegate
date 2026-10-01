@@ -22,7 +22,7 @@
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { readManifest, scanAllManifests, updateManifest, type ManifestWorker } from "../src/exchange.ts";
 import { registerDelegateTool } from "../src/spawn.ts";
 import { FakeWorkerHost } from "../src/host/fake.ts";
@@ -242,7 +242,10 @@ writeFileSync(
 		status: "pass",
 		summary: "one-paragraph outcome",
 		artifacts: [],
-		evidence: [{ claim: "c", file: "f.ts:1" }],
+		// MS-SYM-CONTRACT-1 §5: evidence must point at an existing, durable
+		// file (the tool-flow ctx.cwd is a temp dir; an absolute repo file is
+		// durable so the VALID-collect path still succeeds here).
+		evidence: [{ claim: "c", file: join(resolve(dirname(process.argv[1] ?? "."), ".."), "package.json") }],
 	}),
 );
 const toolFake = new FakeWorkerHost({ repoPath: repoDir, statusScript: ["working", "done"] });

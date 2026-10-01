@@ -32,8 +32,8 @@ honest completion: read it as a result, not a tool error.
    - **B1 Goal** — 1–2 sentences; a measurable outcome.
    - **B2 Inputs** — explicit paths or refs (file pointers only — paste nothing the
      worker can read).
-   - **B3 Acceptance** — a numbered checklist; each item is pass/fail-testable without
-     reading the worker's summary alone.
+   - **B3 Acceptance** — a numbered checklist of acceptance criteria only; each item is
+     pass/fail-testable without reading the worker's summary alone.
    - **B4 Evidence required** — which files/commands must appear in the report to prove
      B3 (no proof, no pass).
    - **B5 Out of scope** — what MUST NOT be done.

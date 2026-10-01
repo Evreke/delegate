@@ -234,6 +234,27 @@ const root = mkdtempSync(join(tmpdir(), "report-contract-check-"));
 }
 
 // ---------------------------------------------------------------------------
+// 7. MS-SYM-CONTRACT-1 §4: the worker prompt carries the E1–E3 escalation
+//    classes (ask-don't-guess) and the no-status-channel rule.
+// ---------------------------------------------------------------------------
+
+{
+	const base = briefPrompt("/tmp/exchange/t/brief-x.md", NAME);
+	const withSchema = briefPrompt("/tmp/exchange/t/brief-x.md", NAME, { type: "object" });
+
+	check("stop conditions: E1 (brief contradicts itself / acceptance items cannot both hold)", base.includes("the brief contradicts itself or two acceptance items cannot both be true"));
+	check("stop conditions: E2 (next step needs authority you do not have)", base.includes("the next step needs authority you do not have"));
+	check("stop conditions: E3 (cannot state pass/scope in one sentence)", base.includes("you cannot state in one sentence what pass means or which files are in scope"));
+	check("stop conditions: mailbox is for questions, never a status channel", base.includes("the mailbox is for questions, never a status channel"));
+	check("stop conditions: ask-don't-guess is present", base.includes("never guess"));
+	check(
+		"stop conditions survive a brief-declared schema fragment",
+		withSchema.includes("the brief contradicts itself or two acceptance items cannot both be true") &&
+			withSchema.includes("you cannot state in one sentence what pass means or which files are in scope"),
+	);
+}
+
+// ---------------------------------------------------------------------------
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

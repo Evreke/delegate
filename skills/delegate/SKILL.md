@@ -26,13 +26,23 @@ honest completion: read it as a result, not a tool error.
    (cap depth at 3). Pick the tier: execution → flash-class;
    decisions, review, synthesis → frontier-class.
 2. **Brief** — one file per worker under the exchange dir (`/tmp/exchange/{TASK}/` on
-   Linux/macOS; `PI_DELEGATE_EXCHANGE_ROOT` overrides): ROLE (tier + read/write scope) /
-   TASK (one outcome; verbatim fix shape for risky changes, equivalence argument for
-   rewrites) / CONTEXT (file pointers only — paste nothing the worker can read) /
-   CONSTRAINTS (owned surface first, then explicit negatives) / OUTPUT (acceptance
-   criteria only — the tool's own prompt carries the worker's canonical name, report
-   path and report contract; briefs stay name-agnostic, never paste report JSON) /
-   BUDGET.
+   Linux/macOS; `PI_DELEGATE_EXCHANGE_ROOT` overrides). A real-worker brief MUST carry
+   all seven Brief-Minimum sections (B1–B7), non-empty — do NOT dispatch without them
+   (probe workers are exempt):
+   - **B1 Goal** — 1–2 sentences, a measurable outcome.
+   - **B2 Inputs** — explicit paths/refs (file pointers only).
+   - **B3 Acceptance** — a numbered checklist of acceptance criteria only; each item
+     pass/fail-testable without the worker's summary.
+   - **B4 Evidence required** — files/commands the report must cite to prove B3 (no proof, no pass).
+   - **B5 Out of scope** — what MUST NOT be done.
+   - **B6 Stop conditions** — when to `ask` instead of guessing; MUST include E1 (brief
+     contradicts itself / two acceptance items can't both hold), E2 (next step needs
+     authority you lack), E3 (can't state pass or scope in one sentence). Mailbox: questions
+     only, never a status channel.
+   - **B7 Report contract** — `status` pass|fail, `artifacts[]`, `evidence[{claim,file}]`
+     (the tool's prompt carries the exact contract; briefs stay name-agnostic, never
+     paste report JSON).
+   MAY add ROLE / BUDGET / Method — B1–B7 is the floor.
 3. **Spawn** via parallel `delegate` calls, one per worker. A fan-out of ≥3 deserves a
    cheap smoke check first — the first real worker's structured spawn failure is just
    as cheap a signal; the tool owns how. Respect worktree authority: only a root
@@ -43,7 +53,15 @@ honest completion: read it as a result, not a tool error.
    CONTEXT, or resolve from source yourself. A failed worker's output is input for the
    retry, not waste.
 5. **Merge** — you are the single merge gate. Workers commit in their own scope; they
-   never merge, never push. Verify before merging; you own merge order.
+   never merge, never push. Verify before merging; you own merge order. Before merging a
+   `status=pass`, check the verify triggers: **V1** ephemeral proof (all/critical evidence
+   under `/tmp`, build outputs, or live state); **V2** branch-ephemeral proof (feature
+   branch merged+deleted, no surviving commit SHA); **V3** unversioned deliverable (in
+   neither VCS nor delegate-archive). Any V1–V3 → do NOT merge yet: run a
+   `verify-<executorName>` worker (or record the same per-B3 checks + commit SHA yourself);
+   merge only on a verify pass. The verify worker MUST NOT implement features — only
+   per-B3 verdicts `pass|fail|unverifiable`, re-checked paths, commit SHA. No trigger →
+   verify not required, but still check every B3 item against the evidence paths.
 6. **Teardown** — close what you opened (`/delegate-teardown`); never leave worktree
    placements behind.
 

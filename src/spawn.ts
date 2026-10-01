@@ -119,6 +119,7 @@
 // ./transport.ts (facades remain at the old paths until W5).
 import { appendFile, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { CONFIG_DIR_NAME, type Theme } from "@earendil-works/pi-coding-agent";
@@ -139,6 +140,7 @@ import { readPostRunGitDelta, readPreRunGitSnapshot } from "./passport.ts";
 import { EXTENSION_VERSION } from "./version.ts";
 import { manifestDepthFor, manifestStore, type ManifestWorker } from "./manifest-store.ts";
 import { parseBriefSchema, validateReportAgainstSchema } from "./report-schema.ts";
+import { validateProofPaths } from "./proof-paths.ts";
 import {
 	questionPathFor,
 	readQuestion,
@@ -1614,10 +1616,51 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 
 			const elapsedMs = Date.now() - startedAtDate.getTime();
 
+			// MS-SYM-CONTRACT-1 §5: collect-time proof-path validation (hard-fail
+			// on pass). Runs AFTER validateReportAgainstSchema (collectReport
+			// verdict ok) and BEFORE successResult / collectedAt — a status=pass
+			// report whose listed proof paths do not exist (or are all
+			// ephemeral) is rejected with E_PROOF_MISSING, DISTINCT from
+			// E_REPORT_INVALID (schema). status=fail reports pass through
+			// untouched (an honest failure is never converted).
+			const proofCheck = (report: WorkerReport): { ok: true } | { ok: false; error: string } => {
+				if (report.status !== "pass") return { ok: true };
+				const v = validateProofPaths(report, {
+					cwd: ctx.cwd,
+					exchangeRoot: exchangeRoot(),
+					tempDir: tmpdir(),
+					ephemeralProof: resolveCollectConfig().ephemeralProof,
+				});
+				return v.ok ? { ok: true } : { ok: false, error: v.error };
+			};
+			const proofMissing = (report: WorkerReport, usedPath: string, error: string): ToolResult => {
+				const b = gaugeSummary();
+				return fail(
+					"E_PROOF_MISSING",
+					`E_PROOF_MISSING — worker ${canonical} settled with a status=pass report whose proof paths failed collect-time validation: ${error}.\n` +
+						"Treat as a failed spawn: do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate). " +
+						RETRY_MANDATE +
+						`\nReport: ${usedPath}` +
+						`${uniquified ? ` ${uniquified}` : ""}` +
+						b.line,
+					{
+						canonical,
+						placement,
+						reportPath: usedPath,
+						reportError: error,
+						status: settle.status,
+						elapsedMs,
+						...b.details,
+					},
+				);
+			};
+
 			if (signal?.aborted) {
 				// Detached after settle — do not discard a valid result if one exists.
 				const collected = collectReport();
 				if (collected.verdict.ok) {
+					const proof = proofCheck(collected.verdict.report);
+					if (!proof.ok) return proofMissing(collected.verdict.report, collected.usedPath, proof.error);
 					return successResult(
 						collected.verdict.report,
 						collected.usedPath,
@@ -1839,6 +1882,8 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				// but do not discard a valid result if one landed.
 				const abortedCollect = collectReport();
 				if (abortedCollect.verdict.ok) {
+					const proof = proofCheck(abortedCollect.verdict.report);
+					if (!proof.ok) return proofMissing(abortedCollect.verdict.report, abortedCollect.usedPath, proof.error);
 					return successResult(
 						abortedCollect.verdict.report,
 						abortedCollect.usedPath,
@@ -1857,6 +1902,8 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			const collected = graceOutcome.attempt;
 			const graceAttempt = graceOutcome.graceAttempt;
 			if (collected.verdict.ok) {
+				const proof = proofCheck(collected.verdict.report);
+				if (!proof.ok) return proofMissing(collected.verdict.report, collected.usedPath, proof.error);
 				const note =
 					(collected.fallbackUsed
 						? `Note: report collected from ${collected.usedPath} — the brief pointed the worker at the requested name while the host recorded the canonical one. `

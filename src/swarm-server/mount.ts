@@ -65,6 +65,13 @@ export interface SwarmServerHandle extends Omit<Http1ServerHandle, "close"> {
 	 *  widget link points at — the ACTUAL bound port when this session serves
 	 *  one, else the configured primary port. Never a token. */
 	readonly dashboardUrl: string;
+	/** The canonical dashboard LINK (the URL + the operator token in the `#t=`
+	 *  fragment — the ONE spelling from dashboardLinkFor) for THIS session's
+	 *  fleet widget. Present only while this session actually SERVES (a
+	 *  secondary serves nothing — its token is not the primary's, a link would
+	 *  be a lie); tracks takeover promotions. In-process session UI only
+	 *  (Law 11: never journal / response body / log file). */
+	readonly dashboardLink: string | undefined;
 	/** Tear down THIS session's server (listener + sockets + journal reader +
 	 *  registry key). Idempotent. */
 	stop(): void;
@@ -304,9 +311,11 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 	let bound: Http1ServerHandle | null = null;
 	let watch: PrimaryWatchHandle | null = null;
 	let dashboardUrl = dashboardUrlFor(cfg.port);
+	let dashboardLink: string | undefined;
 	const emitDashboard = (port: number): void => {
 		dashboardUrl = dashboardUrlFor(port);
-		if (surfaceToken) logDashboard(dashboardUrl, dashboardLinkFor(port, operatorToken));
+		dashboardLink = dashboardLinkFor(port, operatorToken);
+		if (surfaceToken) logDashboard(dashboardUrl, dashboardLink);
 	};
 
 	if (cfg.port === 0) {
@@ -380,6 +389,9 @@ export async function mountSwarmServer(deps: MountSwarmServerDeps): Promise<Swar
 		},
 		get dashboardUrl() {
 			return dashboardUrl;
+		},
+		get dashboardLink() {
+			return dashboardLink;
 		},
 		get port() {
 			return bound ? bound.port : cfg.port;

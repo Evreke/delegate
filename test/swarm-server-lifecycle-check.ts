@@ -116,6 +116,11 @@ async function main(): Promise<void> {
 			check("L1.3 stop closes the listener", !refused.ok);
 			const a1b = await mountSwarmServer({ sessionFile: "/sessions/lc-a.jsonl", transport, env: env({ SWARM_SERVER_ENABLED: "1", SWARM_SERVER_PORT: String(P1) }) });
 			check("L1.4 a re-mount after stop mounts fresh (registry key freed)", a1b !== null && a1b !== a1 && a1b.port === P1);
+			check(
+				"L1.5 the handle exposes the canonical dashboard link (the ACTUAL port + token in the #t= fragment)",
+				a1b?.dashboardLink?.startsWith(`http://127.0.0.1:${P1}/#t=`) === true,
+				a1b?.dashboardLink,
+			);
 			a1b?.stop();
 		}
 
@@ -250,6 +255,11 @@ async function main(): Promise<void> {
 					"L7 token continuity: the canonical URL now requires the NEW primary's token (the dead primary's token is refused)",
 					oldToken.status === 401 && newToken.status !== 401,
 					`old=${oldToken.status} new=${newToken.status}`,
+				);
+				check(
+					"L7b the handle's widget link TRACKS the promotion: it names the ACTUAL served port with the winner's token",
+					survivor.dashboardLink === `http://127.0.0.1:${P6}/#t=${winnerToken}`,
+					survivor.dashboardLink ?? "undefined",
 				);
 			}
 			r1.stop();

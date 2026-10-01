@@ -8,6 +8,23 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Added
+
+- **The fleet widget carries the dashboard link persistently.** The
+  session-hosted server's handle now exposes `dashboardLink` (the canonical
+  `http://127.0.0.1:<port>/#t=<token>` spelling from `dashboardLinkFor` —
+  ONE spelling, Law 9; undefined for a listenerless secondary whose token is
+  not the primary's, tracking takeover promotions). The composition root
+  feeds the handle to the fleet widget, which renders ONE dim
+  `◈ dashboard <link>` line above the live rows — and keeps the widget
+  mounted on that line alone when no workers are live (`widgetShouldShow`),
+  so the link survives an idle fleet for the whole session. This is the
+  persistent half of the same session-UI channel the `dashboard`
+  announcement uses (Law 11: TUI notification / widget — never a file); the
+  link reads the handle's getter per refresh tick, so a promotion re-points
+  it within one 2 s poll. Pinned behaviorally (lifecycle L1.5/L7b) and by
+  unit (render-ui W7/W8).
+
 ### Fixed
 
 - **Extension diagnostics can no longer corrupt the session TUI (the

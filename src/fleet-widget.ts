@@ -16,7 +16,8 @@
  * warning fraction + CONTEXT_WARN_PCT), @earendil-works/pi-coding-agent TUI.
  * It imports NO fleet-overlay — widget and overlay are independent siblings.
  * Exported surface: FleetWidgetRow, FleetUIDeps, FleetFoldLine, mountFleetUI,
- * disposeFleetUI, renderLiveRows, foldLiveByOwnership, buildWidgetRows.
+ * disposeFleetUI, renderLiveRows, foldLiveByOwnership, buildWidgetRows,
+ * widgetShouldShow, dashboardWidgetLine.
  * Owned invariants (moved verbatim):
  *   - every UI fn is INERT when the context has no UI (headless guard).
  *   - the fleet UI is ADVISORY: fs/transport read failures keep the last
@@ -87,6 +88,13 @@ export interface FleetWidgetRow {
 
 export interface FleetUIDeps {
 	getRows(): Promise<FleetWidgetRow[]>;
+	/** THIS session's dashboard link (the canonical `#t=` fragment link from
+	 *  the swarm-server handle) — rendered as ONE persistent dim line while
+	 *  present, even with zero live workers (the link is why the widget
+	 *  exists). Absent → no line, the widget keeps the live-rows-only rule.
+	 *  Called every refresh tick (the link can change on a takeover
+	 *  promotion). */
+	getDashboardLink?: () => string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +149,22 @@ function isLive(row: FleetWidgetRow): boolean {
 	return LIVE_STATUSES.has(row.status);
 }
 
+/** The widget's visibility rule (pure, unit-pinned): live workers OR a
+ *  dashboard link keep it mounted; an empty fleet WITHOUT a link clears it
+ *  (the old live-rows-only rule, extended by the persistent dashboard line). */
+export function widgetShouldShow(liveCount: number, hasLink: boolean): boolean {
+	return liveCount > 0 || hasLink;
+}
+
+/** The persistent dashboard link line (pure, unit-pinned): ONE dim
+ *  `◈ dashboard <link>` line above the live rows; empty string when this
+ *  session serves no dashboard (the render filters it out). The link is the
+ *  canonical `#t=` fragment spelling — the session UI is its channel
+ *  (Law 11), the widget is that channel's persistent half. */
+export function dashboardWidgetLine(link: string | undefined, theme: FgTheme): string {
+	return link ? theme.fg("muted", `◈ dashboard ${link}`) : "";
+}
+
 // ---------------------------------------------------------------------------
 // mountFleetUI
 // ---------------------------------------------------------------------------
@@ -180,7 +204,10 @@ export function mountFleetUI(ctx: ExtensionContext, deps: FleetUIDeps): () => vo
 					// crash the TUI (same failure shape as transcript lines).
 					render: (width?: number) =>
 						clampLines(
-							renderLiveRows(rows, theme, (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width),
+							[
+								dashboardWidgetLine(deps.getDashboardLink?.(), theme),
+								...renderLiveRows(rows, theme, (tui as { terminal?: { columns?: number } } | undefined)?.terminal?.columns ?? width),
+							].filter((l) => l.length > 0),
 							width,
 						),
 					invalidate: () => {},
@@ -201,11 +228,12 @@ export function mountFleetUI(ctx: ExtensionContext, deps: FleetUIDeps): () => vo
 		}
 		if (disposed) return;
 		const live = rows.filter(isLive);
-		if (live.length === 0 && widgetShown) {
-			// EMPTY live set → live-rows widget cleared; chip widget tracks placed count.
+		const hasLink = Boolean(deps.getDashboardLink?.());
+		if (!widgetShouldShow(live.length, hasLink) && widgetShown) {
+			// Empty live set AND no dashboard link → widget cleared.
 			ctx.ui.setWidget(WIDGET_KEY, undefined);
 			widgetShown = false;
-		} else if (live.length > 0 && !widgetShown) {
+		} else if (widgetShouldShow(live.length, hasLink) && !widgetShown) {
 			showWidget();
 		}
 		tuiRef?.requestRender();

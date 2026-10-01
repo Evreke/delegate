@@ -167,6 +167,38 @@ function fakeTheme() {
 	check("W6 wide-char safe clamping", visibleWidth(cjk[0]) <= 30, String(visibleWidth(cjk[0])));
 }
 
+// ---------------------------------------------------------------------------
+// W7–W9 — the persistent dashboard link line (the widget's session UI half of
+// the Law-11 token channel): pure helpers, unit-pinned.
+// ---------------------------------------------------------------------------
+{
+	const { dashboardWidgetLine, widgetShouldShow } = await import("../src/fleet-widget.ts");
+
+	// W7: the line is ONE dim `◈ dashboard <link>`; absent link → empty (the
+	// widget render filters it out).
+	const th = fakeTheme();
+	const link = "http://127.0.0.1:8117/#t=abc";
+	const line = dashboardWidgetLine(link, th);
+	check("W7.1 the dashboard line renders `◈ dashboard <link>` in muted", line === `[muted]◈ dashboard ${link}[/]`, line);
+	check("W7.2 the muted color is used (persistent, never alarmist)", th.calls.some((c) => c.color === "muted" && c.text === `◈ dashboard ${link}`));
+	check("W7.3 no link → empty line (filtered, never a bare glyph)", dashboardWidgetLine(undefined, fakeTheme()) === "");
+
+	// W8: the visibility rule — live workers OR a link keep the widget up; an
+	// empty fleet WITHOUT a link still clears it (the old rule, extended).
+	check(
+		"W8.1 widgetShouldShow: live>0 → shown, with or without a link",
+		widgetShouldShow(2, false) === true && widgetShouldShow(2, true) === true,
+	);
+	check(
+		"W8.2 widgetShouldShow: zero live + a link → STAYS shown (the persistent line)",
+		widgetShouldShow(0, true) === true,
+	);
+	check(
+		"W8.3 widgetShouldShow: zero live + no link → cleared (live-rows-only rule unchanged)",
+		widgetShouldShow(0, false) === false,
+	);
+}
+
 if (failures > 0) {
 	console.error(`\n${failures} CHECK(S) FAILED`);
 	process.exit(1);

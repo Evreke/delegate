@@ -249,7 +249,15 @@ export default function (pi: ExtensionAPI) {
 		// indicator that workers are running (operator decision: the widget
 		// stays; the /delegate-fleet overlay was removed).
 		let fleetDispose: () => void = () => {};
+		// The swarm-server handle is mounted BELOW (after the widget); the widget
+		// reads the handle's link getter on every refresh tick, so the persistent
+		// dashboard line appears as soon as the mount binds AND tracks a later
+		// takeover promotion (the getter names the promoted port). Headless:
+		// stays unset.
+		let swarmServerRef: { handle?: SwarmServerHandle } | undefined;
 		if (ctx.hasUI) {
+			swarmServerRef = {};
+			const serverRef = swarmServerRef;
 			const deps: FleetUIDeps = {
 				async getRows(): Promise<FleetRow[]> {
 					// Called every 2 s by the fleet UI; each call is a full read sweep:
@@ -260,6 +268,7 @@ export default function (pi: ExtensionAPI) {
 					const views = await buildWorkerView(transport);
 					return buildWidgetRows(views, self as FleetSelfIdentity);
 				},
+				getDashboardLink: () => serverRef.handle?.dashboardLink,
 			};
 			fleetDispose = mountFleetUI(ctx, deps);
 		}
@@ -315,6 +324,9 @@ export default function (pi: ExtensionAPI) {
 		// Surface the token/link only when a human can read them (headless worker
 		// sessions stay silent on the TUI).
 		const swarmServer = (await mountSwarmServer({ sessionFile, transport, surfaceToken: ctx.hasUI === true })) ?? undefined;
+		// Feed the mounted handle to the fleet widget's persistent dashboard line
+		// (the handle's link getter is read per tick; absent/secondary → no line).
+		if (swarmServerRef) swarmServerRef.handle = swarmServer;
 
 		// The store is exposed to the delegate_wake tool ONLY when the watcher is
 		// actually mounted: a session without a tick could accept a schedule that

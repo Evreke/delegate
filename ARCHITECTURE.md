@@ -959,8 +959,11 @@ stderr line headless) carrying the ACTUAL bound port —
 the EADDRINUSE fallback is reflected, never the configured port
 (`src/swarm-server/mount.ts` `dashboardUrlFor` / `dashboardLinkFor`; the
 bound port is never re-derived by a consumer). The session handle exposes
-`dashboardUrl` (tokenless) and `role` for programmatic consumers; the widget
-surface is the announcement line (the brief's "widget and/or mount line").
+`dashboardUrl` (tokenless), `dashboardLink` (the `#t=` fragment link,
+undefined for a listenerless secondary, tracking promotions) and `role` for
+programmatic consumers; the widget surface is the announcement line PLUS the
+persistent `◈ dashboard <link>` line in the session's fleet widget (the
+session UI's persistent half of the same channel — never a file).
 
 **Fragment-token rule (item 2).** The link carries the session's operator
 token in the URL FRAGMENT: `http://127.0.0.1:<port>/#t=<token>`. A fragment

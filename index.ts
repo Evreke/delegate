@@ -44,6 +44,7 @@ import { reconcileSessionStart } from "./src/swarm/reconcile.ts";
 // read-model surface, mounted per session (Law 3) and OFF by default
 // (swarm.server.enabled). Advisory by contract — never blocks session start.
 import { mountSwarmServer, type SwarmServerHandle } from "./src/swarm-server/mount.ts";
+import { installUiLogSink, makeTuiNotifySink } from "./src/ui-log.ts";
 
 // ===========================================================================
 // Host binding (workerhost inversion, design §5/§6 migration steps 5–6):
@@ -228,6 +229,17 @@ export default function (pi: ExtensionAPI) {
 			sessionFile = undefined;
 		}
 		const self: SelfIdentity = { sessionFile, cwd: ctx.cwd };
+
+		// The TUI diagnostic sink (src/ui-log.ts, the ONE terminal-writer choke
+		// point): with a UI owning the terminal, every extension diagnostic
+		// surfaces as a TUI notification — NEVER as a raw stderr write, which
+		// corrupts the TUI (the recurring "JSON logs in the TUI" bug class).
+		// Headless sessions install nothing: uiLog falls back to one stderr
+		// line, the headless channel. Replace-per-session is the contract (one
+		// TUI per process; new/resume/fork reinstalls).
+		if (ctx.hasUI) {
+			installUiLogSink(makeTuiNotifySink((message, type) => ctx.ui.notify(message, type)));
+		}
 
 		// Ambient fleet UI (the live-rows widget): mount on session_start (fires
 		// on startup AND on new/resume/fork). Replace-on-reload stays the

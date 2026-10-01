@@ -10,6 +10,29 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Fixed
 
+- **Extension diagnostics can no longer corrupt the session TUI (the
+  four-times-reported "JSON logs in the TUI" bug class, fixed at the class
+  level).** Inside the pi TUI the process's stderr IS the terminal the TUI
+  renders on, so the direct stderr writes of the extension's diagnostic lines
+  — the swarm-server mount's `operator-token`/`dashboard`/advisory JSON
+  lines, the watcher's `[pi-delegate watch]` errors, the watch-config
+  warn-once notes — printed raw JSON over the session UI. The earlier
+  rounds (#150/#151) silenced only headless/secondary sessions; an
+  interactive session (the primary mount) still spammed. ALL diagnostics now
+  route through the new ONE terminal-writer choke point `src/ui-log.ts`:
+  the composition root installs a TUI sink on `session_start` when
+  `ctx.hasUI` — every line surfaces as a `ctx.ui.notify` notification
+  (structured lines rendered `[pi-delegate] <event> — k=v …`, warn lines as
+  warnings); a headless session installs nothing and `uiLog` falls back to
+  one stderr line — byte-identical to the pre-router output the checks
+  parse. A static pin (T1.10, bite-proved) bans direct
+  `console.*`/`process.stderr.write` calls outside the router (and
+  `process.stdout.write` outside the spawned `swarm` CLI dir), so the class
+  cannot reintroduce itself; the router's semantics are behaviorally pinned
+  in `test/ui-log-check.ts` (fallback bytes, replace-on-install, throwing
+  sink degrades, notification rendering). Law-11 token channel wording in
+  ARCHITECTURE §4.2/§4.2.8 and docs updated to the session's ONE diagnostic
+  channel.
 - **Rail keyboard operability + focus/selection visibility (rail-ux round).**
   Every rail row (session, task, worker) is now a real `<button>`: Tab reaches
   all rows, Enter/Space fire the click dispatch, and each `.rail-group` roves

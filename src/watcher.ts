@@ -60,6 +60,7 @@ import { sameSessionPath } from "./watch-role.ts";
 // satellite reads — the caller-held closures Law 3 wants (no module globals).
 import { type SessionToolCallCacheEntry } from "./usage.ts";
 import { postSteerAndNudge } from "./mailbox-store.ts";
+import { uiLog } from "./ui-log.ts";
 // Scheduled wakes (issue #10, stage A): the tick's ONE new event source. The
 // watcher depends only on the SchedulePort read (dueWakes/markDelivered) —
 // the store itself lives in src/watch-schedule.ts and is created per session
@@ -201,7 +202,8 @@ export interface WatcherDeps {
 	/** Snapshot source override (tests drive fixtures; production uses
 	 *  collectSnapshot over manifestStore.scan() + the injected transport). */
 	snapshot?: () => Promise<WatchSnapshot>;
-	/** Advisory log sink (console.error by default). */
+	/** Advisory log sink (the uiLog router by default — TUI notification in a
+	 *  UI session, one stderr line headless). */
 	log?: (msg: string) => void;
 }
 
@@ -248,7 +250,7 @@ import { errText } from "./tool-result.ts";
  */
 export function createWatcher(deps: WatcherDeps): WatcherHandle {
 	const seen = new Map<string, DeliveryKey>();
-	const log = deps.log ?? ((m: string) => console.error(`[pi-delegate watch] ${m}`));
+	const log = deps.log ?? ((m: string) => uiLog(`[pi-delegate watch] ${m}`));
 	let stopped = false;
 	// Scheduled wakes (issue #10, stage A): the injected source (undefined/null
 	// = disabled). silentWakeKeys is the in-memory SUPPRESSION set mirroring
@@ -896,8 +898,8 @@ export function makeSender(
  *   - every line is appended to ~/.pi/agent/delegate-watch.log with an ISO
  *     timestamp prefix; append failures are swallowed (advisory)
  *   - lines matching /\berror\b|\bfail|already gone|unavailable/i are ALSO
- *     surfaced to the console via console.error with the [pi-delegate watch]
- *     prefix; routine bookkeeping never reaches the console
+ *     surfaced through the uiLog router with the [pi-delegate watch]
+ *     prefix; routine bookkeeping never reaches the session UI
  * Raises: never
  * EXTERNAL_DEPENDENCY: ~/.pi/agent/delegate-watch.log (append-only audit
  *   file under pi's agent dir); pi's getAgentDir() (honors
@@ -937,7 +939,7 @@ export function appendWatcherAudit(line: string): void {
 		watcherAuditAppendFailures++;
 		if (!watcherAuditAppendFailureWarned) {
 			watcherAuditAppendFailureWarned = true;
-			console.error(
+			uiLog(
 				"[pi-delegate watch] audit-log append FAILED — delegate-watch.log is unwritable; audit lines are being dropped (this warning is emitted once)",
 			);
 		}
@@ -957,7 +959,7 @@ export function makeWatcherLogSink(): (m: string) => void {
 	return (m: string): void => {
 		appendWatcherAudit(m);
 		if (/\berror\b|\bfail|already gone|unavailable/i.test(m)) {
-			console.error(`[pi-delegate watch] ${m}`);
+			uiLog(`[pi-delegate watch] ${m}`);
 		}
 	};
 }
@@ -1010,7 +1012,7 @@ export function startWatcher(
 	if (sessionFile !== undefined) {
 		const existing = watcherMountRegistry().get(sessionFile);
 		if (existing) {
-			console.error(
+			uiLog(
 				`[pi-delegate watch] second watcher mount refused for session ${sessionFile} — already mounted ` +
 					"(double module-load guard, Law 3); keeping the first instance",
 			);

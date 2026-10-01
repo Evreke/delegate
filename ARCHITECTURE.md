@@ -781,8 +781,10 @@ surface:
 
 Both require `Authorization: Bearer <operator token>`; GET and the WS stream
 stay open. The token is generated fresh per mount (`crypto.randomBytes(32)`)
-and surfaced ONLY on the session's stderr as one structured `operator-token`
-line — never the journal, a response body or a log file (Law 11). Missing,
+and surfaced ONLY through the session's ONE diagnostic channel
+(src/ui-log.ts: one `ctx.ui.notify` notification in a TUI session, one
+structured stderr `operator-token` line headless) — never the journal, a
+response body or a log file (Law 11). Missing,
 malformed and wrong tokens yield the SAME uniform `401 E_SWARM_AUTH` refusal,
 compared in constant time.
 
@@ -951,12 +953,14 @@ below is additive to it (Law 7).
 
 **Widget-link surface (item 1).** The mount is the ONE spelling of the
 canonical link (Law 9): on a successful bind it emits exactly ONE structured
-stderr line `{event:"dashboard", url, link}` carrying the ACTUAL bound port —
+announcement `{event:"dashboard", url, link}` through the session's ONE
+diagnostic channel (src/ui-log.ts — a TUI notification in a UI session, one
+stderr line headless) carrying the ACTUAL bound port —
 the EADDRINUSE fallback is reflected, never the configured port
 (`src/swarm-server/mount.ts` `dashboardUrlFor` / `dashboardLinkFor`; the
 bound port is never re-derived by a consumer). The session handle exposes
 `dashboardUrl` (tokenless) and `role` for programmatic consumers; the widget
-surface is the stderr line (the brief's "widget and/or mount line").
+surface is the announcement line (the brief's "widget and/or mount line").
 
 **Fragment-token rule (item 2).** The link carries the session's operator
 token in the URL FRAGMENT: `http://127.0.0.1:<port>/#t=<token>`. A fragment

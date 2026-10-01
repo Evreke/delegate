@@ -29,6 +29,7 @@ import { buildWorkerView } from "./worker-view.ts";
 // commands copy is deleted (audit finding 7, one definition per helper).
 import { asDelegateError, errText } from "./tool-result.ts";
 import { type DelegateError, type Transport } from "./host.ts";
+import { uiLog } from "./ui-log.ts";
 
 // ===========================================================================
 // SECTION 3/3 — the /delegate-teardown command
@@ -59,10 +60,11 @@ export function registerCommands(pi: import("@earendil-works/pi-coding-agent").E
 		async handler(_args, ctx) {
 			// Headless guard (pi docs Mode Behavior): the confirm/notify dialogs
 			// below need a UI, and a headless session must NOT auto-confirm a
-			// destructive teardown — refuse with a text-only note instead (console
-			// is the headless channel, same as the watcher sink).
+			// destructive teardown — refuse with a text-only note instead (the
+			// uiLog router's stderr fallback is the headless channel, same as
+			// the watcher sink).
 			if (!ctx.hasUI || !ctx.ui) {
-				console.error(
+				uiLog(
 					"[pi-delegate] /delegate-teardown needs a UI session (it confirms before tearing down) — run it in the interactive session that owns the workers.",
 				);
 				return;

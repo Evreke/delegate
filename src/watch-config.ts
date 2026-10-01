@@ -45,6 +45,7 @@ import { WATCH_DEFAULT_STALE_AFTER_MS } from "./usage.ts";
 // The scheduled-wake limits' defaults are CANONICALLY owned by the leaf
 // store module (watch-schedule.ts) — one constant, no second copy (Law 9).
 import { SCHEDULE_DEFAULT_MAX_ACTIVE, SCHEDULE_DEFAULT_MAX_RUNS, SCHEDULE_DEFAULT_MIN_DELAY_MS } from "./watch-schedule.ts";
+import { uiLog } from "./ui-log.ts";
 
 // ---------------------------------------------------------------------------
 // Config — {"watch": {"intervalMs": 10000, "settleGateMs": 15000}} from
@@ -242,7 +243,7 @@ let retireTtlWarned = false;
 function warnBadRetireTtl(v: unknown): void {
 	if (retireTtlWarned) return;
 	retireTtlWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad watch.retireTtlMs (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${RETIRE_DEFAULT_TTL_MS} ms`,
 	);
@@ -253,7 +254,7 @@ let retireSwitchWarned = false;
 function warnBadRetireSwitch(v: unknown): void {
 	if (retireSwitchWarned) return;
 	retireSwitchWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad watch.retire (${JSON.stringify(v) ?? "undefined"}) — ` +
 			"auto-teardown stays DISABLED (default false)",
 	);
@@ -264,7 +265,7 @@ let legacyFailOpenWarned = false;
 function warnBadLegacyFailOpen(v: unknown): void {
 	if (legacyFailOpenWarned) return;
 	legacyFailOpenWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad watch.legacyFailOpen (${JSON.stringify(v) ?? "undefined"}) — ` +
 			"legacy no-owner delivery stays DISABLED (default false; true is unsafe on multi-session)",
 	);
@@ -275,7 +276,7 @@ let durableDeliveryWarned = false;
 function warnBadDurableDelivery(v: unknown): void {
 	if (durableDeliveryWarned) return;
 	durableDeliveryWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad watch.durableDelivery (${JSON.stringify(v) ?? "undefined"}) — ` +
 			"durable delivery stays ENABLED (default true; false reverts to memory-only dedup)",
 	);
@@ -359,7 +360,7 @@ let scheduleMinDelayWarned = false;
 function warnBadScheduleMinDelay(v: unknown): void {
 	if (scheduleMinDelayWarned) return;
 	scheduleMinDelayWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad schedule.minDelayMs (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${SCHEDULE_DEFAULT_MIN_DELAY_MS} ms`,
 	);
@@ -370,7 +371,7 @@ let scheduleMaxActiveWarned = false;
 function warnBadScheduleMaxActive(v: unknown): void {
 	if (scheduleMaxActiveWarned) return;
 	scheduleMaxActiveWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad schedule.maxActive (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${SCHEDULE_DEFAULT_MAX_ACTIVE}`,
 	);
@@ -381,7 +382,7 @@ let scheduleMaxRunsWarned = false;
 function warnBadScheduleMaxRuns(v: unknown): void {
 	if (scheduleMaxRunsWarned) return;
 	scheduleMaxRunsWarned = true;
-	console.error(
+	uiLog(
 		`[pi-delegate watch] bad schedule.maxRuns (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${SCHEDULE_DEFAULT_MAX_RUNS}`,
 	);

@@ -103,9 +103,10 @@ process.env.PI_DELEGATE_EXCHANGE_ROOT = EXCHANGE_SANDBOX;
 	process.env.PI_CODING_AGENT_DIR = agentDirFile;
 
 	const errSpy: string[] = [];
-	const origErr = console.error;
-	console.error = (...args: unknown[]) => {
-		errSpy.push(args.map(String).join(" "));
+	const origErr = process.stderr.write.bind(process.stderr);
+	process.stderr.write = (s: unknown) => {
+		errSpy.push(String(s));
+		return true;
 	};
 	try {
 		const before = watcherAuditAppendFailureCount();
@@ -118,7 +119,7 @@ process.env.PI_DELEGATE_EXCHANGE_ROOT = EXCHANGE_SANDBOX;
 		const warns = errSpy.filter((m) => m.includes("audit-log append FAILED"));
 		check("SC5 exactly ONE warn-once incident line (no per-tick spam)", warns.length === 1, JSON.stringify(errSpy));
 	} finally {
-		console.error = origErr;
+		process.stderr.write = origErr;
 		if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
 	}

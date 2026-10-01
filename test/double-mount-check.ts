@@ -69,11 +69,11 @@ const SESSION_B = process.env.DM_SESSION_B;
 
 const sent = [];
 const refusalLogs = [];
-const realConsoleError = console.error.bind(console);
-console.error = (...args) => {
-	const line = args.map(String).join(" ");
+const realStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = (s) => {
+	const line = String(s);
 	if (line.includes("refused")) refusalLogs.push(line);
-	realConsoleError(...args);
+	return realStderrWrite(s);
 };
 
 const o1 = await import(OBSERVE);

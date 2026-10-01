@@ -68,6 +68,11 @@
  *      single-screen regions (no mode switcher), system-only font stacks with
  *      the palette/type scale as CSS custom properties, and the status
  *      language's marker-left contract.
+ *  13. The ONE terminal-writer choke point (T1.10, src/ui-log.ts): no direct
+ *      stderr/console write outside the router's headless fallback — inside
+ *      the pi TUI the process stderr IS the terminal the TUI renders on;
+ *      `process.stdout.write` stays the spawned `swarm` CLI's channel
+ *      (src/swarm/ only). Bite-proved (T1.10b).
  *
  * Exit 0 only if all checks pass.
  */
@@ -462,6 +467,59 @@ check(
 }
 
 // ---------------------------------------------------------------------------
+// 1.10 The ONE terminal-writer choke point (src/ui-log.ts): a TUI session's
+// process stderr IS the terminal the TUI renders on — any direct
+// stderr/console write from extension code corrupts the session UI (the
+// four-times-reported "JSON logs in the TUI" bug class). All diagnostics go
+// through uiLog(); process.stdout.write is the spawned `swarm` CLI
+// subprocess contract (src/swarm/ only).
+// ---------------------------------------------------------------------------
+
+const TERMINAL_WRITE_ALLOWLIST: Array<{ file: string; pattern: RegExp }> = [
+	{ file: "ui-log.ts", pattern: /process\.stderr\.write\(/ }, // the router's headless fallback — the ONE sanctioned stderr write
+];
+const CLI_STDOUT_PATTERN = /process\.stdout\.write\(/;
+
+function scanTerminalWriteOffenders(source: string, relFile: string): string[] {
+	const hits: string[] = [];
+	for (const p of [/console\.log\(/, /console\.error\(/, /console\.warn\(/, /process\.stderr\.write\(/]) {
+		if (p.test(source) && !TERMINAL_WRITE_ALLOWLIST.some((a) => a.file === relFile && a.pattern.test(source))) {
+			hits.push(`${relFile}: ${p.source}`);
+		}
+	}
+	if (CLI_STDOUT_PATTERN.test(source) && !relFile.startsWith("swarm/")) {
+		hits.push(`${relFile}: ${CLI_STDOUT_PATTERN.source} (stdout is the spawned swarm CLI's channel only)`);
+	}
+	return hits;
+}
+
+{
+	const offenders = [
+		...listTsFiles(resolve(ROOT, "src")).map((f) => ({ f: f.replace(`${resolve(ROOT, "src")}/`, ""), src: readFileSync(f, "utf8") })),
+		{ f: "../index.ts", src: readFileSync(resolve(ROOT, "index.ts"), "utf8") },
+	].flatMap(({ f, src }) => scanTerminalWriteOffenders(src, f));
+	check(
+		"T1.10a no direct stderr/console write outside src/ui-log.ts; process.stdout.write only in the swarm CLI dir",
+		offenders.length === 0,
+		offenders.join(" | "),
+	);
+
+	// Bite-proof (the pin is not vacuous): the scanner flags a fixture that
+	// writes to the terminal directly — both the stderr shape and an
+	// out-of-place stdout write.
+	const bite = [
+		...scanTerminalWriteOffenders(`export const x = () => console.error("spam");`, "fixture.ts"),
+		...scanTerminalWriteOffenders(`export const y = () => process.stderr.write("spam\\n");`, "fixture.ts"),
+		...scanTerminalWriteOffenders(`export const z = () => process.stdout.write("spam\\n");`, "fixture.ts"),
+	];
+	check(
+		"T1.10b the pin BITES: fixture stderr/console writes and a misplaced stdout write are flagged",
+		bite.length === 3,
+		JSON.stringify(bite),
+	);
+}
+
+// ---------------------------------------------------------------------------
 // 2. delegate_status tool read-only (section slice: observe.ts SECTION 1/3)
 // ---------------------------------------------------------------------------
 
@@ -738,7 +796,7 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 		`const { makeWatcherLogSink } = await import(${JSON.stringify(resolve(ROOT, "src/observe.ts"))});` +
 		`const { appendFileSync } = await import("node:fs");` +
 		`const seen = [];` +
-		`const orig = console.error; console.error = (...a) => { seen.push(a.join(" ")); };` +
+		`const orig = process.stderr.write.bind(process.stderr); process.stderr.write = (s) => { seen.push(String(s)); return true; };` +
 		`const sink = makeWatcherLogSink();` +
 		`sink("retired worker probe-1 (ttl)");` +
 		`sink("retire pass error for probe-2 (herdr exploded)");` +
@@ -748,7 +806,7 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 	const res = spawnSync("bun", ["-e", sinkSrc], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
 	let paneLines: string[] = [];
 	try {
-		// console.error writes to stderr — the surfaced-line JSON is the last line there
+		// the uiLog stderr fallback writes the surfaced line — the captured JSON array is the last line there
 		paneLines = JSON.parse((res.stderr?.trim().split("\n").pop() ?? "[]")) as string[];
 	} catch {
 		// spawn flake — surfaced by the empty-panes check below

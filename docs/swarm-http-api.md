@@ -152,9 +152,10 @@ body `{"text":"<non-empty>"}`.
 
 - **Token**: `Authorization: Bearer <operator token>`. The token is generated
   fresh per mount (`crypto.randomBytes(32)`) and surfaced ONLY on the
-  session's stderr as one `operator-token` line — never the journal, a
-  response body or a log file. Missing, malformed and wrong tokens yield the
-  SAME `401 E_SWARM_AUTH` refusal, compared in constant time.
+  session's ONE diagnostic channel (src/ui-log.ts: a TUI notification in a
+  UI session, one structured stderr `operator-token` line headless) — never
+  the journal, a response body or a log file. Missing, malformed and wrong
+  tokens yield the SAME `401 E_SWARM_AUTH` refusal, compared in constant time.
 - **Id spellings** (both accepted, additive since #62): `<id>` is EITHER the
   canonical **worker name** (v1) OR the **SwarmGraph SESSION node id** of the
   worker's session (the same spelling the console endpoint, §6, uses).

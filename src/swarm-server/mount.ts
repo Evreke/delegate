@@ -51,6 +51,7 @@ import { type JournalReader } from "../swarm/journal-read.ts";
 import { resolveSwarmStorage, type SwarmStorageConfig } from "../swarm/storage.ts";
 import { activeBackendName, manifestSource } from "../swarm/snapshot.ts";
 import { runOrchestratorVerb } from "../swarm/mailbox-verbs.ts";
+import { uiLog } from "../ui-log.ts";
 import type { SwarmManifestStore, SwarmUsageSource } from "../swarm/graph.ts";
 import type { SteerTransport } from "../mailbox-store.ts";
 
@@ -115,22 +116,27 @@ export interface MountSwarmServerDeps extends Omit<SwarmServerDeps, "usage" | "t
 	primaryWatch?: { intervalMs?: number; maxIntervalMs?: number };
 }
 
-/** One structured stderr line (level:warn, machine-readable). */
+/** One structured diagnostic line (level:warn, machine-readable) through the
+ *  session's ONE diagnostic channel — the uiLog router (src/ui-log.ts): a
+ *  TUI session renders it as a notification, a headless session writes one
+ *  stderr line. */
 function logAdvisory(event: string, fields: Record<string, unknown>): void {
 	try {
-		process.stderr.write(`${JSON.stringify({ level: "warn", component: "swarm-server", event, ...fields })}\n`);
+		uiLog(JSON.stringify({ level: "warn", component: "swarm-server", event, ...fields }));
 	} catch {
-		// stderr itself is advisory
+		// stringify itself is advisory
 	}
 }
 
-/** Surface the operator token on stderr — the session UI is its ONLY channel
- *  (Law 11: never the journal, a response body or a log FILE). One line. */
+/** Surface the operator token through the session's ONE diagnostic channel
+ *  (src/ui-log.ts: TUI notification in a UI session, one stderr line
+ *  headless) — the session UI is its ONLY channel (Law 11: never the
+ *  journal, a response body or a log FILE). One line. */
 function logOperatorToken(token: string): void {
 	try {
-		process.stderr.write(`${JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token })}\n`);
+		uiLog(JSON.stringify({ level: "info", component: "swarm-server", event: "operator-token", token }));
 	} catch {
-		// stderr itself is advisory
+		// stringify itself is advisory
 	}
 }
 

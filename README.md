@@ -214,8 +214,11 @@ For user-level call examples — from toy to real-world — see [EXAMPLES.md](EX
   local process can read); WRITES are operator-only and land under **#51**:
   `POST /api/workers/<id>/steer` and `POST /api/asks/<id>/answer` (body
   `{"text":"..."}`) require `Authorization: Bearer <operator token>`. The
-  token is generated per mount; the mount prints one `dashboard` stderr line
-  with the canonical link `http://127.0.0.1:<bound-port>/#t=<token>` — the
+  token is generated per mount; the mount announces one `dashboard` line
+  with the canonical link `http://127.0.0.1:<bound-port>/#t=<token>` through
+  the session's diagnostic channel (a TUI notification in an interactive
+  session — never a raw stderr write, which would corrupt the TUI; one
+  structured stderr line in headless sessions) — the
   token rides in the URL FRAGMENT (never a path/query/log), the dashboard
   moves it into sessionStorage and strips the address bar on load, and a
   bookmark without a fragment still prompts. Writes only

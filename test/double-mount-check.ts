@@ -31,9 +31,10 @@
  * Exit 0 only if all checks pass.
  */
 
+import { fileURLToPath } from "node:url";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { reportPathFor } from "../src/exchange.ts";
 
@@ -49,7 +50,8 @@ function check(name: string, ok: boolean, detail = "") {
 const ROOT = resolve(dirname2(import.meta.url), "..");
 
 function dirname2(url: string): string {
-	return new URL(".", url).pathname.replace(/\/$/, "");
+	// URL.pathname yields "/C:/…" on Windows — fileURLToPath gives the native form.
+	return dirname(fileURLToPath(url));
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +236,9 @@ let out: Record<string, unknown>;
 try {
 	out = runChild({
 		HOME,
+		// The watcher child reads its config through pi's agent dir; on Windows
+		// that comes from %USERPROFILE%, so $HOME alone would miss it.
+		PI_CODING_AGENT_DIR: join(HOME, ".pi", "agent"),
 		PI_DELEGATE_EXCHANGE_ROOT: EXCHANGE,
 		DM_OBSERVE: OBSERVE,
 		DM_COPY: COPY,

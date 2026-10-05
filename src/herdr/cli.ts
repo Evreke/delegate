@@ -7,9 +7,11 @@
  * (ARCHITECTURE.md Law 5 decomposition); the FUNCTION_CONTRACTs and
  * BUG_FIX_CONTEXTs below are its contract and travel with the code.
  *
- * Dependencies: node:child_process ONLY — no seam import, no other src/
- * module. This layer speaks EXEC-SHAPED errors (killed/signal/code/stdout/
- * stderr); mapping them into the E_* taxonomy is the caller's job
+ * Dependencies: node:child_process plus the OS launch policy module
+ * ../spawn-policy.ts — the win32 wrapper spelling and the tree-kill recipe
+ * live there, one writer for both adapters (TZ §3.6.3). No seam import, no
+ * other src/ module. This layer speaks EXEC-SHAPED errors (killed/signal/
+ * code/stdout/stderr); mapping them into the E_* taxonomy is the caller's job
  * (HerdrTransport), which is what keeps the CLI runner reusable and the seam
  * bottom-of-graph (pinned by test/herdr-split-check.ts).
  *

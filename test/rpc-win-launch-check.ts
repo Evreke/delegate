@@ -47,6 +47,18 @@ function check(name: string, ok: boolean, detail = "") {
 	}
 }
 
+// Watchdog (fail-fast discipline, PR #159 review): a hung check must exit
+// non-zero on its own, never hold the runner. Implemented as a throwing
+// timer on purpose: a process.exit() inside a pending timer callback
+// deterministically breaks this check's teardown timers under bun (the
+// W-teardown await never resolves); an uncaught throw gives the same
+// non-zero exit without that interaction. The runner's CHECK_TIMEOUT
+// remains the outer bound.
+const WATCHDOG_MS = 20_000;
+setTimeout(() => {
+	throw new Error(`WATCHDOG: rpc-win-launch-check exceeded ${WATCHDOG_MS}ms`);
+}, WATCHDOG_MS);
+
 // ---------------------------------------------------------------------------
 // P — the policy module's pure units
 // ---------------------------------------------------------------------------
@@ -313,7 +325,11 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 			exitSeenAt > 0 && resolvedAt >= exitSeenAt,
 			JSON.stringify({ exitSeenAt, resolvedAt, deltaMs: resolvedAt - exitSeenAt }),
 		);
-		check("W3 win32 teardown: the exit wait is bounded (a worker that never dies cannot hang teardown)", resolvedAt > 0, "teardown never returned");
+		check(
+			"W3 win32 teardown: the exit wait is bounded (a worker that never dies cannot hang teardown — resolution lands within the 3s exit-wait bound after the kill)",
+			resolvedAt > 0 && exitSeenAt > 0 && resolvedAt - exitSeenAt <= 3_100,
+			JSON.stringify({ resolvedAt, exitSeenAt, deltaMs: resolvedAt - exitSeenAt }),
+		);
 	} catch (err) {
 		check("W1-W3 win32 teardown ordering", false, String(err));
 	}

@@ -720,6 +720,18 @@ worker writes its report through `swarm write-report`).
   envelope verbatim (protocol identity, §4.2.2). Check:
   `test/fleet-view-scope-check.ts`.
 
+- **`winQuoteArg` quotes cmd.exe metacharacters (`& | < > ^ %`).** An argument
+  carrying `&` reached the command line unquoted and split it into two
+  commands (injection vector; `%VAR%` expanded even inside quotes). Any
+  argument containing a metacharacter is now quote-wrapped with internal
+  quotes doubled — inside quotes `& | < > ^` are literal. Known limit,
+  documented in the helper: `%VAR%` has no in-quote escape on the cmd.exe
+  command line — argv is operator-config data, never hostile input. Policy
+  spawns deliver the spelling verbatim (`windowsVerbatimArguments: true` —
+  node's own quoting would double-escape it and re-open the split). Pinned
+  by `test/win-quote-check.ts` (pure legs everywhere, real cmd.exe round-trip
+  on win32, verbatim delivery at both adapters). PR #159 review.
+
 - **The rpc host launches and kills correctly on Windows.** The adapter spawned
   a bare `pi` — on Windows npm installs the `pi.cmd` shim, so the spawn died
   before a worker existed — and killed with `child.kill("SIGKILL")`, which maps

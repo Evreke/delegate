@@ -641,7 +641,7 @@ export class RpcWorkerHost implements Transport {
 			const rollback = abandonedPid === undefined ? undefined : treeKillCommand(abandonedPid, this.platform);
 			if (rollback) {
 				try {
-					const killer = this.spawnProcess(rollback.command, rollback.args, { stdio: "ignore", windowsHide: true });
+					const killer = this.spawnProcess(rollback.command, rollback.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
 					// Fire-and-forget: a failed tree-kill must never crash the process —
 					// this path is already throwing E_START.
 					killer.on("error", () => {});
@@ -1037,7 +1037,7 @@ export class RpcWorkerHost implements Transport {
 						}
 						let killer: ChildProcess | undefined;
 						try {
-							killer = this.spawnProcess(kill.command, kill.args, { stdio: "ignore", windowsHide: true });
+							killer = this.spawnProcess(kill.command, kill.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
 							killer.on("error", () => {});
 						} catch { /* nothing to escalate */ }
 						// BUG_FIX_CONTEXT (field proof — live pi on Windows, the e2e leg):

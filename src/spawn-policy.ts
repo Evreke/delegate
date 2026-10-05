@@ -45,7 +45,9 @@ export interface SpawnPolicy {
  * happens HERE, per argument, in one unit-tested helper — an argument with
  * spaces/quotes survives the cmd.exe layer as ONE argv element on the other
  * side. Windows convention implemented: wrap in double quotes when the arg
- * contains a space, tab or quote; double the quotes inside
+ * contains a space, tab, quote or a cmd.exe metacharacter (`& | < > ^ %`) —
+ * a metacharacter outside quotes splits the command line (injection vector);
+ * inside quotes `& | < > ^` are literal. Double the quotes inside
  * (`say "hi"` → `"say ""hi"""`).
  * <p>
  * FUNCTION_CONTRACT:
@@ -53,14 +55,23 @@ export interface SpawnPolicy {
  *   of both backends do not)
  * Output: the cmd.exe-safe spelling of that element
  * Guarantees:
- *   - plain args (no space/tab/quote) pass through UNCHANGED (byte-identical,
- *     so `taskkill /pid 123 /T /F` shapes stay clean)
+ *   - plain args (no space/tab/quote/cmd.exe metachar) pass through UNCHANGED
+ *     (byte-identical, so `taskkill /pid 123 /T /F` shapes stay clean)
+ *   - KNOWN LIMIT: `%VAR%` expands even inside double quotes — the cmd.exe
+ *     command line has no in-quote escape for `%`. Documented, not worked
+ *     around: argv is operator-config data (never hostile input), and the
+ *     metacharacter quoting removes the command-splitting vector (`& | < > ^`
+ *     cannot split a quoted argument)
  *   - quoting is idempotent-safe for the round-trip test: quote-wrap + ""-doubling
  *     is reversible by the documented cmd de-quoting (strip outer quotes, "" → ")
+ *   - DELIVERY: this spelling is final ONLY through a windowsVerbatimArguments
+ *     spawn — node's own quoting would double-escape the quotes and re-open
+ *     the metacharacter split. Both adapters' policy spawns set it (pinned by
+ *     Q6 of test/win-quote-check.ts)
  * Raises: never
  */
 export function winQuoteArg(arg: string): string {
-	if (!/[ \t"]/.test(arg)) return arg;
+	if (!/[ \t"&|<>^%]/.test(arg)) return arg;
 	return `"${arg.replace(/"/g, '""')}"`;
 }
 

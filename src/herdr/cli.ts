@@ -208,6 +208,10 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 		const child = spawn(policy.command, policy.args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
+			// The policy args are ALREADY cmd.exe-quoted (winQuoteArg) — deliver
+			// the spelling byte-exact; node's own quoting would double-escape the
+			// quotes and re-open the metacharacter split (PR #159 review).
+			windowsVerbatimArguments: true,
 			...(env ? { env } : {}),
 		});
 		let stdout = "";
@@ -254,7 +258,7 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 					if (pid !== undefined) {
 						const tk = treeKillCommand(pid, platform);
 						if (tk) {
-							const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true });
+							const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
 							// Fire-and-forget: a failed taskkill must never crash the process
 							// with an unhandled 'error' event — the promise is already settled.
 							killer.on("error", () => {});

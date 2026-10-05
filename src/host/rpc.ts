@@ -640,12 +640,33 @@ export class RpcWorkerHost implements Transport {
 			const abandonedPid = child.pid;
 			const rollback = abandonedPid === undefined ? undefined : treeKillCommand(abandonedPid, this.platform);
 			if (rollback) {
-				try {
-					const killer = this.spawnProcess(rollback.command, rollback.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
-					// Fire-and-forget: a failed tree-kill must never crash the process —
-					// this path is already throwing E_START.
-					killer.on("error", () => {});
-				} catch { /* nothing to escalate */ }
+				// Bounded wait for the tree-kill to land (PR #159 review: the
+				// fire-and-forget left the abandoned tree alive-or-unknown when
+				// E_START propagated — the same asymmetry teardown already fixed;
+				// the caller's retry must not race a still-living tree). The
+				// killer's own exit is the "tree is dead" signal; error and the
+				// shared KILL_EXIT_WAIT_MS bound resolve either way — a failed
+				// kill must never crash this already-failing path. A killer
+				// without a pid never started: nothing to wait for.
+				await new Promise<void>((resolveRollback) => {
+					let exitWait: ReturnType<typeof setTimeout> | undefined;
+					const done = () => {
+						if (exitWait) clearTimeout(exitWait);
+						resolveRollback();
+					};
+					try {
+						const killer = this.spawnProcess(rollback.command, rollback.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
+						if (!killer.pid) {
+							done();
+							return;
+						}
+						killer.once("exit", done);
+						killer.on("error", done);
+						exitWait = setTimeout(done, KILL_EXIT_WAIT_MS);
+					} catch {
+						done();
+					}
+				});
 			} else {
 				try { child.kill("SIGKILL"); } catch { /* already dead */ }
 			}

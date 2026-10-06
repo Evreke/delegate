@@ -21,9 +21,11 @@
  *       keeps ONE import surface, src/herdr/host.ts (package.json "./herdr").
  *   S5  the facade still serves the pre-split export surface under the same
  *       names (behavioral: a dynamic import of the adapter module).
- *   S6  the frozen herdr CLI/OS surface stays adapter-local: every token below
- *       is present inside src/herdr/ and absent from every other src/ file and
- *       index.ts.
+ *   S6  the frozen herdr CLI/OS surface stays adapter-local: every herdr token
+ *       below is present inside src/herdr/ and absent from every other src/
+ *       file and index.ts; the OS launch vocabulary (cmd.exe/taskkill) lives
+ *       ONLY inside src/spawn-policy.ts — the adapter may mention it in prose
+ *       (docs), never in code (herdr files are scanned comment-stripped).
  *   S7  the extension's single documented raw-throw deviation (Law 8) is still
  *       exactly one raw `throw new Error` inside src/herdr/, and it lives in
  *       the CLI runner (runHerdr's exec-parity wrapper).
@@ -236,17 +238,23 @@ const PRE_SPLIT_EXPORTS = [
 		"tab.tab_id",
 		"HERDR_WORKSPACE_ID",
 	];
-	// The OS launch policy is NOT herdr vocabulary: cmd.exe and taskkill name the
-	// host OS, and since this commit the rpc backend runs on the SAME policy
-	// module (a bare `pi` never resolves on Windows). They are confined to that
-	// one module — the amendment is "which single module", not "anywhere".
+	// The OS launch policy is NOT herdr vocabulary: cmd.exe and taskkill name
+	// the host OS, and since this commit the rpc backend runs on the SAME policy
+	// module (a bare `pi` never resolves on Windows). PR #159 review (item 6b):
+	// they must live ONLY in the policy module — the either-or reading (a token
+	// present in EITHER the adapter or the policy) let the vocabulary squat in
+	// the adapter's code. The adapter may still MENTION them in prose (the
+	// external-dependency docs), so herdr files are scanned with comments
+	// stripped; a code mention inside the adapter is a leak again.
 	const OS_LAUNCH = ["taskkill", "cmd.exe"];
 	const POLICY_MODULE = resolve(ROOT, join("src", "spawn-policy.ts"));
+	const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 	const inside = HERDR_FILES.map((f) => readFileSync(f, "utf8")).join("\n");
+	const herdrCode = HERDR_FILES.map((f) => stripComments(readFileSync(f, "utf8"))).join("\n");
 	const policySrc = existsSync(POLICY_MODULE) ? readFileSync(POLICY_MODULE, "utf8") : "";
 	const missingInside = [
 		...HERDR_VOCAB.filter((t) => !inside.includes(t)),
-		...OS_LAUNCH.filter((t) => !inside.includes(t) && !policySrc.includes(t)),
+		...OS_LAUNCH.filter((t) => !policySrc.includes(t)),
 	];
 	const PRODUCTION_OUTSIDE = [
 		...listTs(resolve(ROOT, "src")).filter((f) => !f.startsWith(HERDR_PREFIX) && f !== POLICY_MODULE),
@@ -258,13 +266,16 @@ const PRE_SPLIT_EXPORTS = [
 		const src = readFileSync(file, "utf8");
 		for (const t of [...HERDR_VOCAB, ...OS_LAUNCH]) if (src.includes(t)) leaked.push(`${file}: ${t}`);
 	}
+	// The adapter's CODE must not use OS vocabulary (comments stripped above —
+	// prose mentions in the external-dependency docs stay legal).
+	const herdrOsLeak = OS_LAUNCH.filter((t) => herdrCode.includes(t));
 	// The policy module speaks OS vocabulary ONLY — a herdr token moving into it
 	// would be exactly the leak this rule exists to catch.
 	const vocabInPolicy = HERDR_VOCAB.filter((t) => policySrc.includes(t));
 	check(
-		"S6 the frozen herdr CLI strings live inside src/herdr/ and the OS launch strings inside src/spawn-policy.ts — nowhere else in production src/ (they never leak above the adapter)",
-		missingInside.length === 0 && leaked.length === 0 && vocabInPolicy.length === 0,
-		`missing: ${missingInside.join(", ")} | leaked: ${leaked.join(", ")} | herdr vocab in the policy module: ${vocabInPolicy.join(", ")}`,
+		"S6 the frozen herdr CLI strings live inside src/herdr/ and the OS launch strings ONLY inside src/spawn-policy.ts (the adapter may mention them in docs, not in code) — nowhere else in production src/",
+		missingInside.length === 0 && leaked.length === 0 && vocabInPolicy.length === 0 && herdrOsLeak.length === 0,
+		`missing: ${missingInside.join(", ")} | leaked: ${leaked.join(", ")} | OS vocab in herdr code: ${herdrOsLeak.join(", ")} | herdr vocab in the policy module: ${vocabInPolicy.join(", ")}`,
 	);
 }
 

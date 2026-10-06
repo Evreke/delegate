@@ -343,7 +343,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 		await posix.host.teardown({ name: "order-posix", placement });
 		const took = Date.now() - t0;
 		const worker = posix.spawns[0].child;
-		check("W4 POSIX teardown: resolves right after SIGKILL, never waits for an exit it did not ask for", worker.kills.includes("SIGKILL") && took < 3_600 && posix.spawns.length === 1, JSON.stringify({ took, kills: worker.kills, spawns: posix.spawns.length }));
+		// Upstream (Issue #15) added a bounded termination-notice window before
+		// the kill phase on POSIX — the resolve now lands right after SIGKILL,
+		// but SIGKILL itself comes after notice (2s) + grace (3s). The pin's
+		// job is the ORDERING, not the absolute latency: it must stay below
+		// notice + grace + a small margin (a wait for the child's exit would
+		// add the whole KILL_EXIT_WAIT_MS on top and trip this bound).
+		check("W4 POSIX teardown: resolves right after SIGKILL, never waits for an exit it did not ask for", worker.kills.includes("SIGKILL") && took < 5_100 && posix.spawns.length === 1, JSON.stringify({ took, kills: worker.kills, spawns: posix.spawns.length }));
 	} catch (err) {
 		check("W4 POSIX teardown timing", false, String(err));
 	}

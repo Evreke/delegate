@@ -495,7 +495,10 @@ function scanTerminalWriteOffenders(source: string, relFile: string): string[] {
 
 {
 	const offenders = [
-		...listTsFiles(resolve(ROOT, "src")).map((f) => ({ f: f.replace(`${resolve(ROOT, "src")}/`, ""), src: readFileSync(f, "utf8") })),
+		// Windows-portable (PR #159 series): resolve() yields backslash paths on
+		// win32 — strip the root and normalize separators so the allowlist's
+		// posix-shaped relFile ("ui-log.ts", "swarm/cli.ts") matches on any host.
+		...listTsFiles(resolve(ROOT, "src")).map((f) => ({ f: relative(resolve(ROOT, "src"), f).split(/[\\/]/).join("/"), src: readFileSync(f, "utf8") })),
 		{ f: "../index.ts", src: readFileSync(resolve(ROOT, "index.ts"), "utf8") },
 	].flatMap(({ f, src }) => scanTerminalWriteOffenders(src, f));
 	check(

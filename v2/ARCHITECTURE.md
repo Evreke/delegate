@@ -189,6 +189,11 @@ Notes:
 v2 inherits the documentation discipline: behavior truth lives in code;
 these two documents are contracts, nothing more.
 
+**Architecture decision records**: decisions carrying the ADR bar (hard
+to reverse + surprising without context + a real trade-off) are recorded
+in `v2/docs/adr/NNNN-*.md` (convention approved 2026-10-06). ADRs are
+created lazily, never per-decision by default.
+
 ## 12. Annex — Borrowed from v1 (ideas only, never code)
 
 Borrowed: brief→spawn→report cycle · Question/Answer (mailbox idea) ·

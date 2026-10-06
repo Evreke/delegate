@@ -1,12 +1,20 @@
-# pi-delegate-v2 — Core Domain
+# pi-delegate-v2 — Core Domain (DRAFT)
 
 The core domain language of pi-delegate-v2: a pi extension with which an
 Operator delegates work to a Fleet of pi-agent Workers from the Operator's
-pi session. The Core is UI-blind: Surfaces consume it; it never knows
-about them.
+pi session. The Core is UI-blind: Surfaces consume it; it never knows about them.
 
 Terms tagged **(v1)** are ideas explicitly borrowed from pi-delegate v1 —
 ideas only, never code (agreed constraint). Un-tagged terms are new in v2.
+
+Harness vocabulary is used descriptively, never defined or owned here:
+«agent» means a pi agent — an independent concept outside delegation. In
+delegate's language, the agent managing the Fleet is the **Orchestrator**;
+agents executing Briefs are **Workers**.
+
+Built from the approved v2 decision tree (rounds 5–12). v1's own CONTEXT.md
+was deliberately not consulted: the vocabulary is rebuilt, coincidences are
+marked, not inherited.
 
 ## Language
 
@@ -19,8 +27,9 @@ _Avoid_: user, stakeholder.
 
 **Orchestrator**:
 The pi agent in the Operator's pi session that plans work, writes
-Briefs, Spawns Workers, relays Questions and Answers, and collects
-Reports. Exactly one per Fleet.
+Briefs, Spawns Workers, relays Questions and Answers, collects Reports,
+and verifies them against the Brief's Done criteria before completion
+reaches the Operator. Exactly one per Fleet.
 _Avoid_: coordinator, lead, PM.
 
 ### Fleet & Workers
@@ -79,7 +88,8 @@ _Avoid_: job, story.
 
 **Done criteria**:
 The verifiable conditions in a Brief that decide when the Task is
-complete.
+complete — the side of the two-sided contract that the Report's
+Evidence must prove.
 _Avoid_: DoD, acceptance criteria.
 
 **Budget** (v1):
@@ -110,7 +120,9 @@ _Avoid_: cancel, kill.
 Deliver a new instruction to a Worker. On an idle Worker it takes
 effect at once; on a working Worker it enters at the next step
 boundary — platform-guaranteed, visible as queued until delivered.
-To act sooner, Interrupt first.
+On a Paused Worker it lifts the Pause and takes effect at once — a
+Steer is an implicit Resume. To act sooner on a busy Worker,
+Interrupt first.
 _Avoid_: nudge, message.
 
 **Stop**:
@@ -161,16 +173,17 @@ The single unit the Core emits outward; Streams are made of Events.
 _Avoid_: message, notification.
 
 **Surface**:
-A consumer of the Core's Events and queries. The TUI (widget +
-commands) is one Surface; a web UI is another. The Core is blind to
-Surfaces.
+A consumer of the Core's Events and queries. The TUI (widget) is one
+Surface; a web UI is another. The Core is blind to Surfaces.
 _Avoid_: view, dashboard, frontend.
 
 ### Lifecycle
 
 **Working**: The live state of a Worker executing its Brief.
 
-**Paused**: Suspended by Pause; alive, not progressing.
+**Paused**: Suspended by Pause — alive, but no new step starts until
+Resume, a Steer, or Stop. A Steer on a Paused Worker lifts the Pause
+(implicit Resume).
 
 **Asking**: Suspended with an open Question.
 

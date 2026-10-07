@@ -1,4 +1,7 @@
-# pi-delegate-v2 — Core Domain (DRAFT)
+# pi-delegate-v2 — Core Domain
+
+Revised 2026-10-07 (Stakeholder decisions: Budget unit, completion records,
+Watchdog, manifest).
 
 The core domain language of pi-delegate-v2: a pi extension with which an
 Operator delegates work to a Fleet of pi-agent Workers from the Operator's
@@ -93,8 +96,10 @@ Evidence must prove.
 _Avoid_: DoD, acceptance criteria.
 
 **Budget** (v1):
-The mandatory limit on a Worker's consumption. Every Worker has one;
-exhausting it ends the run.
+The mandatory limit on a Worker's consumption, in **output tokens** (sum of
+assistant output). Every Worker has one; exhausting it ends the run.
+Accrues only during executed steps — no ticks while Paused, Asking, or
+idle; cumulative per Worker session across resumes.
 _Avoid_: cap, quota, limit.
 
 ### Control
@@ -143,9 +148,18 @@ _Avoid_: response, reply.
 ### Completion
 
 **Report** (v1):
-The structured account every run ends with: Status, Summary, Artifacts,
-Evidence. The Report is the completion criterion — not process state.
+The structured account of a run: Status, Summary, Artifacts, Evidence.
+Always **worker-authored** — the Core never writes one. The Report is the
+completion criterion — not process state.
 _Avoid_: result, output.
+
+**Termination Record**:
+The Core-authored completion record of last resort, written only when no
+Report could be obtained from the Worker (crash, missing-report,
+invalid-report, budget, stopped-by-operator). Strict Core-owned schema,
+zero work facts: reason, process facts, and pointers (session log, invalid
+Report file). Proves the ending, never the Done criteria.
+_Avoid_: crash report, tombstone, failure report.
 
 **Status**:
 A Report's verdict: `done`, `stopped`, or `failed`.
@@ -164,9 +178,26 @@ _Avoid_: deliverable, output.
 
 **Stream** (v1 read-model idea):
 The append-only record of one Worker's raw activity: steps, tool calls,
-model messages, reasoning. Written always, regardless of any Surface —
-full transparency.
+model messages, reasoning — the Worker's native pi session JSONL, living
+in pi-owned storage. Written always, regardless of any Surface — full
+transparency. The Core appends domain events through pi's API and records
+pointers; it never writes a parallel copy.
 _Avoid_: log, feed, trace.
+
+**Watchdog**:
+The Core component that senses Worker process facts (liveness, exit,
+completion) and signals them asynchronously — Events to Surfaces, wakes to
+the Orchestrator — so no agent burns tokens polling. Reports raw facts
+only: classification, Budget enforcement, and recovery are Core domain
+rules. Fail-fast and bounded; degrades to polling-only on internal error.
+_Avoid_: watcher, monitor, supervisor.
+
+**Fleet Manifest**:
+The per-Fleet pointer table in the exchange directory: Worker name →
+session id, session file path, worker cwd, spawn config, end status and
+reason. The anchor of salvage — sufficient to resume any Worker session
+from a fresh process. Nothing more than a pointer table.
+_Avoid_: registry, index, journal.
 
 **Event**:
 The single unit the Core emits outward; Streams are made of Events.
@@ -188,10 +219,12 @@ Resume, a Steer, or Stop. A Steer on a Paused Worker lifts the Pause
 **Asking**: Suspended with an open Question.
 
 **Ended**: Terminal. Every Worker reaches Ended exactly once, and always
-with a Report; the variant comes from the Report's Status.
+with a completion record — a worker-authored Report or, as last resort, a
+Core-authored Termination Record; the variant comes from the record's
+Status and reason.
 
 The Fleet is idle exactly when every Worker is Ended.
 
 ---
 
-Approved by the Stakeholder, 2026-10-06.
+Approved by the Stakeholder, 2026-10-06; revised 2026-10-07.

@@ -1,7 +1,8 @@
 # pi-delegate-v2 — Core Domain
 
-Revised 2026-10-07 (Stakeholder decisions: Budget unit, completion records,
-Watchdog, manifest).
+Revised 2026-10-08 (Stakeholder decisions: Budget unit, completion
+records, Watchdog, manifest; controls simplification, uniform Stop,
+Critic, Worker Events, Worktree cleanup).
 
 The core domain language of pi-delegate-v2: a pi extension with which an
 Operator delegates work to a Fleet of pi-agent Workers from the Operator's
@@ -75,7 +76,10 @@ Operator's pi session directly.
 **Worktree** (v1 idea):
 Checkout mode in which the Worker works in its own git worktree: one
 per Worker, created and owned by v2 itself — no external multiplexer.
-A Worker never edits outside its own Worktree.
+By Brief discipline (prompt-level, not technically enforced) a Worker
+does not edit outside its own Worktree. The Worktree is cleaned after
+its branch merges into the working line — the Orchestrator executes the
+cleanup.
 _Avoid_: branch, isolation mode, placement, sandbox.
 
 ### Work packages
@@ -98,47 +102,42 @@ _Avoid_: DoD, acceptance criteria.
 **Budget** (v1):
 The mandatory limit on a Worker's consumption, in **output tokens** (sum of
 assistant output). Every Worker has one; exhausting it ends the run.
-Accrues only during executed steps — no ticks while Paused, Asking, or
-idle; cumulative per Worker session across resumes.
+Accrues only during executed steps — no ticks while Asking or idle;
+cumulative per Worker session across resumes.
 _Avoid_: cap, quota, limit.
 
 ### Control
 
 **Control**:
-One of the five commands over a Worker: Pause, Resume, Interrupt,
-Steer, Stop.
+One of the three commands over a Worker: Interrupt, Steer, Stop.
 _Avoid_: remote, command.
-
-**Pause**:
-Suspend a Worker's progress while keeping it alive and resumable.
-_Avoid_: freeze, hold.
-
-**Resume**:
-Continue a Paused Worker.
-_Avoid_: unpause, play.
 
 **Interrupt** (v1):
 Abort a Worker's current step at once; the Worker stays alive and idle.
+Refused while the Worker is Asking.
 _Avoid_: cancel, kill.
 
 **Steer** (v1, semantics corrected):
 Deliver a new instruction to a Worker. On an idle Worker it takes
 effect at once; on a working Worker it enters at the next step
 boundary — platform-guaranteed, visible as queued until delivered.
-On a Paused Worker it lifts the Pause and takes effect at once — a
-Steer is an implicit Resume. To act sooner on a busy Worker,
+Refused while the Worker is Asking. To act sooner on a busy Worker,
 Interrupt first.
 _Avoid_: nudge, message.
 
 **Stop**:
-End a Worker for good. The run still ends with a Report.
+End a Worker for good: any active run is aborted, any open Question
+closed, and the Worker gets one bounded grace nudge to write its final
+Report. The run ends with a completion record — the Report if written
+within grace, else a Termination Record.
 _Avoid_: kill, terminate.
 
 ### Questions
 
 **Question** (v1 "mailbox" idea):
 A Worker's mid-run request to the Operator, relayed by the Orchestrator.
-While a Question is open, the Worker is suspended.
+While a Question is open, the Worker is suspended; only Answer or Stop
+apply — other Controls are refused.
 _Avoid_: clarification request, mailbox.
 
 **Answer**:
@@ -174,15 +173,42 @@ _Avoid_: proof, support.
 A file a run produced that is meant to outlive the Worker.
 _Avoid_: deliverable, output.
 
+**Verification mode**:
+How a Report is checked against the Done criteria: `self` (the
+Orchestrator alone) or `critic` (an independent Critic Worker). A Spawn
+parameter, default from configuration; chosen deterministically —
+advisory signals may inform the choice, never gate it.
+_Avoid_: review mode, QA level.
+
+**Critic**:
+An ad-hoc Worker (Role `critic`) performing isolated verification of a
+Report against the Done criteria by inspecting its Evidence — read-only
+over the implementation. Flags criteria problems in its own Report;
+never redefines criteria.
+_Avoid_: reviewer, judge, auditor.
+
 ### Observation
 
 **Stream** (v1 read-model idea):
 The append-only record of one Worker's raw activity: steps, tool calls,
 model messages, reasoning — the Worker's native pi session JSONL, living
 in pi-owned storage. Written always, regardless of any Surface — full
-transparency. The Core appends domain events through pi's API and records
-pointers; it never writes a parallel copy.
+transparency. Read-only for v2: the Core never writes into it, and no
+v2 component or Surface parses pi's internal format.
 _Avoid_: log, feed, trace.
+
+**Worker Events**:
+The v2-owned domain record of one Worker — an `events.jsonl` per Worker
+in the exchange tree: Spawn metadata, applied Controls,
+Questions/Answers, Budget events, completion-record references. With
+the Stream, the Worker's full story.
+_Avoid_: journal, telemetry, domain log.
+
+**Scheduled Wake**:
+A time-triggered followUp into the Operator session (`fleet_schedule`):
+one-shot or periodic — missed periodic runs coalesce into one advanced
+run. A hint: `fleet_status` stays authoritative.
+_Avoid_: timer, cron, alarm.
 
 **Watchdog**:
 The Core component that senses Worker process facts (liveness, exit,
@@ -212,10 +238,6 @@ _Avoid_: view, dashboard, frontend.
 
 **Working**: The live state of a Worker executing its Brief.
 
-**Paused**: Suspended by Pause — alive, but no new step starts until
-Resume, a Steer, or Stop. A Steer on a Paused Worker lifts the Pause
-(implicit Resume).
-
 **Asking**: Suspended with an open Question.
 
 **Ended**: Terminal. Every Worker reaches Ended exactly once, and always
@@ -227,4 +249,4 @@ The Fleet is idle exactly when every Worker is Ended.
 
 ---
 
-Approved by the Stakeholder, 2026-10-06; revised 2026-10-07.
+Approved by the Stakeholder, 2026-10-06; revised 2026-10-08.

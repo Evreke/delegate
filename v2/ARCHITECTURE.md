@@ -1,9 +1,10 @@
 # pi-delegate-v2 — Core Architecture
 
 Design document for the first usable release of pi-delegate-v2 (the Core).
-Status: **approved by the Stakeholder, 2026-10-06; revised 2026-10-07**
+Status: **approved by the Stakeholder, 2026-10-06; revised 2026-10-08**
 (Stakeholder decisions: completion records, recovery, delivery, session
-storage, salvage). Decisions carrying the ADR bar live in `v2/docs/adr/`.
+storage, salvage; controls simplification, uniform Stop, domain-event
+files, scheduler, verification/Critic, Worktree cleanup, versioning). Decisions carrying the ADR bar live in `v2/docs/adr/`.
 Domain language: [CONTEXT.md](./CONTEXT.md) — domain terms are
 capitalized. Every claim traces to a Stakeholder-approved decision or a
 verified platform fact.
@@ -25,8 +26,12 @@ Watchdog, TUI Surface (widget).
 any non-pi harness/backend · compatibility with v1 artifacts ·
 Orchestrator-in-Orchestrator (Workers delegating further) · Fleet
 surviving session restart (artifacts deliberately survive for manual
-continuation — §11 Salvage) · schedules/automation · marketing · a core
-merge feature (results integrate through the normal git flow).
+continuation — §11 Salvage) · external automation (cron-like triggers
+from outside the Fleet) · background jobs (a Worker already is the
+background-job mechanism) · a normalizing Stream reader API (Surfaces
+consume Events + queries; durable raw-Stream reads are a later Brief) ·
+marketing · a core merge feature (results integrate through the normal
+git flow).
 
 ## 2. Platform truths (pi)
 
@@ -52,11 +57,11 @@ merge feature (results integrate through the normal git flow).
   the id alone** — record the pointer or scan (`findById`). The file is
   created **lazily**: only after the first user/assistant message
   (`session-manager.js:786-800`).
-- **Custom entries via pi's API**: parent-side
-  `sessionManager.appendCustomEntry(customType, data?)`
-  (`session-manager.d.ts:272-273`); extension-side `pi.appendEntry()`
-  (`docs/extensions.md:80`). Plain custom entries never enter LLM context.
-  No raw file writes into pi-owned logs are ever needed.
+- **Orphan survival**: child processes survive the parent's death by
+  any means, including SIGKILL (the kernel re-parents orphans); Node
+  exit handlers never run on SIGKILL; a default spawn provides no death
+  guarantee (verified 2026-10-08, spike `deathwatch-spike`; the
+  enforcing mechanism is a Stakeholder decision — §15).
 - **Resume**: `SessionManager.open(sessionFile)` +
   `createAgentSession({ sessionManager })` continues the same conversation
   at its last leaf; the full active-branch history loads into LLM context
@@ -79,10 +84,8 @@ merge feature (results integrate through the normal git flow).
 **Consequences (binding for the Core):**
 - **Steer** = idle-immediate, otherwise boundary-queued (visible as queued
   until delivered). The force path is **Interrupt then Steer**.
-- **Pause** applied mid-run cuts the active run (abort) and holds —
-  progress survives in session history.
 - No Core mechanism may promise effects *inside* a running step.
-- Resume is a platform mechanic of continuation; the Core may resume a
+- Session resume is a platform mechanic of continuation; the Core may resume a
   Worker session **only after the Watchdog has reported the process exit**
   (no locking — a live double-open forks the conversation).
 
@@ -92,8 +95,10 @@ merge feature (results integrate through the normal git flow).
   and directly manages Worker child processes.
 - A **Fleet** = the Operator's pi session + N Worker pi sessions (headless
   child processes). One Fleet per Operator's pi session.
-- Everything lives and dies with the Operator's pi session. Artifacts
-  survive on disk — Streams in pi-owned storage, Briefs/Reports/
+- Everything lives and dies with the Operator's pi session — by
+  intent, not by platform guarantee: Worker process death on Operator
+  crash is unenforced (§2 orphan survival); the enforcing mechanism is
+  a Stakeholder decision (§15). Artifacts survive on disk — Streams in pi-owned storage, Briefs/Reports/
   Termination Records/manifest in the exchange tree — enabling manual
   continuation (§11 Salvage); nothing else survives restart.
 
@@ -108,7 +113,7 @@ merge feature (results integrate through the normal git flow).
 
 ## 5. Worker lifecycle
 
-States: `Spawning → Working ⇄ Paused → Asking → Ended`.
+States: `Spawning → Working ⇄ Asking → Ended`.
 
 - `Working` has two phases: **busy** (a step is running) and **idle**
   (alive, between steps). `Interrupt` moves busy → idle.
@@ -122,18 +127,25 @@ States: `Spawning → Working ⇄ Paused → Asking → Ended`.
 
 ## 6. Control semantics
 
-| Command   | Worker busy              | Worker idle        | Worker Paused        | Worker Asking        |
-|-----------|--------------------------|--------------------|----------------------|----------------------|
-| Pause     | cut run (abort), hold    | hold               | no-op                | — (see §8 rule)      |
-| Resume    | no-op                    | no-op              | → Working            | —                    |
-| Interrupt | abort run → idle         | no-op              | no-op                | —                    |
-| Steer     | queued → step boundary   | immediate          | lifts Pause → immediate | —                 |
-| Stop      | abort → Ended (`stopped`)| → Ended (`stopped`)| → Ended (`stopped`)  | → Ended (`stopped`)  |
+Three Controls: Interrupt, Steer, Stop.
 
-Every ended run produces a completion record (§8) — including
-budget-exhausted and operator-stopped runs. A Steer on a Paused Worker
-lifts the Pause and takes effect at once — an implicit Resume: the Worker
-continues with the new instruction without an explicit Resume.
+| Command   | Worker busy            | Worker idle          | Worker Asking         |
+|-----------|------------------------|----------------------|-----------------------|
+| Interrupt | abort run → idle       | no-op                | refused               |
+| Steer     | queued → step boundary | immediate            | refused               |
+| Stop      | → Ended (`stopped`)    | → Ended (`stopped`)  | → Ended (`stopped`)   |
+
+**Stop is uniform across states**: abort any active run (Worker → idle,
+history preserved — §2), close any open Question, then one bounded
+Budget-exempt grace nudge: "write your final Report on what is done,
+with Evidence." Report within grace → Ended `stopped`, worker-authored.
+Grace expires (cap — Lead) → kill → Termination Record
+(`stopped-by-operator`).
+
+A refused Control returns an explicit tool error naming the Worker's
+current state — never a silent no-op. Every ended run produces a
+completion record (§8) — including budget-exhausted and operator-stopped
+runs.
 
 ## 7. Watchdog
 
@@ -166,17 +178,22 @@ Spawn parameters alongside the Brief:
 - **Checkout mode** — Worktree only inside a git repository; In-place
   anywhere.
 - **model** — optional; default from configuration.
+- **Verification mode** — `self | critic`; default from configuration
+  (Critic — below).
 
 **Budget rule**: accrues only from model consumption during executed steps
-— no ticks while Paused, Asking, or idle. Cumulative per Worker session
+— no ticks while Asking or idle. Cumulative per Worker session
 file across resumes (§2) — a resumed Worker inherits its spent Budget.
 
 ### Question / Answer
 
 - A Worker asks mid-run → the Orchestrator relays → the Operator answers →
   the Worker resumes with the Answer.
-- While Asking: only **Answer** or **Stop** apply (open question — §15).
-- Core v1 sets **no timeout** on an open Question (§15).
+- While Asking: only **Answer** or **Stop** apply; every other Control
+  is refused (§6).
+- Core sets **no timeout** on an open Question; a long-open Question is
+  an Orchestrator operational concern — surfaced via `fleet_schedule`,
+  escalated to the Operator.
 
 ### Report — worker-authored, never Core-authored
 
@@ -219,32 +236,59 @@ Report's Evidence proves. The Orchestrator verifies the Report against the
 Done criteria set for that Worker — it trusts evidence, not words — before
 completion reaches the Operator.
 
+**Verification failure is not terminal**: a Report rejected against the
+Done criteria returns to its author — the Core resumes the Worker session
+(legal: its process exit is confirmed, §2) with the rejection facts,
+≤ 2 bounded attempts. Resume impossible or attempts exhausted → escalate
+to the Operator; the Report remains the completion record, marked
+`verification: failed` in the manifest.
+
+**Critic (isolated verification, opt-in)**: under `verification: critic`,
+an ad-hoc Worker (Role `critic`) verifies the Report against the Done
+criteria by inspecting the Evidence — read-only over the implementation
+(git: its own Worktree cut from the Worker's branch; else In-place
+read-only, Brief discipline). The Critic flags criteria problems
+(untestable, evidence-indistinguishable) in its own Report; it never
+redefines criteria — they come from the Operator-approved plan. Mode
+choice is deterministic (Spawn parameter, configuration default,
+Operator override); advisory signals may inform the choice but never
+gate it, and the Core runs headless without them.
+
 ## 9. Observation
 
 - **A Worker's Stream is its native pi session log** — the JSONL file pi
   writes in **pi-owned default storage** (§2; ADR-0001). The Core writes no
-  parallel copy and never moves pi's files; it records pointers and
-  appends domain events **through pi's custom-entry API** (§2).
+  parallel copy, never moves pi's files, and **never writes into them**;
+  it records pointers. The Stream is read-only for v2, and **no v2
+  component or Surface parses pi's internal JSONL format** — raw-format
+  knowledge stays inside pi (a normalizing reader is a later Brief, §1).
 - **Fleet manifest** — one small JSON per Fleet in the exchange tree:
   `name → { sessionId, sessionFile, workerCwd, spawnConfig (model,
-  extensions), status, reason, resumeCommand? }`, captured at Spawn from
-  §2 introspection. Mandatory: session paths are not derivable from ids
-  (§2). It is a pointer table — nothing more (exact schema — Lead).
-- Worker-scoped **domain events** (Spawn metadata/Brief, applied Controls,
-  Questions/Answers, budget events, completion-record references) are
-  recorded as **custom entries in the Worker's session JSONL** via pi's
-  API — one self-contained file per Worker: raw activity plus v2's domain
-  story.
+  extensions), status, reason, verification, resumeCommand? }`, captured
+  at Spawn from §2 introspection, plus a manifest-level `schemaVersion`.
+  Mandatory: session paths are not derivable from ids (§2). It is a
+  pointer table — nothing more (exact schema — Lead). **`fleet_*`
+  signatures and artifact schemas are a versioned public API**: state
+  restoration reads the manifest and exchange artifacts, never old
+  tool-call shapes in session history.
+- Worker-scoped **domain events** (Spawn metadata/Brief pointer, applied
+  Controls, Questions/Answers, budget events, completion-record
+  references) are recorded by the Core in a v2-owned **`events.jsonl`
+  per Worker** in the exchange tree. A Worker's full story = its pi
+  JSONL (raw, read-only) + its events file (domain), correlated by
+  timestamps (entry schema — Lead).
 - **Fleet-level durability** = the Orchestrator's session log (every
   *command* — an Orchestrator-initiated Fleet mutation — is a Core tool
-  call recorded there natively) + Worker JSONL custom entries (every
-  *transition* — Core/Watchdog-originated) + exchange-tree artifacts
-  (Briefs, Reports, Termination Records, manifest). The Fleet's full story
-  is reconstructable from these three. **No separate Fleet journal
+  call recorded there natively) + the exchange tree (Briefs, Reports,
+  Termination Records, per-Worker events files — every *transition*,
+  Core/Watchdog-originated — and the manifest, all v2-owned) + the
+  pi-owned Streams (raw activity). The Fleet's full story is
+  reconstructable from these three. **No separate Fleet journal
   exists.**
 - **Exchange root**: durable (**never `/tmp`**) and **configurable**;
   default = XDG state location (exact default and layout — Lead); one
-  subdirectory per Fleet.
+  subdirectory per Fleet, one per Worker inside it (Brief, completion
+  record, `events.jsonl`).
 - **Discovery**: the resumed Orchestrator's pi session history holds the
   paths — that is the discovery channel; the manifest is the cheap
   enumeration/inspection affordance, not the discovery mechanism.
@@ -261,7 +305,17 @@ extension exposes (platform fact). The approved set is deliberately small:
 
 - `fleet_spawn` — one or more Briefs (1..N; N = Fan-out). Per-Worker
   params: name, Budget, Checkout mode, model (optional).
-- `fleet_control` — `pause | resume | interrupt | steer | stop` (one tool).
+- `fleet_control` — `interrupt | steer | stop` (one tool); addresses one
+  Worker by name or a batch (name list / `all`), with per-Worker partial
+  results.
+- `fleet_schedule` — schedule wakes into the Operator session: one-shot
+  (delay/at) or periodic (every, maxRuns), cancel, list. Semantic core
+  (v1-audited): missed periodic runs coalesce into one wake with an
+  advanced run number; grid-anchored cadence; a run retires only after a
+  real send; at-least-once; one combined wake batch per tick via
+  `followUp`; anti-spam bounds (min delay, max active, run cap);
+  fail-closed ownership; scheduling is refused when no wake channel
+  exists; ticks are serialized. Mechanics — Lead.
 - `fleet_answer` — deliver an Answer to a Worker's Question.
 - `fleet_status` — Fleet or Worker state query. Per-Worker payload: state,
   queued Steers, Budget usage, completion-record status + reason + summary
@@ -276,7 +330,9 @@ Notes:
   side is authoritative.** Delivery is at-least-once: duplicate wakes are
   harmless, wakes are not persisted across restarts (the Fleet dies
   anyway — §3), and the Orchestrator verifies via `fleet_status`/the
-  record before acting or reporting to the Operator.
+  record before acting or reporting to the Operator. The scheduler is
+  the pull side's trigger: a scheduled wake prompts `fleet_status`
+  verification when no event wake arrives.
 - **Wake classes**:
   - **Class R** — a worker-authored Report exists. Payload
     `{worker, status, summary}`. Duty: verify against the Done criteria
@@ -344,8 +400,12 @@ continues with some losses):
 - Continuation is an **Orchestrator decision under Operator authority**:
   verify artifacts → resume or re-Spawn unfinished Briefs. Never
   automatic resurrection — §1's Out stands.
-- Deleted worktrees: resume/fork before cleanup, or accept the
-  `fallbackCwd` re-home (§2). Worktree cleanup timing — Operator approval.
+- **Worktree cleanup is merge-gated**: a Worker's Worktree is cleanable
+  after its branch merged into the working line; the Orchestrator
+  executes the cleanup, and the final release merge clears the rest.
+  Worktrees dangling after an Operator-session crash are Operator
+  discipline — an accepted loss, out of v2 scope. A Worktree deleted
+  before resume: fork first or accept the `fallbackCwd` re-home (§2).
 
 ## 12. Verification
 
@@ -354,12 +414,16 @@ continues with some losses):
   command discipline): queued-visibility (a Steer on a busy Worker shows
   queued in `fleet_status` and appears in the Worker's context only
   at/after the step boundary — never mid-step) · ordering (queued Steers
-  arrive in order) · implicit Resume (Steer on Paused lifts Pause at once,
-  §6).
+  arrive in order) · refusal (Steer and Interrupt on an Asking Worker
+  return an explicit state-naming error, §6).
+- **Stop scenario**: Stop on a busy, an idle, and an Asking Worker each
+  ends in exactly one completion record — a worker Report via the grace
+  nudge, or a Termination Record (`stopped-by-operator`) after grace
+  expiry (§6).
 - **Artifact-completeness scenario**: after a scripted headless fleet run
   including one crash, the exchange tree + JSONLs contain the Brief, a
-  completion record for every Worker (crash path included), domain entries
-  for every lifecycle transition, and a complete manifest. Doubles as the
+  completion record for every Worker (crash path included), events-file
+  records for every lifecycle transition, and a complete manifest. Doubles as the
   salvage-material test.
 - **Live acceptance item** in each release PR's acceptance list: real pi
   child, real step boundary, queued→delivered observed.
@@ -371,7 +435,7 @@ continues with some losses):
 ```
 /                  v1 — unchanged, its laws apply there
 /v2                pi-delegate-v2 (working name)
-  CONTEXT.md       approved domain glossary (2026-10-06, revised 2026-10-07)
+  CONTEXT.md       approved domain glossary (2026-10-06, revised 2026-10-08)
   ARCHITECTURE.md  this document
   docs/adr/        architecture decision records (ADR bar: hard to reverse
                    + surprising without context + a real trade-off)
@@ -382,15 +446,27 @@ v2 inherits the documentation discipline: behavior truth lives in code;
 these documents are contracts, nothing more. ADRs are created lazily,
 never per-decision by default.
 
+**Three containers, nothing else**: binding rules in this document,
+domain terms in CONTEXT.md, ADR-bar rationale in `docs/adr/`. Spikes,
+audits, briefs, and proposals live outside the repo
+(`~/.local/state/pi-delegate-v2/`) and are cited by path, never
+narrated. **No status prose in contracts**: a statement is either
+binding (present tense) or a one-line §15 open question. Mechanics
+belong to ZSDoc in code, rules to this document. Edits happen in
+approved batches, one commit each — git history is the decision
+chronicle.
+
 ## 14. Annex — Borrowed from v1 (ideas only, never code)
 
 Borrowed: brief→spawn→report cycle · Question/Answer (mailbox idea) ·
 exchange-directory layout (root: durable and configurable, never /tmp) ·
 Budget caps (unit: output tokens) · Evidence in reports ·
 report-as-completion-criterion · Stream idea (implemented as pi's native
-session JSONL + custom entries — v2 writes no duplicate log) ·
+session JSONL, read-only — v2 writes no duplicate log; domain events live
+in v2-owned per-Worker events files) ·
 worktree-per-worker · Steer (semantics corrected) · Interrupt · watcher/wake
-idea (rebuilt on `followUp` + authoritative `fleet_status`) · worker-name
+idea (rebuilt on `followUp` + authoritative `fleet_status`; v1's
+scheduler semantic core adopted after audit — `fleet_schedule`) · worker-name
 grammar · the fleet/worker/orchestrator vocabulary.
 
 Explicitly **not** borrowed: herdr placement and its worktree mechanics ·
@@ -400,10 +476,10 @@ journal/sqlite design · any v1 source code.
 ## 15. Open questions
 
 1. **Model per Worker** as a Spawn parameter (default from configuration) — confirm.
-2. **Question timeout**: none in Core v1 — confirm, or define.
-3. **Controls while Asking**: only Answer or Stop — confirm.
-4. **Final product name** — working name `pi-delegate-v2`, decide before release.
-5. Worker **worktree branch naming** — Lead.
-6. **Grace-window caps** (budget interception, crash recovery) — Lead.
-7. **Manifest exact schema + exchange-root default path** — Lead.
-8. **Reason precedence** in mixed end cases (§8 table) — Lead.
+2. **Final product name** — working name `pi-delegate-v2`, decide before release.
+3. Worker **worktree branch naming** — Lead.
+4. **Grace-window caps** (budget interception, crash recovery, Stop) — Lead.
+5. **Manifest + events.jsonl exact schemas, exchange-root default path** — Lead.
+6. **Reason precedence** in mixed end cases (§8 table) — Lead.
+7. **Worker process-death guarantee mechanism** (§2 orphan survival, §3) — Stakeholder decision; spike evidence: `deathwatch-spike`.
+8. **Verification-mode default** and Critic-required criteria — Lead/configuration.

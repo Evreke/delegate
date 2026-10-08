@@ -7,9 +7,11 @@
  * (ARCHITECTURE.md Law 5 decomposition); the FUNCTION_CONTRACTs and
  * BUG_FIX_CONTEXTs below are its contract and travel with the code.
  *
- * Dependencies: node:child_process ONLY — no seam import, no other src/
- * module. This layer speaks EXEC-SHAPED errors (killed/signal/code/stdout/
- * stderr); mapping them into the E_* taxonomy is the caller's job
+ * Dependencies: node:child_process plus the OS launch policy module
+ * ../spawn-policy.ts — the win32 wrapper spelling and the tree-kill recipe
+ * live there, one writer for both adapters (TZ §3.6.3). No seam import, no
+ * other src/ module. This layer speaks EXEC-SHAPED errors (killed/signal/
+ * code/stdout/stderr); mapping them into the E_* taxonomy is the caller's job
  * (HerdrTransport), which is what keeps the CLI runner reusable and the seam
  * bottom-of-graph (pinned by test/herdr-split-check.ts).
  *
@@ -41,6 +43,9 @@
  */
 
 import { spawn } from "node:child_process";
+import { spawnPolicyCommand, treeKillCommand } from "../spawn-policy.ts";
+
+export { winQuoteArg } from "../spawn-policy.ts";
 
 /** Per-CLI-call timeout for mutating/fast commands (ms). */
 const CLI_TIMEOUT_MS = 30_000;
@@ -59,67 +64,6 @@ const EXEC_MAX_BUFFER = 1024 * 1024;
  *  the optional-trailing-param pattern of src/expaths.ts builders. */
 const DEFAULT_PLATFORM: NodeJS.Platform = process.platform;
 
-/**
- * Windows argument quoting for the cmd.exe launch policy.
- * <p>
- * Why it exists (and stays here, per-argument): the "never shell strings"
- * law forbids handing cmd.exe one pre-joined opaque command line built from
- * call-site data. Instead the argv stays an array end-to-end and quoting
- * happens HERE, per argument, in one unit-tested helper — an argument with
- * spaces/quotes survives the cmd.exe layer as ONE argv element on the other
- * side. Windows convention implemented: wrap in double quotes when the arg
- * contains a space, tab or quote; double the quotes inside
- * (`say "hi"` → `"say ""hi"""`). Private to the adapter — the quoting rule
- * is a herdr/OS-launch detail that must never leak above the seam; exported
- * solely so the transport tests can pin its convention.
- * <p>
- * FUNCTION_CONTRACT:
- * Input: arg — one raw argv element (never contains a newline here; herdr
- *   CLI args do not)
- * Output: the cmd.exe-safe spelling of that element
- * Guarantees:
- *   - plain args (no space/tab/quote) pass through UNCHANGED (byte-identical,
- *     so `taskkill /pid 123 /T /F` shapes stay clean)
- *   - quoting is idempotent-safe for the round-trip test: quote-wrap + ""-doubling
- *     is reversible by the documented cmd de-quoting (strip outer quotes, "" → ")
- * Raises: never
- */
-export function winQuoteArg(arg: string): string {
-	if (!/[ \t"]/.test(arg)) return arg;
-	return `"${arg.replace(/"/g, '""')}"`;
-}
-
-/** One platform-resolved launch: the command to spawn and its argv.
- *  Adapter-internal — the win32 shape never crosses the seam. */
-interface SpawnPolicy {
-	command: string;
-	args: string[];
-}
-
-/**
- * Apply the platform spawn policy to one CLI launch (TZ §3.6.3).
- * <p>
- * FUNCTION_CONTRACT:
- * Input: command — the CLI binary name as invoked on POSIX ("herdr",
- *   "taskkill"); args — the raw argv array; platform — the (possibly
- *   injected) platform
- * Output: the spawn policy for THAT platform
- * Guarantees:
- *   - POSIX: { command, args } returned UNCHANGED (byte-identical launch —
- *     the regression pin for the pre-1.17 shape)
- *   - win32: `cmd.exe /d /s /c` followed by the per-argument-quoted command
- *     and argv (argv stays an array; winQuoteArg does the quoting)
- * Raises: never
- */
-function spawnPolicyCommand(command: string, args: string[], platform: NodeJS.Platform): SpawnPolicy {
-	if (platform === "win32") {
-		return {
-			command: "cmd.exe",
-			args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
-		};
-	}
-	return { command, args };
-}
 
 // ---------------------------------------------------------------------------
 // CLI plumbing
@@ -264,6 +208,10 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 		const child = spawn(policy.command, policy.args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
+			// The policy args are ALREADY cmd.exe-quoted (winQuoteArg) — deliver
+			// the spelling byte-exact; node's own quoting would double-escape the
+			// quotes and re-open the metacharacter split (PR #159 review).
+			windowsVerbatimArguments: true,
 			...(env ? { env } : {}),
 		});
 		let stdout = "";
@@ -308,11 +256,13 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 					// be undefined when the spawn itself failed — nothing to escalate.
 					const pid = child.pid;
 					if (pid !== undefined) {
-						const tk = spawnPolicyCommand("taskkill", ["/pid", String(pid), "/T", "/F"], platform);
-						const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true });
-						// Fire-and-forget: a failed taskkill must never crash the process
-						// with an unhandled 'error' event — the promise is already settled.
-						killer.on("error", () => {});
+						const tk = treeKillCommand(pid, platform);
+						if (tk) {
+							const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
+							// Fire-and-forget: a failed taskkill must never crash the process
+							// with an unhandled 'error' event — the promise is already settled.
+							killer.on("error", () => {});
+						}
 					}
 					return;
 				}

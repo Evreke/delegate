@@ -28,6 +28,7 @@
  * Exit 0 only if all checks pass.
  */
 
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,7 +69,7 @@ function drive(scenario: string, configJson?: string): DriverOut {
 	mkdirSync(configDir, { recursive: true });
 	if (configJson !== undefined) writeFileSync(join(configDir, "pi-delegate.config.json"), configJson);
 	const res = spawnSync("bun", [DRIVER, scenario], {
-		env: { ...process.env, HOME: home },
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") },
 		encoding: "utf8",
 		timeout: 120_000,
 	});
@@ -103,8 +104,8 @@ function drive(scenario: string, configJson?: string): DriverOut {
 		const configDir = join(home, ".pi", "agent");
 		mkdirSync(configDir, { recursive: true });
 		writeFileSync(join(configDir, "pi-delegate.config.json"), configJson);
-		const src = `import {resolveCollectConfig} from ${JSON.stringify(new URL("../src/observe.ts", import.meta.url).pathname)}; console.log(JSON.stringify(resolveCollectConfig()))`;
-		const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+		const src = `import {resolveCollectConfig} from ${JSON.stringify(fileURLToPath(new URL("../src/observe.ts", import.meta.url)))}; console.log(JSON.stringify(resolveCollectConfig()))`;
+		const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: join(home, ".pi", "agent") }, encoding: "utf8", timeout: 20_000 });
 		try {
 			return (JSON.parse(res.stdout.toString().trim()) as { teardownAfterCollect: boolean }).teardownAfterCollect;
 		} catch {

@@ -495,7 +495,10 @@ function scanTerminalWriteOffenders(source: string, relFile: string): string[] {
 
 {
 	const offenders = [
-		...listTsFiles(resolve(ROOT, "src")).map((f) => ({ f: f.replace(`${resolve(ROOT, "src")}/`, ""), src: readFileSync(f, "utf8") })),
+		// Windows-portable (PR #159 series): resolve() yields backslash paths on
+		// win32 — strip the root and normalize separators so the allowlist's
+		// posix-shaped relFile ("ui-log.ts", "swarm/cli.ts") matches on any host.
+		...listTsFiles(resolve(ROOT, "src")).map((f) => ({ f: relative(resolve(ROOT, "src"), f).split(/[\\/]/).join("/"), src: readFileSync(f, "utf8") })),
 		{ f: "../index.ts", src: readFileSync(resolve(ROOT, "index.ts"), "utf8") },
 	].flatMap(({ f, src }) => scanTerminalWriteOffenders(src, f));
 	check(
@@ -789,9 +792,10 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 // recording transport.
 {
 	// T4.1/T4.2 — the sink audits every line and surfaces ONLY error-shaped
-	// ones to the pane. Child bun: fresh $HOME + a fresh module registry.
+	// ones to the pane. Child bun: fresh agent dir + a fresh module registry.
 	const home = mkdtempSync(join(tmpdir(), "static-check-home-"));
-	mkdirSync(join(home, ".pi", "agent"), { recursive: true }); // production always has this dir; a fresh $HOME must pre-create it for the audit append
+	const agentDir = join(home, ".pi", "agent");
+	mkdirSync(agentDir, { recursive: true }); // production always has this dir; a fresh agent dir must pre-create it for the audit append
 	const sinkSrc =
 		`const { makeWatcherLogSink } = await import(${JSON.stringify(resolve(ROOT, "src/observe.ts"))});` +
 		`const { appendFileSync } = await import("node:fs");` +
@@ -803,7 +807,16 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 		`await new Promise((r) => setTimeout(r, 150));` + // async append must land
 		`const audit = appendFileSync; ` +
 		`orig(JSON.stringify(seen));`;
-	const res = spawnSync("bun", ["-e", sinkSrc], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	// The audit path is derived by pi's getAgentDir(): PI_CODING_AGENT_DIR when
+	// set, else join(os.homedir(), ".pi", "agent") — and os.homedir() is $HOME on
+	// POSIX but %USERPROFILE% on Windows. Pinning the documented override is what
+	// makes this check portable: HOME alone left a Windows child reading the real
+	// agent dir, so the audit file stayed empty and T4.1b failed on a green main.
+	const res = spawnSync("bun", ["-e", sinkSrc], {
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agentDir },
+		encoding: "utf8",
+		timeout: 20_000,
+	});
 	let paneLines: string[] = [];
 	try {
 		// the uiLog stderr fallback writes the surfaced line — the captured JSON array is the last line there
@@ -811,7 +824,7 @@ check("T3.2 legacy herdr shape (tab.id) still parses", legacyTabPlacement.tabId 
 	} catch {
 		// spawn flake — surfaced by the empty-panes check below
 	}
-	const auditPath = join(home, ".pi", "agent", "delegate-watch.log");
+	const auditPath = join(agentDir, "delegate-watch.log");
 	let audit = "";
 	try {
 		audit = readFileSync(auditPath, "utf8");
@@ -932,7 +945,6 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/usage.ts", owner: "operator", targetRelease: "1.19.0", plan: "the one-parser law stays; extract budget-threshold validation from line parsing" },
 	{ file: "src/manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the concurrent update() fold from manifest file I/O" },
 	{ file: "src/mailbox-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract question/answer envelope assembly from question-file I/O" },
-	{ file: "src/herdr/cli.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract CLI argument assembly from canned-answer parsing" },
 	{ file: "src/swarm/journal-manifest-store.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the pure replay/diff fold (replayManifest + diffManifestEvents) into a journal-manifest-replay.ts sibling" },
 	{ file: "src/swarm/graph-build.ts", owner: "operator", targetRelease: "1.19.0", plan: "#136's edge-vocabulary split (contains/owned_by emission + the model/briefPath field projection) pushed the projector over the threshold; extract the manifest-projection loop (embodiment literal + edge emission) into a graph-manifest.ts sibling — the graph-journal.ts split is the precedent" },
 	{ file: "src/swarm-server/server.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the #51 mutation-response cluster (auth + id/body validation + outcome mapping) into a server-mutation.ts sibling; the #51+#52 merge pushed the route layer over the threshold" },

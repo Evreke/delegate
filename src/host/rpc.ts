@@ -110,12 +110,19 @@
  * reattach (same child, new stdin) via a named-pipe shim is future work, not
  * this adapter.
  *
- * Platform: POSIX-only for now — the adapter spawns a bare `pi` and carries
- * no Windows shim (unlike the herdr adapter's spawnPolicyCommand).
+ * Platform: both launch and kill go through the OS launch policy
+ * (src/spawn-policy.ts), so the adapter runs on Windows too: a bare `pi` does
+ * not resolve there (npm ships `pi.cmd`), and child.kill("SIGKILL") behind the
+ * launch wrapper terminates the WRAPPER and orphans pi — on win32 the kill is
+ * the policy's TREE kill instead. POSIX is byte-identical to the
+ * pre-1.18 shape (a bare `pi`, the signal escalation untouched); the policy
+ * target is injectable (constructor `platform`) so both branches are pinned on
+ * any host.
  *
  * Dependencies: node builtins + getAgentDir() from the platform package
- * (Law 1 — no hardcoded .pi/agent joins). Imports the seam (../host.ts)
- * and NOTHING else from src/ — the adapter must never import tool modules.
+ * (Law 1 — no hardcoded .pi/agent joins). Imports the seam (../host.ts), the
+ * leaf path/policy modules (../expaths.ts, ../spawn-policy.ts) and NOTHING
+ * else from src/ — the adapter must never import tool modules.
  */
 
 import { spawn, execFile, type ChildProcess, type SpawnOptions } from "node:child_process";
@@ -144,6 +151,7 @@ import {
 import { FidelityStore, DEFAULT_RING_CAP } from "../stream-seam/fidelity-store.ts";
 import { RpcJsonlParser, type RpcJsonlRecord } from "./rpc-jsonl.ts";
 import { isDirUnder } from "../expaths.ts";
+import { spawnPolicyCommand, treeKillCommand } from "../spawn-policy.ts";
 
 const execFileP = promisify(execFile);
 
@@ -185,6 +193,12 @@ export interface PartialReport {
 	/** Verbatim assistant text observed after the notice was written. */
 	text: string;
 }
+
+/** Bounded wait for the child's REAL exit after the win32 tree-kill was
+ *  launched (see teardown): the kill lands asynchronously, and a live worker
+ *  still holds its cwd — which for a worktree placement IS the directory the
+ *  caller removes right after teardown. POSIX never enters this wait. */
+const KILL_EXIT_WAIT_MS = 3_000;
 /** Ring-buffer cap for the readConsole activity log (lines). */
 const CONSOLE_LOG_MAX_LINES = 200;
 
@@ -349,6 +363,11 @@ export class RpcWorkerHost implements Transport {
 	 *  without spawning real pi processes. Default: node's real spawn. */
 	private readonly spawnProcess: SpawnProcessFn;
 
+	/** OS launch policy target (src/spawn-policy.ts). Production is the
+	 *  process's own platform; tests inject "win32"/"linux" so the launch shape
+	 *  and the kill escalation of BOTH platforms are pinned on any host. */
+	private readonly platform: NodeJS.Platform;
+
 	/** Dialog-relay policy flag (default FALSE — byte-identical legacy
 	 *  behavior): when true, blocking extension-UI dialogs are relayed onto
 	 *  the console stream (kind "dialog") and stay pending instead of being
@@ -386,8 +405,11 @@ export class RpcWorkerHost implements Transport {
 		/** Test seam: child-process factory (default: the real node spawn).
 		 *  createRpcTransport() with no args keeps the real behavior. */
 		spawnProcess?: SpawnProcessFn;
+		/** OS launch policy target (default: process.platform). */
+		platform?: NodeJS.Platform;
 	}) {
 		this.spawnProcess = opts?.spawnProcess ?? spawn;
+		this.platform = opts?.platform ?? process.platform;
 		this.dialogRelay = opts?.dialogRelay ?? false;
 		this.terminationNoticeMs = opts?.terminationNoticeMs ?? TERMINATION_NOTICE_MS;
 		this.terminationNoticeText = opts?.terminationNoticeText ?? TERMINATION_NOTICE_TEXT;
@@ -524,7 +546,14 @@ export class RpcWorkerHost implements Transport {
 		];
 		let child: ChildProcess;
 		try {
-			child = this.spawnProcess("pi", args, {
+			// The worker launch goes through the OS launch policy: POSIX gets
+			// { command: "pi", args } back UNCHANGED (byte-identical launch); win32
+			// gets the shell-wrapper launch with the per-argument-quoted argv — a bare
+			// `pi` would ENOENT there (npm installs the `pi.cmd` shim), and handing the
+			// shell one pre-joined command line is banned by the "never shell strings"
+			// law. The OS vocabulary is spelled in src/spawn-policy.ts ONLY.
+			const policy = spawnPolicyCommand("pi", args, this.platform);
+			child = this.spawnProcess(policy.command, policy.args, {
 				cwd: placement.checkoutPath,
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
@@ -601,7 +630,46 @@ export class RpcWorkerHost implements Transport {
 			// phantom-entry cleanup there keys off sessionPath, which stays unset).
 			this.agents.delete(req.name);
 			this.agentsByRef.delete(placement.placementRef ?? req.name);
-			try { child.kill("SIGKILL"); } catch { /* already dead */ }
+			// BUG_FIX_CONTEXT (Windows tree-kill): the abandoned child must not
+			// survive as an orphan. On win32 child.kill("SIGKILL") maps to
+			// TerminateProcess of the DIRECT child — behind the launch wrapper that
+			// that is the wrapper, and pi (plus its children) lives on. The tree-kill
+			// is fire-and-forget; the pid may be undefined when the spawn itself
+			// failed — nothing to escalate. POSIX keeps child.kill("SIGKILL") exactly
+			// as before (byte-identical signal escalation).
+			const abandonedPid = child.pid;
+			const rollback = abandonedPid === undefined ? undefined : treeKillCommand(abandonedPid, this.platform);
+			if (rollback) {
+				// Bounded wait for the tree-kill to land (PR #159 review: the
+				// fire-and-forget left the abandoned tree alive-or-unknown when
+				// E_START propagated — the same asymmetry teardown already fixed;
+				// the caller's retry must not race a still-living tree). The
+				// killer's own exit is the "tree is dead" signal; error and the
+				// shared KILL_EXIT_WAIT_MS bound resolve either way — a failed
+				// kill must never crash this already-failing path. A killer
+				// without a pid never started: nothing to wait for.
+				await new Promise<void>((resolveRollback) => {
+					let exitWait: ReturnType<typeof setTimeout> | undefined;
+					const done = () => {
+						if (exitWait) clearTimeout(exitWait);
+						resolveRollback();
+					};
+					try {
+						const killer = this.spawnProcess(rollback.command, rollback.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
+						if (!killer.pid) {
+							done();
+							return;
+						}
+						killer.once("exit", done);
+						killer.on("error", done);
+						exitWait = setTimeout(done, KILL_EXIT_WAIT_MS);
+					} catch {
+						done();
+					}
+				});
+			} else {
+				try { child.kill("SIGKILL"); } catch { /* already dead */ }
+			}
 			throw delegateError(
 				"E_START",
 				`rpc host: worker ${req.name} not ready within ${req.timeoutMs}ms: ${(err as Error).message}`,
@@ -968,13 +1036,52 @@ export class RpcWorkerHost implements Transport {
 					state.child.stdin?.write(`${JSON.stringify({ type: "abort" })}\n`);
 				} catch { /* stdin gone */ }
 				await new Promise<void>((resolve) => {
-					const killTimer = setTimeout(() => {
-						try { state.child.kill("SIGKILL"); } catch { /* already dead */ }
+					let done = false;
+					const finish = () => {
+						if (done) return;
+						done = true;
 						resolve();
+					};
+					const killTimer = setTimeout(() => {
+						// The same launch policy governs the kill: on win32 the direct
+						// child.kill("SIGKILL") would terminate the launch wrapper and
+						// leave pi running (an orchestrator that reports a closed worker
+						// while its process is still burning tokens).
+						const pid = state.child.pid;
+						const kill = pid === undefined ? undefined : treeKillCommand(pid, this.platform);
+						if (!kill) {
+							try { state.child.kill("SIGKILL"); } catch { /* already dead */ }
+							// POSIX timing is unchanged: the signal is issued, the call
+							// returns — a POSIX caller may remove the placement at once.
+							finish();
+							return;
+						}
+						let killer: ChildProcess | undefined;
+						try {
+							killer = this.spawnProcess(kill.command, kill.args, { stdio: "ignore", windowsHide: true, windowsVerbatimArguments: true });
+							killer.on("error", () => {});
+						} catch { /* nothing to escalate */ }
+						// BUG_FIX_CONTEXT (field proof — live pi on Windows, the e2e leg):
+						// the tree-kill is asynchronous, and the worker's cwd is the
+						// worktree placement that teardown removes immediately after. A
+						// live process locks its cwd on Windows, so returning before the
+						// exit made `git worktree remove --force` fail with EPERM and left
+						// the worktree behind. The wait is bounded — a worker that never
+						// dies can never hang teardown.
+						const exitWait = setTimeout(finish, KILL_EXIT_WAIT_MS);
+						state.child.once("exit", () => {
+							clearTimeout(exitWait);
+							finish();
+						});
+						// A kill that never even started has nothing to wait for.
+						if (!killer) {
+							clearTimeout(exitWait);
+							finish();
+						}
 					}, this.killGraceMs);
 					state.child.once("exit", () => {
 						clearTimeout(killTimer);
-						resolve();
+						finish();
 					});
 				});
 			}
@@ -1326,6 +1433,8 @@ export function createRpcTransport(opts?: {
 	killGraceMs?: number;
 	/** Test seam — see the RpcWorkerHost constructor. */
 	spawnProcess?: SpawnProcessFn;
+	/** OS launch policy target (default: process.platform). */
+	platform?: NodeJS.Platform;
 }): Transport & { resumeAgent(req: ResumeReq): Promise<StartResult> } {
 	return new RpcWorkerHost(opts);
 }

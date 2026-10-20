@@ -27,6 +27,22 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Fixed
 
+- **CI is green again after the upstream history rewrite — the skill-quality
+  harness no longer depends on a pinned rev.** The report builder's default
+  `--before` was hard-coded to `629a030^` (the pre-rewrite skill commit).
+  When upstream rewrote the history (the v2 skill commit gained a new hash),
+  every fresh CI checkout lost that rev, the L3 layer threw `Not a valid
+  object name`, and the whole `CI / test` job went red on every PR. The
+  default now resolves live: the parent of the last commit that touched
+  `skills/delegate` — the branch point on skill-editing branches, the
+  pre-skill-change state elsewhere. An explicit `--before` stays an override;
+  the Q5 check uses the same live default; HOW-TO documents the new rule.
+  Same PR carries the harness sandbox pin `SWARM_STORAGE=files` in
+  `test/static-check.ts`: an operator config with `swarm.storage: "journal"`
+  made the `/delegate-teardown` behavioral checks (T4.3b/T4.4b) see zero
+  fixture workers on every fresh checkout (the manifest storage port selects
+  its implementation once per process from that flag).
+
 - **Extension diagnostics can no longer corrupt the session TUI (the
   four-times-reported "JSON logs in the TUI" bug class, fixed at the class
   level).** Inside the pi TUI the process's stderr IS the terminal the TUI

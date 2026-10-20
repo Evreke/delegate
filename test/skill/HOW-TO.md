@@ -20,7 +20,7 @@ and is re-exported from the constants module for one-stop discovery.
 | L0 | static pins on the skill text (issue #110 minimums) | `timeout 30 bun test/skill-l0-check.ts` |
 | L1 | alignment of the skill text to the fixture's SKILL-TEXT claims (fixture v2 scope filter — tool-only claims are documented, never scored; 0–100; blocker = weight ≥ 10 claim at 0) | `timeout 30 bun test/skill/l1/score.ts score --fixture test/skill/tool-contract.json --skill-dir skills/delegate` |
 | L2 | scenario set S01–S12 scored against a static text projection of the skill (live replay traces remain the behavioral layer) | part of the report builder below |
-| L3 | before/after regression delta over the fixture's blocker claims (`--before` is a git rev; default `629a030^`, the pre-rewrite skill) | part of the report builder below |
+| L3 | before/after regression delta over the fixture's blocker claims (`--before` is a git rev; default = the parent of the last commit touching `skills/delegate` — rewrite-proof: on skill-editing branches it is the branch point, on other branches the pre-skill-change state) | part of the report builder below |
 | L4 | size budgets per file (bytes + lines) | part of the report builder below |
 | Q | `0.25·L1 + 0.35·L2 + 0.20·L3_norm + 0.20·L4_norm`; an L0 fail forces Q = 0. Bands: ≥ 90 ship · 80–89 debt · else reject | part of the report builder below |
 

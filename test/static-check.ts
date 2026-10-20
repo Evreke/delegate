@@ -100,6 +100,15 @@ const ROOT = resolve(dirname(process.argv[1] ?? "."), "..");
 // drives below — the real /tmp/exchange is never touched.
 const SANDBOX = mkdtempSync(resolve(tmpdir(), "static-check-"));
 process.env.PI_DELEGATE_EXCHANGE_ROOT = SANDBOX;
+// Storage-mode pin (smoke-gate fix): the manifest storage port selects its
+// implementation ONCE per process (lazily, at first access) from
+// $SWARM_STORAGE / the swarm.storage config flag. An operator config with
+// "journal" makes manifestStore.scan() read the journal DB — the FILE-written
+// fixture manifests below (the teardown drive, T4.3b/T4.4b, the spawn-flow
+// drive) would be invisible and the command would report "no workers". Pin
+// "files" so the harness's on-disk fixtures ARE the store's truth (same
+// convention as dashboard-brief-report-check.ts).
+process.env.SWARM_STORAGE = "files";
 
 let failures = 0;
 

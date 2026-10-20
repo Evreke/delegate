@@ -7,7 +7,7 @@
  * CLI (defaults in brackets; run from repo root):
  *   bun test/skill/quality/build.ts \
  *     [--skill-dir skills/delegate] [--fixture test/skill/tool-contract.json] \
- *     [--scenarios test/skill/scenarios] [--before 629a030^] \
+ *     [--scenarios test/skill/scenarios] [--before <git-rev|snapshot.json>] \
  *     [--out-json test/skill/quality-report.json] [--out-md test/skill/quality-report.md]
  *
  * MODULE_CONTRACT — owns:
@@ -107,6 +107,30 @@ function gitRev(): string {
 		// provenance only
 	}
 	return "unversioned";
+}
+
+/** The rewrite-proof default --before: the parent of the last commit that
+ *  touched the skill dir. On a branch that edits the skill this is the
+ *  branch point (a branch-vs-develop delta); on a branch without skill edits
+ *  it is the parent of the latest landed skill commit — the same "pre-skill
+ *  change" baseline the old hard-coded rev meant, but stable under history
+ *  rewrites (a pinned rev dies whenever upstream rewrites history —
+ *  observed: the v2 skill commit was rewritten and CI lost `629a030^`).
+ *  Bounded git; throws with a fix instruction when unresolvable. */
+export function defaultBeforeRev(skillDir: string): string {
+	const last = spawnSync("git", ["log", "-1", "--format=%H", "--", skillDir], {
+		encoding: "utf8",
+		timeout: 5_000,
+	});
+	const lastSha = last.stdout?.trim() ?? "";
+	if (last.status !== 0 || lastSha === "") {
+		throw new Error(`default --before: git log -1 -- ${skillDir} failed: ${(last.stderr || "").trim()}`);
+	}
+	const parent = spawnSync("git", ["rev-parse", `${lastSha}^`], { encoding: "utf8", timeout: 5_000 });
+	if (parent.status !== 0 || !parent.stdout?.trim()) {
+		throw new Error(`default --before: ${lastSha} has no parent commit — pass --before explicitly`);
+	}
+	return parent.stdout.trim();
 }
 
 /** Materialize <rev>:skills/<name>/*.md into a fresh temp dir. Bounded git. */
@@ -342,15 +366,14 @@ export function renderMarkdown(report: QualityReport): string {
 const USAGE = `usage:
   bun test/skill/quality/build.ts [--skill-dir <dir>] [--fixture <file>] [--scenarios <dir>] [--before <git-rev|snapshot.json>] [--out-json <file>] [--out-md <file>]
 
-defaults: --skill-dir skills/delegate --fixture test/skill/tool-contract.json --scenarios test/skill/scenarios --before 629a030^ --out-json test/skill/quality-report.json --out-md test/skill/quality-report.md
+defaults: --skill-dir skills/delegate --fixture test/skill/tool-contract.json --scenarios test/skill/scenarios --before <parent of the last commit touching the skill dir> --out-json test/skill/quality-report.json --out-md test/skill/quality-report.md
 exit codes: 0 report written (verdicts are data) · 2 usage/IO/git errors`;
 
 export function runCli(argv: string[]): number {
-	const defaults: BuildPaths & { outJson: string; outMd: string } = {
+	const defaults: Omit<BuildPaths, "before"> & { outJson: string; outMd: string } = {
 		skillDir: "skills/delegate",
 		fixture: "test/skill/tool-contract.json",
 		scenariosDir: "test/skill/scenarios",
-		before: "629a030^",
 		outJson: "test/skill/quality-report.json",
 		outMd: "test/skill/quality-report.md",
 	};
@@ -374,7 +397,7 @@ export function runCli(argv: string[]): number {
 		skillDir: flags["skill-dir"] ?? defaults.skillDir,
 		fixture: flags.fixture ?? defaults.fixture,
 		scenariosDir: flags.scenarios ?? defaults.scenariosDir,
-		before: flags.before ?? defaults.before,
+		before: flags.before ?? defaultBeforeRev(flags["skill-dir"] ?? defaults.skillDir),
 	};
 	const outJson = flags["out-json"] ?? defaults.outJson;
 	const outMd = flags["out-md"] ?? defaults.outMd;

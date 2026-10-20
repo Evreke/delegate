@@ -57,6 +57,7 @@ import {
 } from "./skill/quality/l2-text.ts";
 import {
 	buildReport,
+	defaultBeforeRev,
 	renderMarkdown,
 	type QualityReport,
 } from "./skill/quality/build.ts";
@@ -381,7 +382,7 @@ function scoreBearing(report: QualityReport): string {
 		skillDir: "skills/delegate",
 		fixture: "test/skill/tool-contract.json",
 		scenariosDir: "test/skill/scenarios",
-		before: "629a030^",
+		before: defaultBeforeRev("skills/delegate"),
 	};
 	let a: QualityReport;
 	let b: QualityReport;

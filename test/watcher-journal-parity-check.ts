@@ -106,9 +106,20 @@ function snapshotFor(workers: ManifestWorker[], statuses: AgentStatus[]): WatchS
 }
 
 function writeValidReport(dir: string, name: string): void {
+	// v1.19 collect-time path existence: evidence cites a REAL file by absolute
+	// path (fixture manifests may carry no placement — a relative path would
+	// be unresolvable by design).
+	const evidenceFile = join(dir, "evidence-f.ts");
+	if (!existsSync(evidenceFile)) writeFileSync(evidenceFile, "export {}\n", "utf8");
 	writeFileSync(
 		reportPathFor(dir, name),
-		JSON.stringify({ worker: name, status: "pass", summary: "done", artifacts: [], evidence: [{ claim: "c", file: "f.ts:1" }] }),
+		JSON.stringify({
+			worker: name,
+			status: "pass",
+			summary: "done",
+			artifacts: [],
+			evidence: [{ claim: "c", file: evidenceFile }],
+		}),
 	);
 }
 

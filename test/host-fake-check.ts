@@ -47,6 +47,10 @@ const EXCHANGE_SANDBOX = mkdtempSync(join(tmpdir(), `host-fake-exchange-`));
 process.env.PI_DELEGATE_EXCHANGE_ROOT = EXCHANGE_SANDBOX;
 const ROOT = join(EXCHANGE_SANDBOX, `host-fake-${process.pid}`);
 const repoDir = mkdtempSync(join(tmpdir(), `host-fake-repo-`));
+// v1.19 collect-time path existence (quality-research P0): the fixture reports
+// cite "a.ts"/"f.ts" relative to the worker checkout — make them real.
+writeFileSync(join(repoDir, "a.ts"), "export {}\n", "utf8");
+writeFileSync(join(repoDir, "f.ts"), "export {}\n", "utf8");
 const briefPath = join(ROOT, `brief-${NAME}.md`);
 const reportPath = join(ROOT, `report-${NAME}.json`);
 mkdirSync(ROOT, { recursive: true });

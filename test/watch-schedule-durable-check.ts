@@ -264,6 +264,10 @@ function watcherFor(
 	const taskDir = join(root, "ds4-task");
 	mkdirSync(taskDir, { recursive: true });
 	const reportPath = reportPathFor(taskDir, "w-ev");
+	// v1.19 collect-time path existence: evidence must cite a REAL file —
+	// write one next to the task and reference it by absolute path.
+	const evidenceFile = join(taskDir, "evidence-f.ts");
+	writeFileSync(evidenceFile, "export {}\n", "utf8");
 	writeFileSync(
 		reportPath,
 		JSON.stringify({
@@ -271,7 +275,7 @@ function watcherFor(
 			status: "pass",
 			summary: "done",
 			artifacts: [],
-			evidence: [{ claim: "c", file: "f.ts:1" }],
+			evidence: [{ claim: "c", file: evidenceFile }],
 		}),
 	);
 	const manifestWorker: ManifestWorker = {

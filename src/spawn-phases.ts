@@ -266,6 +266,10 @@ export interface SchemaViolationNoteInput {
 	resolvedSchema: Record<string, unknown> | null;
 	/** The schema resolution provenance chain. */
 	schemaProvenance: string[];
+	/** v1.19: path-existence context — MUST match the collect call's context
+	 *  (same baseDir), otherwise the base-vs-fragment distinction is computed
+	 *  under different rules than the verdict being explained. */
+	baseDir?: string;
 }
 
 /**
@@ -274,7 +278,8 @@ export interface SchemaViolationNoteInput {
  * chain from the execute closure).
  * <p>
  * FUNCTION_CONTRACT:
- * Input: missing, usedReportPath, canonical, resolvedSchema, schemaProvenance
+ * Input: missing, usedReportPath, canonical, resolvedSchema, schemaProvenance,
+ *   baseDir (the collect call's path context)
  * Output: the dedicated guidance note ("" when the report is missing, when
  *   the BASE schema itself rejects the report, or when the base schema passes
  *   and there is nothing to distinguish)
@@ -288,10 +293,10 @@ export interface SchemaViolationNoteInput {
  * EXTERNAL_DEPENDENCY: filesystem — the report file (via validateReport).
  */
 export function briefSchemaViolationNote(input: SchemaViolationNoteInput): string {
-	const { missing, usedReportPath, canonical, resolvedSchema, schemaProvenance } = input;
+	const { missing, usedReportPath, canonical, resolvedSchema, schemaProvenance, baseDir } = input;
 	let schemaNote = "";
 	if (!missing) {
-		const base = validateReport(usedReportPath, canonical);
+		const base = validateReport(usedReportPath, canonical, { baseDir });
 		if (base.ok) {
 			schemaNote =
 				"\nThis is a brief-reportSchema violation: the report violates the brief's reportSchema — " +

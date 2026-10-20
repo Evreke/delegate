@@ -120,8 +120,10 @@ const REPORT = {
 	worker: WORKER,
 	status: "pass",
 	summary: "parity",
-	artifacts: ["a.ts"],
-	evidence: [{ claim: "verified", file: "a.ts:1" }],
+	// v1.19 collect-time path existence: real file, absolute — the CLI's
+	// write-report resolves relative paths against its cwd only.
+	artifacts: [resolve("package.json")],
+	evidence: [{ claim: "verified", file: `${resolve("package.json")}:1` }],
 };
 
 interface Capture {

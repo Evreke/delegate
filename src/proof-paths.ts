@@ -49,12 +49,24 @@ import { isAbsolute, resolve } from "node:path";
 import type { WorkerReport } from "./host.ts";
 import { isDirUnder } from "./expaths.ts";
 
+/**
+ * The command-reference convention (v1.19): an evidence "file" value of
+ * "command: <cmd>" cites a command the worker actually ran instead of a
+ * preserved file. Owned HERE (single source — the module stays a pure leaf);
+ * the schema-stage validator imports the same regex.
+ */
+export const COMMAND_REF_RE = /^command:/i;
+
 /** Config input for the validator. The caller (spawn.ts) supplies the
  *  resolved roots so the module stays a pure leaf: exchangeRoot comes from
  *  exchange.ts (the one source), tempDir from node:os tmpdir(). */
 export interface ProofPathOptions {
-	/** Orchestrator project cwd — the base for relative paths. */
+	/** Orchestrator project cwd — the FALLBACK base for relative paths. */
 	cwd: string;
+	/** The worker's checkout (Placement.checkoutPath) — the FIRST base for
+	 *  relative paths when known (v1.19: a worker cites paths relative to its
+	 *  own checkout). Absent → cwd-only (the pre-v1.19 rule). */
+	checkoutPath?: string;
 	/** Exchange root (ephemeral-root half of the ephemeral rule). */
 	exchangeRoot: string;
 	/** OS temp dir (ephemeral-root half of the ephemeral rule). */
@@ -111,11 +123,14 @@ export function stripLineSuffix(path: string): string {
 }
 
 /**
- * The ONE path resolution rule: relative → resolve against cwd; absolute →
- * as-is. (spec §5 — documented here, no second rule exists.)
+ * The ONE path resolution rule (two bases, one order): absolute → as-is;
+ * relative → resolve against the worker's checkout when known, else against
+ * the orchestrator cwd. (spec §5 + v1.19 checkoutPath; documented here, no
+ * second rule exists.)
  */
-function resolveProofPath(path: string, cwd: string): string {
-	return isAbsolute(path) ? path : resolve(cwd, path);
+function resolveProofPath(path: string, cwd: string, checkoutPath?: string): string {
+	if (isAbsolute(path)) return path;
+	return checkoutPath !== undefined ? resolve(checkoutPath, path) : resolve(cwd, path);
 }
 
 /**
@@ -160,7 +175,7 @@ export function validateProofPaths(report: WorkerReport, opts: ProofPathOptions)
 	const resolvedPaths: string[] = [];
 
 	for (const artifact of report.artifacts) {
-		const p = resolveProofPath(artifact, opts.cwd);
+		const p = resolveProofPath(artifact, opts.cwd, opts.checkoutPath);
 		if (!existsSync(p)) {
 			return { ok: false, error: `artifact path does not exist: "${artifact}"` };
 		}
@@ -168,12 +183,17 @@ export function validateProofPaths(report: WorkerReport, opts: ProofPathOptions)
 	}
 
 	for (const item of report.evidence) {
+		// v1.19 command-reference convention: a "command: <cmd>" citation is
+		// accepted verbatim (the orchestrator can re-run it) — no stat, and NOT
+		// a durable copy (excluded from resolvedPaths, so a command-only report
+		// hits the ephemeral rule below).
+		if (COMMAND_REF_RE.test(item.file)) continue;
 		const pseudo = detectPseudoPath(item.file);
 		if (pseudo !== null) {
 			return { ok: false, error: `evidence[].file is not a filesystem path (${pseudo}): "${item.file}"` };
 		}
 		const stripped = stripLineSuffix(item.file);
-		const p = resolveProofPath(stripped, opts.cwd);
+		const p = resolveProofPath(stripped, opts.cwd, opts.checkoutPath);
 		if (!existsSync(p)) {
 			return { ok: false, error: `evidence file does not exist: "${item.file}"` };
 		}

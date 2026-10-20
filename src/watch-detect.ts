@@ -655,7 +655,7 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 	//    are unaffected (a collected worker can still ask questions etc.).
 	const reportMtime = fileMtimeMs(w.reportPath);
 	if (reportMtime !== null && w.collectedAt === undefined) {
-		const verdict = validateReport(w.reportPath, w.name);
+		const verdict = validateReport(w.reportPath, w.name, { baseDir: w.placement?.checkoutPath });
 		if (verdict.ok) {
 			events.push(
 				mk(

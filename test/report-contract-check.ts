@@ -6,8 +6,9 @@
  * Run with: bun test/report-contract-check.ts   (from repo root)
  *
  * Covers:
- *   1. REPORT_EXAMPLE with the canonical worker name substituted for the
- *      placeholder passes validateReport (the extension's own validator).
+ *   1. REPORT_EXAMPLE with the canonical worker name and REAL file paths
+ *      substituted passes validateReport (the extension's own validator —
+ *      since v1.19 paths must exist at collect time).
  *   2. Regression (the failure class this contract fixes): a report whose
  *      evidence is an array of STRINGS must be rejected with an error naming
  *      the evidence item.
@@ -56,15 +57,139 @@ const root = mkdtempSync(join(tmpdir(), "report-contract-check-"));
 // ---------------------------------------------------------------------------
 
 {
-	// Substitute the canonical name for the placeholder, write to a temp file.
-	const report = { ...REPORT_EXAMPLE, worker: NAME };
+	// Substitute the canonical name AND real paths for the placeholder
+	// artifact/evidence pointers: since v1.19 the validator enforces
+	// path existence at collect (quality-research fleet P0) — the canon is
+	// the report SHAPE; a passing report must reference files that exist.
+	const artifactPath = join(root, "artifact.txt");
+	writeFileSync(artifactPath, "artifact bytes\n", "utf8");
+	const evidencePath = join(root, "evidence-src.ts");
+	writeFileSync(evidencePath, "export {}\n", "utf8");
+	const report = {
+		...REPORT_EXAMPLE,
+		worker: NAME,
+		artifacts: [artifactPath],
+		evidence: [{ claim: "what was verified", file: `${evidencePath}:1` }],
+	};
 	const path = join(root, `report-${NAME}.json`);
 	writeFileSync(path, JSON.stringify(report, null, "\t"), "utf8");
 	const r = validateReport(path, NAME);
 	check(
-		"REPORT_EXAMPLE (worker substituted) → validateReport ok",
+		"REPORT_EXAMPLE (worker + real paths substituted) → validateReport ok",
 		r.ok && r.report.worker === NAME && r.report.status === "pass",
 		JSON.stringify(r),
+	);
+}
+
+// ---------------------------------------------------------------------------
+// 1b. collect-time path-existence semantics (v1.19, quality-research P0)
+// ---------------------------------------------------------------------------
+
+{
+	const existsPath = join(root, "exists.txt");
+	writeFileSync(existsPath, "x\n", "utf8");
+	const ghost = join(root, "ghost-does-not-exist.txt");
+	const write = (name: string, report: unknown) => {
+		const p = join(root, name);
+		writeFileSync(p, JSON.stringify(report, null, "\t"), "utf8");
+		return p;
+	};
+	const okReport = (over: object) => ({
+		worker: NAME,
+		status: "pass",
+		summary: "s",
+		artifacts: [existsPath],
+		evidence: [{ claim: "c", file: existsPath }],
+		...over,
+	});
+
+	// pass with empty evidence — the hollow-pass class (fleet: measured 0/161
+	// on the corpus; now contract-enforced)
+	const emptyEv = validateReport(write("empty-evidence.json", okReport({ evidence: [] })), NAME);
+	check(
+		"pass with empty evidence → rejected (hollow-pass gate)",
+		!emptyEv.ok && emptyEv.error.includes("at least one evidence"),
+		JSON.stringify(emptyEv),
+	);
+
+	// dead artifact path
+	const deadArtifact = validateReport(write("dead-artifact.json", okReport({ artifacts: [ghost] })), NAME);
+	check(
+		"pass with nonexistent artifact path → rejected naming the path",
+		!deadArtifact.ok && deadArtifact.error.includes("ghost-does-not-exist.txt"),
+		JSON.stringify(deadArtifact),
+	);
+
+	// dead evidence path
+	const deadEvidence = validateReport(
+		write("dead-evidence.json", okReport({ evidence: [{ claim: "c", file: ghost }] })),
+		NAME,
+	);
+	check(
+		"pass with nonexistent evidence path → rejected with command-ref guidance",
+		!deadEvidence.ok && deadEvidence.error.includes('"command: <cmd>"'),
+		JSON.stringify(deadEvidence),
+	);
+
+	// command reference instead of a path — accepted verbatim
+	const cmdRef = validateReport(
+		write("cmd-ref.json", okReport({ evidence: [{ claim: "c", file: "command: ls -la /tmp" }] })),
+		NAME,
+	);
+	check("pass with 'command:' evidence reference → ok", cmdRef.ok, JSON.stringify(cmdRef));
+
+	// relative paths resolve against ctx.baseDir; without a base dir — fail-closed
+	const relReport = {
+		worker: NAME,
+		status: "pass",
+		summary: "s",
+		artifacts: ["exists.txt"],
+		evidence: [{ claim: "c", file: "exists.txt:1" }],
+	};
+	const relOk = validateReport(write("rel-ok.json", relReport), NAME, { baseDir: root });
+	check("relative paths + baseDir → ok", relOk.ok, JSON.stringify(relOk));
+	const relNoBase = validateReport(write("rel-nobase.json", relReport), NAME);
+	check(
+		"relative paths without baseDir → rejected (fail-closed)",
+		!relNoBase.ok && relNoBase.error.includes("no base dir"),
+		JSON.stringify(relNoBase),
+	);
+
+	// :line suffix stripped before stat
+	const lineSuffix = validateReport(
+		write("line-suffix.json", okReport({ evidence: [{ claim: "c", file: `${existsPath}:42` }] })),
+		NAME,
+	);
+	check("evidence path with :line suffix → stat on the stripped path", lineSuffix.ok, JSON.stringify(lineSuffix));
+
+	// fail reports: existence checks skipped, but blockers required
+	const failNoBlockers = validateReport(
+		write("fail-noblockers.json", { worker: NAME, status: "fail", summary: "s", artifacts: [], evidence: [] }),
+		NAME,
+	);
+	check(
+		"fail without blockers → rejected",
+		!failNoBlockers.ok && failNoBlockers.error.includes('"blockers"'),
+		JSON.stringify(failNoBlockers),
+	);
+	const failWithBlockers = validateReport(
+		write(
+			"fail-blockers.json",
+			{
+				worker: NAME,
+				status: "fail",
+				summary: "s",
+				artifacts: [],
+				evidence: [{ claim: "c", file: ghost }],
+				blockers: ["write access to /etc/hosts is required — owned by operator"],
+			},
+		),
+		NAME,
+	);
+	check(
+		"fail with blockers and dead evidence path → ok (existence checks skipped on fail)",
+		failWithBlockers.ok,
+		JSON.stringify(failWithBlockers),
 	);
 }
 

@@ -200,6 +200,11 @@ function writeManifestOnDisk(dir: string, workers: ManifestWorker[]): ExchangeMa
 
 function writeValidReport(dir: string, name: string, body?: Record<string, unknown>): string {
 	const p = `${dir}/report-${name}.json`;
+	// v1.19 collect-time path existence: the default pass report cites a REAL
+	// file by absolute path (fixture manifests may carry no checkoutPath —
+	// relative paths would be unresolvable by design).
+	const evidenceFile = join(dir, "evidence-f.ts");
+	if (!existsSync(evidenceFile)) writeFileSync(evidenceFile, "export {}\n", "utf8");
 	writeFileSync(
 		p,
 		JSON.stringify(
@@ -208,7 +213,7 @@ function writeValidReport(dir: string, name: string, body?: Record<string, unkno
 				status: "pass",
 				summary: "done",
 				artifacts: [],
-				evidence: [{ claim: "c", file: "f.ts:1" }],
+				evidence: [{ claim: "c", file: evidenceFile }],
 			},
 		),
 	);
@@ -259,7 +264,17 @@ function workerView(w: ManifestWorker, statuses: AgentStatus[] | null = [DONE(w.
 	});
 	writeValidReport(dir, "r-frag", { worker: "r-frag", status: "pass", summary: "s", artifacts: [], evidence: [] });
 	check("R2.7 base-valid but fragment-violating report → NOT retirable", !evaluateRetire(workerView(wFrag)).retirable);
-	writeValidReport(dir, "r-frag", { worker: "r-frag", status: "fail", summary: "honest fail", artifacts: [], evidence: [], result: 3 });
+	// v1.19: fail reports require a non-empty blockers array (the fail path skips
+	// existence checks but must name what is missing).
+	writeValidReport(dir, "r-frag", {
+		worker: "r-frag",
+		status: "fail",
+		summary: "honest fail",
+		artifacts: [],
+		evidence: [],
+		blockers: ["upstream service unreachable — owned by operator"],
+		result: 3,
+	});
 	const fragOk = evaluateRetire(workerView(wFrag));
 	check("R2.7b fragment-satisfying report → retirable (status fail still counts)", fragOk.retirable, JSON.stringify(fragOk));
 
@@ -716,7 +731,7 @@ rmSync(FIX, { recursive: true, force: true });
 	check(
 		"R7.1 TTL retire of an uncollected worker archives the report",
 		decisions.length === 1 && existsSync(archivedReport),
-		archivedReport,
+		`decisions=${JSON.stringify(decisions)} archivedReport=${archivedReport}`,
 	);
 	check(
 		"R7.2 the archive copy is byte-identical to the exchange report",

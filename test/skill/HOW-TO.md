@@ -37,6 +37,25 @@ The committed `test/skill/quality-report.*` files are this command's output
 for the current skill text — regenerate and commit them together with any
 skill edit (same commit).
 
+## Live replay (on demand)
+
+`build.ts` accepts an optional `--live-traces <dir>`:
+
+```bash
+timeout 60 bun test/skill/quality/build.ts --live-traces <dir-of-replay-traces>
+```
+
+Point the flag at a directory of stage-1 replay traces (`<scenario>.json`
+files in the `TraceDoc` shape). The report then carries a `liveVerdicts`
+section: one verdict per contextual dead-zone pair (S01/topology:fan-out,
+S02/mode:shared, S03/mode:worktree, S12/tool:delegate). `pass` — the trace
+loads and the tag is absent from `forbiddenHits`. `fail` — the tag is
+present. `unverifiable` — the trace file is missing or fails validation.
+The section is data, not a gate: the Q formula never reads it. This is not
+a CI gate — run it on demand after a replay batch. The traces come from
+live replay runs; each run costs live model calls, so this builder only
+reads the trace files and never calls a model.
+
 ## CI wiring
 
 `test/skill-l0-check.ts` and `test/skill-quality-check.ts` are FLAT

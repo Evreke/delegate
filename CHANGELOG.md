@@ -10,6 +10,17 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **The skill-quality report gains an optional `liveVerdicts` section.**
+  `test/skill/quality/build.ts` accepts `--live-traces <dir>`: given a
+  directory of stage-1 replay traces (`<scenario>.json` `TraceDoc` files),
+  the report and its Markdown carry one deterministic verdict — `pass`,
+  `fail` or `unverifiable` — per contextual dead-zone pair
+  (S01/topology:fan-out, S02/mode:shared, S03/mode:worktree,
+  S12/tool:delegate), scored with the frozen stage-1 rubric (`scoreTrace`).
+  The section is data, not a gate: the Q formula is untouched, and without
+  the flag the report shape is unchanged. Pinned by the Q6 leg of
+  `test/skill-quality-check.ts`.
+
 - **The fleet widget carries the dashboard link persistently.** The
   session-hosted server's handle now exposes `dashboardLink` (the canonical
   `http://127.0.0.1:<port>/#t=<token>` spelling from `dashboardLinkFor` —

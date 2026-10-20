@@ -75,9 +75,26 @@ const FIX = mkdtempSync(join(tmpdir(), "retire-check-fix-"));
 // writes under archiveRoot() = $HOME/.pi/agent/delegate-archive. Redirect
 // $HOME for the WHOLE run so the real archive is never touched (same
 // convention as settle-archive.ts; R1's child spawns override HOME explicitly).
+// BUG_FIX_CONTEXT (quality-research P0 round): $HOME alone is NOT enough
+// under bun — homedir() is CACHED per process, so archiveRoot() resolved to
+// the REAL agent dir and R7 wrote test archives into the operator's live
+// delegate-archive. PI_CODING_AGENT_DIR is honored LIVE per call
+// (getAgentDir()), so it sandboxes archiveRoot() correctly under bun;
+// settle-archive.ts is the reference.
 const SAVED_HOME = process.env.HOME;
+const SAVED_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
+const SAVED_STORAGE = process.env.SWARM_STORAGE;
 const ARCHIVE_HOME = mkdtempSync(join(tmpdir(), "retire-check-archive-home-"));
 process.env.HOME = ARCHIVE_HOME;
+process.env.PI_CODING_AGENT_DIR = join(ARCHIVE_HOME, ".pi", "agent");
+// The manifest store is selected ONCE per process from swarm.storage (config
+// or env). The operator's live config may say "journal" — then the fixture
+// manifests (plain files on disk) are invisible to retirePass and every
+// stamp/archive assertion silently no-ops. Pin the FILE store for the run:
+// resolveSwarmStorage reads SWARM_STORAGE dynamically at call time, so this
+// works despite BUDGET_CONFIG_PATH being resolved at import (host.ts) before
+// the sandbox below could take effect.
+process.env.SWARM_STORAGE = "files";
 
 // ---------------------------------------------------------------------------
 // R1. Config — watch.retireTtlMs (child bun process, $HOME at spawn time)
@@ -97,7 +114,14 @@ function retireConfigInHome(
 		`import {resolveWatchConfig} from ${JSON.stringify(WATCH_MOD)};` +
 		"resolveWatchConfig(); console.log(JSON.stringify(resolveWatchConfig()))";
 	// Fail-fast: a hung bun -e child must surface as SPAWN FAILED (20 s cap).
-	const res = spawnSync("bun", ["-e", src], { env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 20_000 });
+	// PI_CODING_AGENT_DIR must point at THIS child's own home (parent's would
+	// override the HOME-based config isolation — the parent's sandboxed
+	// agent-dir is for the in-process archiveRoot only).
+	const res = spawnSync("bun", ["-e", src], {
+		env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: configDir },
+		encoding: "utf8",
+		timeout: 20_000,
+	});
 	rmSync(home, { recursive: true, force: true });
 	const raw = res.stdout.toString().trim();
 	const warnings = (res.stderr.toString().match(/bad watch\.retire/g) ?? []).length;
@@ -734,5 +758,9 @@ rmSync(FIX, { recursive: true, force: true });
 rmSync(ARCHIVE_HOME, { recursive: true, force: true });
 if (SAVED_HOME === undefined) delete process.env.HOME;
 else process.env.HOME = SAVED_HOME;
+if (SAVED_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
+else process.env.PI_CODING_AGENT_DIR = SAVED_AGENT_DIR;
+if (SAVED_STORAGE === undefined) delete process.env.SWARM_STORAGE;
+else process.env.SWARM_STORAGE = SAVED_STORAGE;
 console.log(failures === 0 ? "\nALL RETIRE CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

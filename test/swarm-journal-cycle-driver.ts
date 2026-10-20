@@ -35,17 +35,16 @@ writeFileSync(BRIEF, `# Brief — ${NAME}\n\nDo the thing.\n`);
 
 // The report is produced by the WORKER's verb (the CLI) BEFORE the tool
 // executes — the delegate cycle then settles and collects it.
-// v1.19 collect-time path existence: cite a REAL file by absolute path
-// (the CLI resolves relative paths against its own cwd — repo root here —
-// which is not the worker checkout).
-const EVIDENCE_FILE = join(REPO, "a.ts");
-writeFileSync(EVIDENCE_FILE, "export {}\n", "utf8");
+// MS-SYM-CONTRACT-1 §5: a status=pass report's proof paths must exist at
+// collect time and at least one must be durable (not under the exchange root
+// or OS temp dir) — point at a real repo file so the cycle still COLLECTS.
+const DURABLE_FILE = join(import.meta.dir, "..", "package.json");
 const REPORT = {
 	worker: NAME,
 	status: "pass",
 	summary: "journal cycle",
-	artifacts: [EVIDENCE_FILE],
-	evidence: [{ claim: "cycle", file: `${EVIDENCE_FILE}:1` }],
+	artifacts: [DURABLE_FILE],
+	evidence: [{ claim: "cycle", file: DURABLE_FILE }],
 };
 const CLI = join(import.meta.dir, "..", "src", "swarm", "cli.ts");
 const cliEnv: Record<string, string> = {};

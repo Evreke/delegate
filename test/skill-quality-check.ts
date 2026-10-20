@@ -42,6 +42,12 @@
  *       output (provenance aside); dictated shape (version 1, five layers,
  *       band enum, L2 threshold from the rubric); markdown render carries
  *       the Q line and per-claim/per-scenario tables.
+ *   Q6  live replay verdicts — the four contextual dead-zone pairs scored
+ *       over a synthetic trace fixture dir: fail (tag in forbiddenHits),
+ *       pass (tag absent), unverifiable (missing/bad trace); deterministic
+ *       byte-identical reruns; the section is data (attached only with
+ *       --live-traces, markdown table rendered) and the no-flag report
+ *       shape is unchanged.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -56,8 +62,10 @@ import {
 	ANCHORS,
 } from "./skill/quality/l2-text.ts";
 import {
+	buildLiveVerdicts,
 	buildReport,
 	defaultBeforeRev,
+	LIVE_DEAD_ZONE_PAIRS,
 	renderMarkdown,
 	type QualityReport,
 } from "./skill/quality/build.ts";
@@ -453,6 +461,109 @@ function scoreBearing(report: QualityReport): string {
 	};
 	const s = scoreTrace(scenario, trace);
 	check("Q5: projected traces are ordinary rubric inputs (100/pass)", s.total === 100 && s.verdict === "pass");
+}
+
+// ---------------------------------------------------------------------------
+// Q6 — live replay verdicts: synthetic fixture dir, three verdict paths,
+// determinism, no-flag shape unchanged
+// ---------------------------------------------------------------------------
+
+{
+	const fixture = mkdtempSync(join(tmpdir(), "sqc-live-"));
+	try {
+		// S01 → fail: the trace hits the pair's forbidden tag.
+		writeFileSync(
+			join(fixture, "S01.json"),
+			JSON.stringify({ version: 1, scenario: "S01", steps: [{ tag: "tool:delegate" }, { tag: "topology:fan-out" }] }),
+			"utf8",
+		);
+		// S02 → pass: a clean trace, the forbidden tag absent.
+		writeFileSync(
+			join(fixture, "S02.json"),
+			JSON.stringify({
+				version: 1,
+				scenario: "S02",
+				steps: [{ tag: "tool:delegate" }, { tag: "topology:fan-out" }, { tag: "mode:worktree" }, { tag: "release:on-started" }],
+			}),
+			"utf8",
+		);
+		// S03 → unverifiable: the trace file exists but fails loadTrace.
+		writeFileSync(join(fixture, "S03.json"), "{ not json", "utf8");
+		// S12 → unverifiable: no trace file at all.
+
+		check(
+			"Q6: the pairs table holds exactly the four dead-zone (scenario, tag) pairs",
+			LIVE_DEAD_ZONE_PAIRS.length === 4 &&
+				LIVE_DEAD_ZONE_PAIRS.some((p) => p.scenario === "S01" && p.tag === "topology:fan-out") &&
+				LIVE_DEAD_ZONE_PAIRS.some((p) => p.scenario === "S02" && p.tag === "mode:shared") &&
+				LIVE_DEAD_ZONE_PAIRS.some((p) => p.scenario === "S03" && p.tag === "mode:worktree") &&
+				LIVE_DEAD_ZONE_PAIRS.some((p) => p.scenario === "S12" && p.tag === "tool:delegate"),
+			JSON.stringify(LIVE_DEAD_ZONE_PAIRS),
+		);
+
+		const scenariosDir = join(ROOT, "test/skill/scenarios");
+		const one = buildLiveVerdicts(scenariosDir, fixture);
+		const two = buildLiveVerdicts(scenariosDir, fixture);
+		check("Q6: deterministic — two section builds byte-identical", JSON.stringify(one) === JSON.stringify(two));
+
+		const byScenario = new Map(one.map((e) => [e.scenario, e]));
+		check(
+			"Q6: fail path — S01 trace lists topology:fan-out in forbiddenHits",
+			byScenario.get("S01")?.verdict === "fail" && (byScenario.get("S01")?.detail ?? "").includes("topology:fan-out"),
+			JSON.stringify(byScenario.get("S01")),
+		);
+		check(
+			"Q6: pass path — S02 clean trace, forbidden tag absent",
+			byScenario.get("S02")?.verdict === "pass",
+			JSON.stringify(byScenario.get("S02")),
+		);
+		check(
+			"Q6: unverifiable paths — S03 bad trace + S12 missing trace",
+			byScenario.get("S03")?.verdict === "unverifiable" && byScenario.get("S12")?.verdict === "unverifiable",
+			JSON.stringify([byScenario.get("S03"), byScenario.get("S12")]),
+		);
+		check("Q6: every pair reported exactly once, in pairs-table order", one.length === 4 && one.map((e) => e.scenario).join(",") === "S01,S02,S03,S12");
+
+		// Integration: the full builder with the flag carries the section and
+		// the markdown table; the no-flag report has no liveVerdicts key.
+		const inputs = {
+			skillDir: "skills/delegate",
+			fixture: "test/skill/tool-contract.json",
+			scenariosDir: "test/skill/scenarios",
+			before: defaultBeforeRev("skills/delegate"),
+		};
+		let withFlag: QualityReport | undefined;
+		try {
+			withFlag = buildReport({ ...inputs, liveTraces: fixture });
+		} catch (e) {
+			failures++;
+			console.error(`FAIL  Q6: buildReport(--live-traces) threw: ${e instanceof Error ? e.message : String(e)}`);
+		}
+		if (withFlag !== undefined) {
+			check(
+				"Q6: with --live-traces the report carries the section; markdown renders the table",
+				withFlag.liveVerdicts !== undefined &&
+					withFlag.liveVerdicts.entries.length === 4 &&
+					JSON.stringify(withFlag.liveVerdicts.entries) === JSON.stringify(one) &&
+					renderMarkdown(withFlag).includes("## Live replay verdicts"),
+			);
+		}
+		let noFlag: QualityReport | undefined;
+		try {
+			noFlag = buildReport(inputs);
+		} catch (e) {
+			failures++;
+			console.error(`FAIL  Q6: buildReport(no flag) threw: ${e instanceof Error ? e.message : String(e)}`);
+		}
+		if (noFlag !== undefined) {
+			check(
+				"Q6: no-flag report shape unchanged — no liveVerdicts key anywhere in the JSON",
+				!JSON.stringify(noFlag).includes("liveVerdicts"),
+			);
+		}
+	} finally {
+		rmSync(fixture, { recursive: true, force: true });
+	}
 }
 
 if (failures > 0) {

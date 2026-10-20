@@ -1,0 +1,8 @@
+{
+	"version": 1,
+	"scenario": "S01",
+	"steps": [
+		{ "tag": "tool:delegate" },
+		{ "tag": "topology:single-direct" }
+	]
+}

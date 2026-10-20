@@ -1,6 +1,6 @@
 # Skill quality report — skills/delegate
 
-Generated `2026-10-01T08:11:03.959Z` at `3b1da2eb74817acfc34a869920da43dd435f37eb` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
+Generated `2026-10-20T07:23:27.868Z` at `df81acd9ae018d217f65f9decbe4d0e3dc08e53d` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
 
 **Q = 100 — band: SHIP** (ship ≥ 90, debt ≥ 80, else reject)
 
@@ -10,7 +10,7 @@ Generated `2026-10-01T08:11:03.959Z` at `3b1da2eb74817acfc34a869920da43dd435f37e
 | L1 alignment | 100 / 100 (bar 90) | all keywords present |
 | L2 projection | 100 / 100 (bar 70) | all scenarios 100/pass |
 | L3 delta | clean → norm 100 | regressions: none; warnings: none; files 2c/0a/0r |
-| L4 budgets | norm 100 | SKILL.md bytes 6031/6144; SKILL.md lines 85/90; REFERENCE.md bytes 13695/16384; REFERENCE.md lines 234/280 |
+| L4 budgets | norm 100 | SKILL.md bytes 5836/6144; SKILL.md lines 89/90; REFERENCE.md bytes 11041/16384; REFERENCE.md lines 204/280 |
 
 Composite: Q = 0.25*L1 + 0.35*L2 + 0.20*L3_norm + 0.20*L4_norm (L0 fail => 0) with weights {"l1":0.25,"l2":0.35,"l3":0.2,"l4":0.2}.
 

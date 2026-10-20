@@ -25,6 +25,22 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   it within one 2 s poll. Pinned behaviorally (lifecycle L1.5/L7b) and by
   unit (render-ui W7/W8).
 
+### Changed
+
+- **The delegate skill text is pruned to judgment only.** `skills/delegate/SKILL.md`
+  drops its restatements of tool mechanics (the header mechanics enumeration, the
+  exchange-dir path, the report-contract field list — the tool's schema owns them) and
+  carries the settle posture as judgment instead: a minutes-short task with nothing
+  else to do may block until the worker settles. The ≥3 smoke rule is unified to one
+  posture — run the first real worker alone; its structured spawn failure is the cheap
+  smoke signal (probe mode stays tool-owned). `REFERENCE.md` cuts the meanings that
+  mirror SKILL.md (topology map, merge gate, tie-breaker, diagnosed-retry detail) and
+  keeps the tool-absent ritual plus its unique gotchas; the universal sections point
+  at SKILL.md instead of restating it. The `release:on-settle` L2 anchor is
+  re-derived to the new phrasing in the same change. Static gates green: L0 29/29
+  pins, L1 100, L2 mean 100, Q = 100 (ship); sizes SKILL 5836 B/89 lines, REFERENCE
+  11041 B/204 lines (budgets 6144/90 and 16384/280).
+
 ### Fixed
 
 - **CI is green again after the upstream history rewrite — the skill-quality

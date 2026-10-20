@@ -71,7 +71,7 @@ export const ANCHORS: readonly Anchor[] = [
 	{ tag: "mode:worktree", role: "expect", fire: [/worktree isolation/, /one worker = one worktree/], note: "root default: worktree isolation (SKILL spawn)" },
 	{ tag: "mode:shared", role: "expect", fire: [/share its checkout/, /shared/], note: "sub-orchestrator workers share the checkout (SKILL spawn)" },
 	{ tag: "release:on-started", role: "expect", fire: [/watcher owns the wait/, /release[d]? on start/], note: "release-on-started posture: watcher owns the wait (SKILL recovery)" },
-	{ tag: "release:on-settle", role: "expect", fire: [/settle and release windows/, /blocks? until the worker settles/], note: "settle windows are tool-owned vocabulary (SKILL header)" },
+	{ tag: "release:on-settle", role: "expect", fire: [/blocking until the worker settles/, /release windows are the tool's/], note: "settle-blocking is a legitimate posture for minutes-short tasks; the release windows are tool-owned (SKILL spawn step)" },
 	{ tag: "turn:end", role: "expect", fire: [/end your turn/i], note: "end your turn on timeouts (SKILL recovery)" },
 	{ tag: "turn:end-after-fleet", role: "expect", fire: [/end your turn right after the fleet/], note: "two-tier: end turn once the fleet is out (SKILL recovery)" },
 	{ tag: "verify:report-evidence", role: "expect", fire: [/file:line evidence/], note: "verification demands file:line evidence (SKILL verify)" },

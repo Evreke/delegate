@@ -1,0 +1,18 @@
+{
+	"version": 1,
+	"id": "S01",
+	"title": "canned replay fixture — single task, direct delegation",
+	"blocker": false,
+	"input": {
+		"task": "Fixture task for the replay-driver check: one bounded helper, no fan-out. Never run against a live model by an auto-discovered check.",
+		"context": ["You are the root orchestrator; the delegate tool is in your tool list.", "The work fits exactly one worker."],
+		"trigger": "User message: 'Please get this done — delegate it if that is the right shape.'"
+	},
+	"expect": [
+		{ "tag": "tool:delegate", "dimension": "tool-choice" },
+		{ "tag": "topology:single-direct", "dimension": "topology" }
+	],
+	"forbid": [
+		{ "tag": "topology:fan-out", "dimension": "no-forbidden" }
+	]
+}

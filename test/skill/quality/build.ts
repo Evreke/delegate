@@ -42,6 +42,8 @@ import { dirname, join, resolve } from "node:path";
 import { runPins } from "../l0/pins.ts";
 import { loadSkillContract, scoreAlignment, type SkillContract } from "../l1/score.ts";
 import { computeDelta, countLines, loadSnapshot, snapshotDir, type Snapshot, type ToolContract } from "../l3/skill-delta.ts";
+import { loadScenario, loadTrace } from "../runner/l2-runner.ts";
+import { scoreTrace } from "../runner/rubric.ts";
 import { readSkillTexts, scoreScenariosAgainstTexts } from "./l2-text.ts";
 import {
 	compositeQ,
@@ -61,6 +63,68 @@ export interface BuildPaths {
 	scenariosDir: string;
 	/** git rev or an existing snapshot JSON file. */
 	before: string;
+	/** Optional dir of stage-1 replay traces (`<scenario>.json` TraceDoc
+	 *  files, validated by loadTrace). Given → the report carries the
+	 *  `liveVerdicts` section (DATA, never a Q input); absent → the report
+	 *  shape is unchanged. */
+	liveTraces?: string;
+}
+
+/** One verdict of the `liveVerdicts` section. */
+export type LiveVerdict = "pass" | "fail" | "unverifiable";
+
+export interface LiveVerdictEntry {
+	scenario: string;
+	tag: string;
+	verdict: LiveVerdict;
+	/** Deterministic one-line reason (same inputs → same string). */
+	detail: string;
+}
+
+/**
+ * The four contextual dead-zone (scenario, forbid tag) pairs, in report
+ * order. Semantic source: test/skill/quality/l2-text.ts — the CONTEXTUAL
+ * forbid-role entries ("static projection cannot fire it; live replay owns
+ * this verdict") and the scenario files' forbid lists they cite:
+ * S01 forbids topology:fan-out (wrong only for single tasks), S02 forbids
+ * mode:shared (wrong only for root fan-outs), S03 forbids mode:worktree
+ * (wrong only for sub-orchestrators), S12 forbids tool:delegate (wrong only
+ * when the tool is absent).
+ */
+export const LIVE_DEAD_ZONE_PAIRS: ReadonlyArray<{ scenario: string; tag: string }> = [
+	{ scenario: "S01", tag: "topology:fan-out" },
+	{ scenario: "S02", tag: "mode:shared" },
+	{ scenario: "S03", tag: "mode:worktree" },
+	{ scenario: "S12", tag: "tool:delegate" },
+];
+
+/**
+ * The liveVerdicts section builder. For each dead-zone pair: load the
+ * replay trace `<liveTracesDir>/<scenario>.json` (loadTrace-validated) and
+ * score it against the scenario file from `<scenariosDir>/<scenario>.json`
+ * with the stage-1 rubric — the pair's tag in `forbiddenHits` → "fail",
+ * absent → "pass"; a missing or unloadable trace → "unverifiable". The
+ * scenario files are the builder's own input (the L2 leg already demands
+ * them), so an unloadable scenario is a usage-class throw, not a verdict.
+ * Pure data: same inputs → byte-identical output; no Q weight reads this.
+ */
+export function buildLiveVerdicts(scenariosDir: string, liveTracesDir: string): LiveVerdictEntry[] {
+	return LIVE_DEAD_ZONE_PAIRS.map(({ scenario, tag }) => {
+		const tracePath = join(liveTracesDir, `${scenario}.json`);
+		if (!existsSync(tracePath)) {
+			return { scenario, tag, verdict: "unverifiable" as const, detail: "trace file missing" };
+		}
+		const loaded = loadTrace(tracePath);
+		if (!loaded.ok) {
+			return { scenario, tag, verdict: "unverifiable" as const, detail: loaded.error.split("\n")[0] ?? "trace failed loadTrace" };
+		}
+		const scen = loadScenario(join(scenariosDir, `${scenario}.json`));
+		if (!scen.ok) throw new Error(`scenarios: ${scen.error}`);
+		const scored = scoreTrace(scen.scenario, loaded.trace);
+		return scored.forbiddenHits.includes(tag)
+			? { scenario, tag, verdict: "fail" as const, detail: `forbiddenHits: ${scored.forbiddenHits.join(", ")}` }
+			: { scenario, tag, verdict: "pass" as const, detail: "forbidden tag absent from forbiddenHits" };
+	});
 }
 
 export interface QualityReport {
@@ -96,6 +160,11 @@ export interface QualityReport {
 		value: number;
 		band: ReturnType<typeof qBand>;
 		l0GateApplied: boolean;
+	};
+	/** Present only when BuildPaths.liveTraces was given. Data, not a gate. */
+	liveVerdicts?: {
+		liveTraces: string;
+		entries: LiveVerdictEntry[];
 	};
 }
 
@@ -259,7 +328,7 @@ export function buildReport(paths: BuildPaths): QualityReport {
 
 		const q = compositeQ(l0.verdictPass, l1.score, l2run.result.mean, l3norm, l4norm);
 
-		return {
+		const report: QualityReport = {
 			version: 1,
 			generatedAt: new Date().toISOString(),
 			gitRev: gitRev(),
@@ -291,6 +360,15 @@ export function buildReport(paths: BuildPaths): QualityReport {
 				l0GateApplied: !l0.verdictPass,
 			},
 		};
+		// The liveVerdicts section is DATA, not a gate: attached only when the
+		// caller passed --live-traces; the Q formula never reads it.
+		if (paths.liveTraces !== undefined) {
+			report.liveVerdicts = {
+				liveTraces: paths.liveTraces,
+				entries: buildLiveVerdicts(resolve(paths.scenariosDir), resolve(paths.liveTraces)),
+			};
+		}
+		return report;
 	} finally {
 		before.cleanup?.();
 	}
@@ -356,6 +434,16 @@ export function renderMarkdown(report: QualityReport): string {
 		lines.push(`| ${s.scenario} | ${s.total} | ${s.verdict} | ${s.missed.join(", ") || "—"} | ${s.forbiddenHits.join(", ") || "—"} |`);
 	}
 	lines.push("");
+	if (report.liveVerdicts) {
+		lines.push("## Live replay verdicts");
+		lines.push("");
+		lines.push("| scenario | forbid tag | verdict | detail |");
+		lines.push(`|---|---|---|---|`);
+		for (const e of report.liveVerdicts.entries) {
+			lines.push(`| ${e.scenario} | ${e.tag} | ${e.verdict} | ${e.detail.replaceAll("|", "\\|")} |`);
+		}
+		lines.push("");
+	}
 	return `${lines.join("\n")}\n`;
 }
 
@@ -364,9 +452,10 @@ export function renderMarkdown(report: QualityReport): string {
 // ---------------------------------------------------------------------------
 
 const USAGE = `usage:
-  bun test/skill/quality/build.ts [--skill-dir <dir>] [--fixture <file>] [--scenarios <dir>] [--before <git-rev|snapshot.json>] [--out-json <file>] [--out-md <file>]
+  bun test/skill/quality/build.ts [--skill-dir <dir>] [--fixture <file>] [--scenarios <dir>] [--before <git-rev|snapshot.json>] [--live-traces <dir>] [--out-json <file>] [--out-md <file>]
 
 defaults: --skill-dir skills/delegate --fixture test/skill/tool-contract.json --scenarios test/skill/scenarios --before <parent of the last commit touching the skill dir> --out-json test/skill/quality-report.json --out-md test/skill/quality-report.md
+--live-traces: optional dir of <scenario>.json replay traces → adds the data-only liveVerdicts section
 exit codes: 0 report written (verdicts are data) · 2 usage/IO/git errors`;
 
 export function runCli(argv: string[]): number {
@@ -399,6 +488,7 @@ export function runCli(argv: string[]): number {
 		scenariosDir: flags.scenarios ?? defaults.scenariosDir,
 		before: flags.before ?? defaultBeforeRev(flags["skill-dir"] ?? defaults.skillDir),
 	};
+	if (flags["live-traces"] !== undefined) paths.liveTraces = flags["live-traces"];
 	const outJson = flags["out-json"] ?? defaults.outJson;
 	const outMd = flags["out-md"] ?? defaults.outMd;
 	let report: QualityReport;

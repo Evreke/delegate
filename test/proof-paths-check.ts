@@ -180,9 +180,11 @@ const report = (overrides: Partial<WorkerReport> = {}): WorkerReport => ({
 }
 
 // ---------------------------------------------------------------------------
-// Collect-drive (fake backend): a pass report with a missing proof path →
-// E_PROOF_MISSING, distinct from E_REPORT_INVALID. A fail report with
-// missing paths → collect OK (not blocked).
+// Collect-drive (fake backend): the v1.19 union contract — a pass report
+// with a missing proof path is rejected at the SCHEMA stage (E_REPORT_INVALID,
+// the failing path named — the Law 8 recovery hint); the proof stage remains
+// the authority for durability (E_PROOF_MISSING). A fail report without
+// blockers is rejected (blockers[] required); with blockers — collect OK.
 // ---------------------------------------------------------------------------
 
 {
@@ -225,8 +227,11 @@ const report = (overrides: Partial<WorkerReport> = {}): WorkerReport => ({
 		}),
 	);
 	check(
-		"collect-drive: pass report with a missing proof path → E_PROOF_MISSING",
-		!missing.ok && missing.code === "E_PROOF_MISSING",
+		"collect-drive: pass report with a missing proof path → schema-stage E_REPORT_INVALID, path named",
+		!missing.ok &&
+			missing.code === "E_REPORT_INVALID" &&
+			missing.text.includes("path does not exist at collect time") &&
+			missing.text.includes("missing-proof.ts"),
 		`ok=${missing.ok} code=${missing.code} ${missing.text.slice(0, 200)}`,
 	);
 
@@ -237,12 +242,28 @@ const report = (overrides: Partial<WorkerReport> = {}): WorkerReport => ({
 			summary: "honest failure",
 			artifacts: [],
 			evidence: [],
+			blockers: ["the brief's target file does not exist — owner: orchestrator"],
 		}),
 	);
 	check(
-		"collect-drive: fail report with missing paths → collect OK (not blocked)",
+		"collect-drive: fail report with blockers → collect OK (not blocked)",
 		honestFail.ok && honestFail.code === "",
 		`ok=${honestFail.ok} code=${honestFail.code} ${honestFail.text.slice(0, 200)}`,
+	);
+
+	const blockersMissing = await drive(
+		JSON.stringify({
+			worker: NAME,
+			status: "fail",
+			summary: "honest failure",
+			artifacts: [],
+			evidence: [],
+		}),
+	);
+	check(
+		"collect-drive: fail report without blockers → schema-stage E_REPORT_INVALID",
+		!blockersMissing.ok && blockersMissing.code === "E_REPORT_INVALID" && blockersMissing.text.includes("blockers"),
+		`ok=${blockersMissing.ok} code=${blockersMissing.code} ${blockersMissing.text.slice(0, 200)}`,
 	);
 
 	rmSync(sandbox, { recursive: true, force: true });

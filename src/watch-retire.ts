@@ -107,7 +107,8 @@ export function evaluateRetire(
 	const reportMtime = fileMtimeMs(w.reportPath);
 	if (reportMtime === null) return { retirable: false };
 	const schema = w.reportSchemaFragment ?? (w.briefPath ? parseBriefSchema(w.briefPath) : null);
-	if (!validateReportAgainstSchema(w.reportPath, w.name, schema).ok) return { retirable: false };
+	if (!validateReportAgainstSchema(w.reportPath, w.name, schema, { baseDir: w.placement?.checkoutPath }).ok)
+		return { retirable: false };
 
 	// Condition 2 — mailbox drained (pending question = the exception above).
 	if (!mailboxDrained(w.dir, w.name, reportMtime)) return { retirable: false };

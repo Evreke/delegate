@@ -99,7 +99,12 @@ export async function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env:
 	let journal: { seq: number } | { error: string } | null = null;
 	try {
 		writeFileSync(tmpPath, content, "utf8");
-		const verdict = validateReportAgainstSchema(tmpPath, ctx.worker, resolved.schema);
+		const verdict = validateReportAgainstSchema(tmpPath, ctx.worker, resolved.schema, {
+			// The worker process runs inside its own checkout — relative report
+			// paths resolve against cwd (Placement.checkoutPath on the orchestrator
+			// side of the same deployment).
+			baseDir: process.cwd(),
+		});
 		if (!verdict.ok) {
 			// Name the FINAL path in the failure (the validate temp is deleted and
 			// must not leak into a worker-facing message) — collect-time messages

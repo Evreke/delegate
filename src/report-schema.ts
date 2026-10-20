@@ -9,8 +9,12 @@
  * (parseBriefSchema + validateReportAgainstSchema via typebox Check/Errors)
  * and the v1.5 schema library with "$extends" inheritance resolution
  * (resolveReportSchema/resolveReportSchemaInDir, loadLibrarySchema,
- * mergeParentUnderChild, resolveExtendsChain).
- *
+ * mergeParentUnderChild, resolveExtendsChain), plus the v1.19 collect-time
+ * path-existence semantics (validateReportPaths + ReportPathContext, the
+ * quality-research fleet P0): on "pass", artifacts/evidence paths must stat()
+ * at collect (or cite "command: <cmd>"); on "fail", a non-empty blockers
+ * array is required.
+ * 
  * Dependencies: @earendil-works/pi-coding-agent (parseFrontmatter,
  * getAgentDir), typebox/value (Check/Errors — deep specifiers are BLOCKED by
  * typebox 1.3.7's exports map, see the note below), node builtins, ./host.ts
@@ -33,24 +37,118 @@ import { parseFrontmatter, getAgentDir } from "@earendil-works/pi-coding-agent";
 // exports map (ERR_PACKAGE_PATH_NOT_EXPORTED, verified via node + jiti);
 // "typebox/value" is the exported entry for the same build/value modules.
 import { Check, Errors } from "typebox/value";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { WorkerReport } from "./host.ts";
+// A worker may cite a command it actually ran instead of a preserved file
+// ("command: <cmd>" in evidence.file — accepted verbatim, not stat()-able);
+// anything else is a path. Single source: the regex and the :line strip live
+// in proof-paths.ts (the collect-time authority) — imported, never re-declared.
+import { COMMAND_REF_RE, stripLineSuffix } from "./proof-paths.ts";
 
 function isNonEmptyString(v: unknown): v is string {
 	return typeof v === "string" && v.length > 0;
 }
 
 /**
+ * Path-existence validation context (quality-research fleet round, P0).
+ * The research fleet measured that 33 of 35 missing evidence paths vanished
+ * AFTER the run finished (ephemeral /tmp, deleted branches, transient build
+ * outputs) — a report whose evidence cannot be stat()-ed at collect time is
+ * unverifiable post-hoc, which is exactly the hollow-pass class the fleet
+ * measured at 15% of pass reports. Paths are resolved on the orchestrator
+ * host (single-host deployment: worker checkouts live on the same
+ * filesystem; a remote-backend deployment must teach the seam a remote stat
+ * before relaxing this).
+ */
+export interface ReportPathContext {
+	/** Absolute base dir for resolving RELATIVE artifact/evidence paths —
+	 *  the worker's checkout (Placement.checkoutPath; the worker-side
+	 *  write-report verb passes process.cwd()). When omitted, a relative
+	 *  path is a validation error (fail-closed: an unresolvable claim is
+	 *  an unverifiable claim). */
+	baseDir?: string;
+}
+
+/** Resolve one report path against the context base dir and stat it.
+ *  Returns null when the path exists, else a short reason. */
+function missingPath(raw: string, ctx?: ReportPathContext): string | null {
+	const p = stripLineSuffix(raw);
+	const abs = isAbsolute(p) ? p : ctx?.baseDir ? join(ctx.baseDir, p) : null;
+	if (abs === null) return "relative path and no base dir to resolve against";
+	try {
+		statSync(abs);
+		return null;
+	} catch (err) {
+		return (err as Error).message;
+	}
+}
+
+/**
+ * Collect-time path-existence semantics (v1.19, quality-research P0).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input:
+ *   - r: the structurally valid parsed report object
+ *   - ctx: path context (baseDir), may be omitted
+ * Output: null when the report is verifiable at collect time, else the
+ *   validation error naming the failing path
+ * Guarantees:
+ *   - status=pass: evidence must be non-empty; every artifacts entry must
+ *     stat() (absolute, or relative against ctx.baseDir); every evidence
+ *     "file" must either stat() the same way or be a "command:" reference
+ *   - status=fail: existence checks are SKIPPED (evidence may point at the
+ *     broken state it reports); instead "blockers" must be a non-empty
+ *     array of non-empty strings naming what is missing
+ *   - never throws; filesystem errors surface as the returned reason
+ * Raises: never
+ */
+export function validateReportPaths(r: Record<string, unknown>, ctx?: ReportPathContext): string | null {
+	if (r.status === "pass") {
+		const evidence = r.evidence as Array<{ claim: string; file: string }>;
+		if (evidence.length === 0) {
+			return 'Report "status":"pass" requires at least one evidence item — empty evidence cannot substantiate a pass';
+		}
+		for (const a of r.artifacts as string[]) {
+			const miss = missingPath(a, ctx);
+			if (miss) return `Report artifact path does not exist at collect time: "${a}" (${miss})`;
+		}
+		for (const [i, e] of evidence.entries()) {
+			if (COMMAND_REF_RE.test(e.file)) continue;
+			const miss = missingPath(e.file, ctx);
+			if (miss) {
+				return (
+					`Evidence item ${i}: path does not exist at collect time: "${e.file}" (${miss}) — ` +
+					'cite the command you ran as "command: <cmd>", or preserve the file and reference its path'
+				);
+			}
+		}
+		return null;
+	}
+	const blockers = r.blockers;
+	if (
+		!Array.isArray(blockers) ||
+		blockers.length === 0 ||
+		blockers.some((b) => !isNonEmptyString(b))
+	) {
+		return 'Report "status":"fail" requires a non-empty "blockers" array of strings naming what is missing and who owns it';
+	}
+	return null;
+}
+
+/**
  * Strict collect (the WorkerReport contract): file must exist, parse as JSON, and satisfy
  * the WorkerReport schema — worker === canonical name, status ∈ {pass, fail},
- * non-empty summary, artifacts/evidence arrays present.
+ * non-empty summary, artifacts/evidence arrays present — plus the collect-time
+ * path-existence semantics of validateReportPaths (ctx.baseDir resolves
+ * relative paths; see that contract).
  */
 export function validateReport(
 	path: string,
 	canonicalName: string,
+	ctx?: ReportPathContext,
 ): { ok: true; report: WorkerReport } | { ok: false; error: string } {
-	const base = baseValidate(path, canonicalName);
+	const base = baseValidate(path, canonicalName, ctx);
 	if (!base.ok) return base;
 	return { ok: true, report: reportOf(base.r) };
 }
@@ -83,6 +181,7 @@ function reportOf(r: Record<string, unknown>): WorkerReport {
 function baseValidate(
 	path: string,
 	canonicalName: string,
+	ctx?: ReportPathContext,
 ): { ok: true; r: Record<string, unknown> } | { ok: false; error: string } {
 	let raw: string;
 	try {
@@ -133,6 +232,9 @@ function baseValidate(
 		}
 	}
 
+	const pathError = validateReportPaths(r, ctx);
+	if (pathError) return { ok: false, error: pathError };
+
 	return { ok: true, r };
 }
 
@@ -181,8 +283,9 @@ export function validateReportAgainstSchema(
 	path: string,
 	canonicalName: string,
 	briefSchema: Record<string, unknown> | null,
+	ctx?: ReportPathContext,
 ): { ok: true; report: WorkerReport } | { ok: false; error: string } {
-	const base = baseValidate(path, canonicalName);
+	const base = baseValidate(path, canonicalName, ctx);
 	if (!base.ok) return base;
 	if (briefSchema !== null && !Check(briefSchema, base.r)) {
 		// First error is enough; Errors() yields {instancePath, message} with the

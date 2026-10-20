@@ -607,8 +607,11 @@ const valid = {
 	worker: "w",
 	status: "pass",
 	summary: "all good",
-	artifacts: ["test/x.ts"],
-	evidence: [{ claim: "c", file: "f.ts:1" }],
+	// v1.19 collect-time path existence: the fixture cites REAL files (absolute
+	// paths — the pin runs without a baseDir ctx), else the report is unverifiable
+	// by design (quality-research fleet P0).
+	artifacts: [resolve(ROOT, "package.json")],
+	evidence: [{ claim: "c", file: `${resolve(ROOT, "package.json")}:1` }],
 };
 
 const cases: Array<[string, string, string, string]> = [
@@ -947,6 +950,7 @@ const decompositionLedger: ReadonlyArray<{ file: string; owner: string; targetRe
 	{ file: "src/swarm-server/server.ts", owner: "operator", targetRelease: "1.19.0", plan: "extract the #51 mutation-response cluster (auth + id/body validation + outcome mapping) into a server-mutation.ts sibling; the #51+#52 merge pushed the route layer over the threshold" },
 	{ file: "src/swarm-server/mount.ts", owner: "operator", targetRelease: "1.19.0", plan: "the #surfaceToken silence (headless/secondary token-dashboard gating + takeover re-announce) pushed the mount over the threshold; extract the D1 bind-decision block (probePrimary/tryBind/role/port-substitution + takeover watch) into a mount-bind.ts sibling" },
 	{ file: "src/watch-schedule.ts", owner: "operator", targetRelease: "1.19.0", plan: "#12's durable fold (persistence port + mount restore + snapshot-on-mutation) pushed the store over the threshold; the file/version/identity rules already live in the watch-schedule-persist.ts sibling — remaining: move the pure wake-text formatters (formatScheduleWake/formatDurationMs) into a watch-schedule-text.ts sibling" },
+	{ file: "src/report-schema.ts", owner: "operator", targetRelease: "1.19.0", plan: "the quality-research P0 round added the collect-time path-existence semantics (validateReportPaths/missingPath/ReportPathContext); extract that cluster into a src/report-paths.ts sibling (node-builtins-only import) leaving the schema library + brief-fragment validation in this file" },
 ];
 
 const sizeOffenders = listTsFiles(resolve(ROOT, "src"))

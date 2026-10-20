@@ -8,6 +8,43 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Changed — collect-time path-existence validation of reports (quality-research fleet P0)
+
+The report contract now enforces that a `pass` report is VERIFIABLE at the moment it is
+collected, closing the hollow-pass channel measured by the quality-research fleet
+(15% of pass reports referenced evidence that no longer existed; 33 of 35 missing
+evidence paths vanished after the run — ephemeral `/tmp`, deleted branches, transient
+build outputs):
+
+- **`pass` reports:** at least one `evidence` item is required (empty evidence cannot
+  substantiate a pass — measured 0/161 on the 198-run corpus, now contract-enforced);
+  every `artifacts` entry and every evidence `file` must `stat()` at collect — absolute,
+  or relative to the worker's checkout (`Placement.checkoutPath` on the orchestrator
+  side, the worker's cwd in the `write-report` verb). A command the worker actually ran
+  may be cited instead of a preserved file as `"file": "command: <cmd>"`. A trailing
+  `:line` suffix (`src/host.ts:625`) is stripped before the stat.
+- **`fail` reports:** existence checks are skipped (evidence may point at the broken
+  state it reports), but a non-empty `blockers` array naming what is missing and who
+  owns it is now required.
+- **Worker-facing:** the `briefPrompt` contract text states the rule up front, so a
+  compliant report passes the verb's own validation on the first try; an invalid one is
+  rejected with the failing path named (Law 8 recovery hint).
+- **Context plumbing:** `validateReport` / `validateReportAgainstSchema` take an optional
+  `ReportPathContext { baseDir }`; all four validation sites thread it (spawn collect,
+  retire gate, watcher detection, worker-side `write-report`). Relative paths without a
+  base dir are rejected (fail-closed: an unresolvable claim is an unverifiable claim).
+- The worker checkout is on the orchestrator host in the current deployment; a remote
+  backend must teach the seam a remote stat before relaxing this (module contract
+  notes this boundary).
+
+Fixture/check migration: every check fixture that writes a valid `pass` report now cites
+a real file (absolute, or relative inside the fixture checkout). retire-check's archive
+sandbox now ALSO sets `PI_CODING_AGENT_DIR` (read live per call) — bun caches
+`os.homedir()`, so the `$HOME`-only redirect silently resolved `archiveRoot()` to the
+operator's REAL delegate-archive (the R7 byte-identity check passed by accident while
+the test wrote into live operator data; the stale `archive/` task dir it had created is
+removed).
+
 ### Added
 
 - **The skill-quality report gains an optional `liveVerdicts` section.**

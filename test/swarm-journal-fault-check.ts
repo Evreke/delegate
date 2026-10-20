@@ -159,7 +159,18 @@ try {
 	// F3/F4 — verb writes over the broken journal
 	// -----------------------------------------------------------------------
 	{
-		const report = runCli(["write-report"], JSON.stringify({ worker: WORKER, status: "pass", summary: "s", artifacts: [], evidence: [] }));
+		const report = runCli(
+			["write-report"],
+			JSON.stringify({
+				worker: WORKER,
+				status: "pass",
+				summary: "s",
+				// v1.19: pass requires ≥1 evidence with an existing path — cite a
+				// real repo file (absolute; the CLI resolves relative against cwd).
+				artifacts: [],
+				evidence: [{ claim: "c", file: resolve("package.json") }],
+			}),
+		);
 		const env = report.stdout.trim() ? (JSON.parse(report.stdout.trim()) as { journal?: { error?: string } }) : {};
 		check("F3.1 write-report exits 0 over a broken journal", report.status === 0, report.stdout || report.stderr);
 		check("F3.2 the success envelope records the journal error (advisory)", env.journal?.error === "E_JOURNAL_OPEN", report.stdout);

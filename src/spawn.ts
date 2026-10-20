@@ -1356,12 +1356,18 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 			} => {
 				// v1.2: base ∩ brief-fragment validation — the declared
 				// schema applies on the first pass and on every grace recheck alike.
-				const verdict = validateReportAgainstSchema(reportPath, canonical, briefSchema);
+				// v1.19: path-existence ctx — relative report paths resolve against
+				// the worker's checkout (Placement.checkoutPath is always absolute).
+				const verdict = validateReportAgainstSchema(reportPath, canonical, briefSchema, {
+					baseDir: placement.checkoutPath,
+				});
 				if (verdict.ok || canonical === params.name) {
 					return { verdict, usedPath: reportPath, fallbackUsed: false };
 				}
 				const requestedReportPath = reportPathFor(manifestDir, params.name);
-				const alt = validateReportAgainstSchema(requestedReportPath, canonical, briefSchema);
+				const alt = validateReportAgainstSchema(requestedReportPath, canonical, briefSchema, {
+					baseDir: placement.checkoutPath,
+				});
 				if (alt.ok) {
 					return { verdict: alt, usedPath: requestedReportPath, fallbackUsed: true };
 				}
@@ -1627,6 +1633,9 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				if (report.status !== "pass") return { ok: true };
 				const v = validateProofPaths(report, {
 					cwd: ctx.cwd,
+					// v1.19: a worker cites paths relative to its own checkout —
+					// Placement.checkoutPath is the first resolution base.
+					checkoutPath: placement.checkoutPath,
 					exchangeRoot: exchangeRoot(),
 					tempDir: tmpdir(),
 					ephemeralProof: resolveCollectConfig().ephemeralProof,
@@ -1951,6 +1960,7 @@ export function registerDelegateTool(pi: import("@earendil-works/pi-coding-agent
 				canonical,
 				resolvedSchema,
 				schemaProvenance,
+				baseDir: placement.checkoutPath,
 			});
 			const b = gaugeSummary();
 			// A settle (even a failed one) that empties the fleet still fires the

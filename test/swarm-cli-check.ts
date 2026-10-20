@@ -141,8 +141,11 @@ const REPORT = {
 	worker: WORKER,
 	status: "pass",
 	summary: "golden",
-	artifacts: ["a.ts"],
-	evidence: [{ claim: "verified", file: "a.ts:1" }],
+	// v1.19 collect-time path existence (quality-research P0): the CLI's
+	// write-report validates with baseDir = process.cwd() (repo root) — cite a
+	// REAL repo file instead of a placeholder path.
+	artifacts: [resolve("package.json")],
+	evidence: [{ claim: "verified", file: `${resolve("package.json")}:1` }],
 };
 const REPORT_PATH = reportPathFor(DIR, WORKER);
 const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
@@ -197,7 +200,7 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 		"utf8",
 	);
 	const envS = { SWARM_TASK: TASK_S, SWARM_WORKER: "cli-w2" };
-	const base = { worker: "cli-w2", status: "pass", summary: "s", artifacts: [], evidence: [] };
+	const base = { worker: "cli-w2", status: "pass", summary: "s", artifacts: [], evidence: [{ claim: "c", file: resolve("package.json") }] };
 
 	const missing = runCli(["write-report"], { input: JSON.stringify(base), env: envS });
 	check(
@@ -223,7 +226,7 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 	mkdirSync(DIR_L, { recursive: true });
 	writeFileSync(join(DIR_L, "brief-cli-w3.md"), `---\nreportSchema: impl\n---\n# Brief\n`, "utf8");
 	const envL = { SWARM_TASK: TASK_L, SWARM_WORKER: "cli-w3" };
-	const libBase = { worker: "cli-w3", status: "pass", summary: "s", artifacts: [], evidence: [] };
+	const libBase = { worker: "cli-w3", status: "pass", summary: "s", artifacts: [], evidence: [{ claim: "c", file: resolve("package.json") }] };
 	const libFail = runCli(["write-report", "--schema-dir", libDir], { input: JSON.stringify(libBase), env: envL });
 	check("R4.4 named library schema violation → E_REPORT_INVALID", libFail.status !== 0 && errCode(libFail) === "E_REPORT_INVALID", libFail.stdout);
 	const libOk = runCli(["write-report", "--schema-dir", libDir], { input: JSON.stringify({ ...libBase, implFlag: true }), env: envL });
@@ -243,10 +246,20 @@ const REPORT_GOLDEN = `${JSON.stringify(REPORT, null, "\t")}\n`;
 	const cwdProj = join(SANDBOX, "cwd-proj");
 	mkdirSync(join(cwdProj, ".pi", "delegate-schemas"), { recursive: true });
 	writeFileSync(join(cwdProj, ".pi", "delegate-schemas", "envs.json"), JSON.stringify({ type: "object", required: ["aField"], properties: { aField: { type: "boolean" } } }), "utf8");
+	// v1.19: real evidence file inside the CLI's cwd (cwdProj).
+	writeFileSync(join(cwdProj, "schema-echo.json"), "{}\n", "utf8");
 	const envSchemas = join(SANDBOX, "env-schemas");
 	mkdirSync(envSchemas, { recursive: true });
 	writeFileSync(join(envSchemas, "envs.json"), JSON.stringify({ type: "object", required: ["bField"], properties: { bField: { type: "boolean" } } }), "utf8");
-	const baseE = { worker: "cli-w4", status: "pass", summary: "s", artifacts: [], evidence: [] };
+	const baseE = {
+		worker: "cli-w4",
+		status: "pass",
+		summary: "s",
+		artifacts: [],
+		// v1.19: pass requires ≥1 evidence with an existing path (absolute — the
+		// CLI runs with cwd: cwdProj here, not the repo root).
+		evidence: [{ claim: "c", file: join(cwdProj, "schema-echo.json") }],
+	};
 	const envE = { SWARM_TASK: TASK_E, SWARM_WORKER: "cli-w4" };
 	const envWins = runCli(["write-report"], { input: JSON.stringify({ ...baseE, bField: true }), env: { ...envE, SWARM_SCHEMA_DIR: envSchemas }, cwd: cwdProj });
 	check(

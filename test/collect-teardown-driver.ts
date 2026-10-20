@@ -37,18 +37,25 @@ const briefPath = join(ROOT, `brief-${NAME}.md`);
 writeFileSync(briefPath, `# brief ${NAME}\n\nDo the thing. OUTPUT: report-${NAME}.json\n`);
 
 const reportPath = reportPathFor(ROOT, NAME);
-// MS-SYM-CONTRACT-1 §5: a status=pass report's proof paths must EXIST at
-// collect time and at least one must be durable (not under the exchange root
-// or the OS temp dir). Point the fixture at a real, durable repo file so the
-// teardown matrix still exercises the VALID-collect path (not a proof
-// rejection).
+// v1.19 collect-time path existence (quality-research P0): the valid-report
+// fixture cites REAL files inside the worker checkout — placement.checkoutPath
+// is join(repoDir, "checkout"), so the cited files must exist THERE.
+const checkoutDir = join(repoDir, "checkout");
+mkdirSync(checkoutDir, { recursive: true });
+writeFileSync(join(checkoutDir, "a.ts"), "export {}\n", "utf8");
+writeFileSync(join(checkoutDir, "f.ts"), "export {}\n", "utf8");
+// Sym-contract §5 durability (landed): at least one proof path must be durable
+// (not under the exchange root or the OS temp dir) — the real repo file
 const DURABLE_FILE = join(resolve(dirname(process.argv[1] ?? "."), ".."), "package.json");
 const validReport = JSON.stringify({
 	worker: NAME,
 	status: "pass",
 	summary: "one-paragraph outcome",
 	artifacts: [DURABLE_FILE],
-	evidence: [{ claim: "c", file: DURABLE_FILE }],
+	evidence: [
+		{ claim: "c", file: "a.ts" }, // relative → resolved against placement.checkoutPath (the v1.19 rule)
+		{ claim: "durable", file: DURABLE_FILE }, // absolute + durable (§5)
+	],
 });
 if (CASE === "valid" || CASE === "q-pending" || CASE === "teardown-throws" || CASE === "probe") {
 	if (CASE !== "probe") writeFileSync(reportPath, validReport); // probes never write reports

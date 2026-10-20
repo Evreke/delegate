@@ -30,7 +30,6 @@
  * files or a scratch dir — never the real /tmp/exchange.
  */
 
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";

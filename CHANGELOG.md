@@ -8,6 +8,31 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Fixed
+
+- **Win32 launch: cmd.exe is used only where it is needed, and its quoting is
+  no longer re-quoted.** On Windows every worker spawn ended
+  `E_PROMPT_STALLED`: the pane started and showed its resolved tier, but the
+  fixed delegate prompt never reached herdr — herdr's stderr carried cmd.exe's
+  `ERROR_FILE_NOT_FOUND` instead of any herdr output. Root cause: the win32
+  launch quoted each argument for cmd.exe (`winQuoteArg`) and handed the
+  already-quoted array to node's `spawn`, which quoted every element a second
+  time for the C runtime; cmd.exe is not a C-runtime parser, so its quote state
+  desynchronised and the `<`/`>` characters of the prompt became input
+  redirection — cmd died opening a file before herdr ran. A 32-byte prompt
+  containing `<x>` reproduced it and the same prompt with `[x]` did not (length
+  was irrelevant), which is why `test/transport-win-check.ts` stayed green: its
+  stub cmd.exe modelled an argv-array consumer, while real cmd.exe re-parses ONE
+  command-line string. Fixed in `src/herdr/cli.ts` (`resolveLaunch`): a native
+  executable (`herdr.exe`, `taskkill.exe`) is spawned DIRECTLY, so the
+  metacharacter class cannot reach the child at all, and when a `.cmd`/`.bat`
+  shim genuinely requires cmd.exe the pre-quoted argv is passed with
+  `windowsVerbatimArguments: true` — no second quoting pass. Residual, binding
+  only on the shim path: cmd.exe still expands `%VAR%` inside quotes. The POSIX
+  branch is byte-identical to the pre-1.17 launch. Check:
+  `test/transport-win-check.ts` (W.5, W.2, W.6); threat catalog row in
+  ARCHITECTURE.md §2.
+
 ### Added
 
 - **Dashboard console panel + steering controls (#54, ARCHITECTURE §4.2.4).**

@@ -17,14 +17,33 @@
  *   W.1 POSIX default policy (no platform arg): the spawned command is
  *       `herdr` with the RAW argv (regression pin — byte-identical launch);
  *       cmd.exe is never involved.
- *   W.2 Win32 launch (injected platform "win32"): the stub cmd.exe receives
- *       `/d /s /c herdr …`; per-arg quoting round-trips — an arg with spaces
- *       arrives as ONE argv element, an arg with embedded quotes survives.
+ *   W.2 Win32 launch, batch shim (injected platform "win32"): the stub cmd.exe
+ *       receives `/d /s /c herdr …`; per-arg quoting round-trips — an arg with
+ *       spaces arrives as ONE argv element, an arg with embedded quotes
+ *       survives; the resolved policy demands verbatim args (no second quoting
+ *       pass by node — the 2026-10-27 incident).
  *   W.3 Win32 escalation (hang stub + injected win32): at the timeout the
  *       promise rejects with the SAME shape as POSIX (killed:true, signal
  *       SIGTERM); after SIGKILL_GRACE_MS the stub `taskkill` receives
  *       `/pid <stubPid> /T /F` and actually kills the stub tree process.
  *   W.4 winQuoteArg unit cases: space, embedded quotes, plain, empty.
+ *   W.5 Win32 launch, native executable: cmd.exe is NEVER involved and an argv
+ *       element carrying cmd metacharacters (`<`, `>`, `|`, `&`, `"`, `%`)
+ *       reaches the child BYTE-FOR-BYTE. This is the regression check for the
+ *       2026-10-27 incident: the old policy routed this element through
+ *       cmd.exe, whose re-parse turned `<…>` into input redirection, so cmd
+ *       died with ERROR_FILE_NOT_FOUND before herdr ran and every delegate
+ *       prompt was lost (a 32-byte prompt containing `<x>` was enough to
+ *       reproduce; length was irrelevant).
+ *   W.6 resolveLaunch unit cases: native vs batch classification by PATH +
+ *       PATHEXT, explicit path-shaped commands, unresolvable commands (shim),
+ *       and the POSIX branch (no shim, no verbatim flag).
+ *
+ * Blind spot this file used to have (why the incident shipped green): the stub
+ * cmd.exe is an argv-array consumer — the OS splits the command line for it —
+ * but REAL cmd.exe re-parses ONE command-line string with its own quoting and
+ * redirection rules. W.5 therefore asserts at the policy level (which command
+ * is spawned) instead of trying to emulate cmd's parser.
  *
  * Cleanup: every stub it spawns is verified dead or killed in the end; the
  * stub dir is removed.
@@ -38,6 +57,7 @@ import {
 	runHerdr,
 	parseHerdrResult,
 	winQuoteArg,
+	resolveLaunch,
 	SIGKILL_GRACE_MS,
 } from "../src/herdr/host.ts";
 
@@ -60,6 +80,34 @@ const PIDFILE = join(ART, "stub.pid");
 
 // The `herdr` shim on the test PATH: dispatches on $WIN_STUB_SCRIPT.
 writeFileSync(join(STUB_DIR, "herdr"), `#!/usr/bin/env node\nrequire(process.env.WIN_STUB_SCRIPT);\n`, { mode: 0o755 });
+// Launch-policy markers: the win32 shim decision is a PATH+PATHEXT lookup, so
+// the classification is driven by which of these exists (W.2/W.3 shim,
+// W.5 native). Both are the same dispatcher under the extension the policy
+// classifies — on POSIX a shebang script named `herdr.exe` spawns fine.
+const SHIM_STUB = join(STUB_DIR, "herdr.cmd");
+const NATIVE_STUB = join(STUB_DIR, "herdr.exe");
+const setLaunchKind = (kind: "shim" | "native" | "unresolvable") => {
+	rmSync(SHIM_STUB, { force: true });
+	rmSync(NATIVE_STUB, { force: true });
+	if (kind === "shim") writeFileSync(SHIM_STUB, "@echo off\n", { mode: 0o755 });
+	if (kind === "native") writeFileSync(NATIVE_STUB, `#!/usr/bin/env node\nrequire(process.env.WIN_STUB_SCRIPT);\n`, { mode: 0o755 });
+};
+/** process.env plus the launch-policy keys — the shim decision reads PATH and
+ *  PATHEXT from the SAME env the child receives, so the stub's own WIN_*
+ *  variables must stay in it. */
+const envWithPathext = (pathext: string): NodeJS.ProcessEnv => ({
+	...process.env,
+	PATH: `${STUB_DIR}${process.platform === "win32" ? ";" : ":"}${process.env.PATH ?? ""}`,
+	PATHEXT: pathext,
+});
+/** Pure classification cases must not see the ambient PATH: a real herdr.exe
+ *  elsewhere on it (the herdr install dir is often on PATH) would decide the
+ *  policy and make the case host-dependent. */
+const isolatedEnv = (pathext: string): NodeJS.ProcessEnv => ({
+	...process.env,
+	PATH: STUB_DIR,
+	PATHEXT: pathext,
+});
 // Recorder: writes its argv (beyond node+script), prints a valid herdr JSON line, exits 0.
 writeFileSync(
 	join(STUB_DIR, "record.js"),
@@ -191,14 +239,12 @@ async function run() {
 		check("W.1 default policy never touches cmd.exe", cmdLines().length === 0, `cmd=${JSON.stringify(cmdLines())}`);
 	}
 
-	// W.2 — win32 launch: cmd.exe /d /s /c herdr … with per-arg quoting
+	// W.2 — win32 launch, batch shim: cmd.exe /d /s /c herdr … with per-arg quoting
 	{
 		setStub("record.js");
-		const { stdout } = await runHerdr(
-			["agent", "list", "--label", "hello world", "--note", 'say "hi"'],
-			T,
-			"win32",
-		);
+		setLaunchKind("shim");
+		const wArgs = ["agent", "list", "--label", "hello world", "--note", 'say "hi"'];
+		const { stdout } = await runHerdr(wArgs, T, "win32", envWithPathext(".CMD"));
 		const { result } = parseHerdrResult(stdout);
 		const lines = cmdLines();
 		check("W.2 win32 policy routes through exactly one cmd.exe call", lines.length === 1, `lines=${JSON.stringify(lines)}`);
@@ -227,6 +273,84 @@ async function run() {
 			"W.2 win32 launch result parses (unchanged herdr shape)",
 			(result as { agent?: { agent_status?: string } })?.agent?.agent_status === "idle",
 		);
+		const shimPolicy = resolveLaunch("herdr", wArgs, "win32", isolatedEnv(".CMD"));
+		check(
+			"W.2 batch-shim policy demands VERBATIM args (node must not re-quote the pre-quoted argv — 2026-10-27 incident)",
+			shimPolicy.command === "cmd.exe" && shimPolicy.verbatimArgs === true,
+			`policy=${JSON.stringify(shimPolicy)}`,
+		);
+	}
+
+	// W.5 — win32 launch, native executable: cmd.exe is never involved and a
+	// metacharacter-carrying argv element arrives BYTE-FOR-BYTE
+	{
+		setStub("record.js");
+		setLaunchKind("native");
+		const hostile = 'PING3 <verb> > out.txt | find "x" & echo %PATH% ^ caret';
+		const wArgs = ["agent", "prompt", "probe", hostile, "--pct", "<0-100>"];
+		const { stdout } = await runHerdr(wArgs, T, "win32", envWithPathext(".EXE"));
+		const { result } = parseHerdrResult(stdout);
+		check(
+			"W.5 native policy spawns herdr DIRECTLY — cmd.exe is never involved",
+			cmdLines().length === 0,
+			`cmd=${JSON.stringify(cmdLines())}`,
+		);
+		const argv = readJson(ARGVFILE);
+		check(
+			"W.5 every argv element (incl. < > | & % ^ and \") reaches the child byte-for-byte",
+			JSON.stringify(argv) === JSON.stringify(wArgs),
+			`argv=${JSON.stringify(argv)}`,
+		);
+		check(
+			"W.5 native launch result parses (unchanged herdr shape)",
+			(result as { agent?: { agent_status?: string } })?.agent?.agent_status === "idle",
+		);
+	}
+
+	// W.6 — resolveLaunch unit cases (pure: PATH + PATHEXT classification)
+	{
+		const args = ["agent", "prompt", "w", "Reply with <x> & |"];
+		setLaunchKind("unresolvable");
+		const unresolvable = resolveLaunch("herdr", args, "win32", isolatedEnv(".EXE"));
+		check(
+			"W.6 an unresolvable command keeps the shim (pre-fix failure surface)",
+			unresolvable.command === "cmd.exe" && unresolvable.verbatimArgs === true,
+			`policy=${JSON.stringify(unresolvable)}`,
+		);
+		setLaunchKind("shim");
+		const batch = resolveLaunch("herdr", args, "win32", isolatedEnv(".CMD"));
+		check(
+			"W.6 a .cmd hit routes through cmd.exe with per-arg quoting, verbatim",
+			batch.command === "cmd.exe" &&
+				JSON.stringify(batch.args) === JSON.stringify(["/d", "/s", "/c", "herdr", "agent", "prompt", "w", '"Reply with <x> & |"']) &&
+				batch.verbatimArgs === true,
+			`policy=${JSON.stringify(batch)}`,
+		);
+		setLaunchKind("native");
+		const native = resolveLaunch("herdr", args, "win32", isolatedEnv(".EXE"));
+		check(
+			"W.6 an .exe hit is spawned directly with the RAW argv and no verbatim flag",
+			native.command === "herdr" &&
+				JSON.stringify(native.args) === JSON.stringify(args) &&
+				native.verbatimArgs === false,
+			`policy=${JSON.stringify(native)}`,
+		);
+		check(
+			"W.6 a path-shaped .cmd command is classified by its OWN extension (no PATH lookup)",
+			resolveLaunch("C:\\tools\\herdr.cmd", args, "win32", isolatedEnv(".EXE")).command === "cmd.exe",
+		);
+		check(
+			"W.6 a path-shaped .exe command is classified by its OWN extension (no PATH lookup)",
+			resolveLaunch("C:\\tools\\herdr.exe", args, "win32", isolatedEnv(".CMD")).command === "C:\\tools\\herdr.exe",
+		);
+		const posix = resolveLaunch("herdr", args, "linux", isolatedEnv(".CMD"));
+		check(
+			"W.6 POSIX policy stays raw with no shim and no verbatim flag (regression pin)",
+			posix.command === "herdr" &&
+				JSON.stringify(posix.args) === JSON.stringify(args) &&
+				posix.verbatimArgs === false,
+			`policy=${JSON.stringify(posix)}`,
+		);
 	}
 
 	// W.3 — win32 escalation: the direct child (cmd.exe stub, hang mode)
@@ -235,6 +359,7 @@ async function run() {
 	// the SAME shape as POSIX.
 	{
 		setStub("record.js");
+		setLaunchKind("shim");
 		process.env.WIN_CMD_HANG = "1";
 		const t0 = Date.now();
 		let rejectedAt = -1;

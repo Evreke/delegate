@@ -77,8 +77,8 @@ import type { HerdrAgentStatus } from "./map.ts";
 // The adapter keeps ONE import surface: the symbols that moved to ./cli.ts,
 // ./socket.ts and ./map.ts stay importable from this module under the same
 // names (package.json "./herdr" subpath; tests and index.ts import the facade).
-export { parseHerdrResult, runHerdr, SIGKILL_GRACE_MS, winQuoteArg } from "./cli.ts";
-export type { HerdrRunResult } from "./cli.ts";
+export { parseHerdrResult, runHerdr, SIGKILL_GRACE_MS, winQuoteArg, needsCmdShim, resolveLaunch } from "./cli.ts";
+export type { HerdrRunResult, SpawnPolicy } from "./cli.ts";
 export {
 	DEFAULT_HERDR_SOCK,
 	HERDR_SOCKET_TRANSPORT_ENV,

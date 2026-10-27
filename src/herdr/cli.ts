@@ -16,13 +16,17 @@
  * Windows launch policy (TZ §3.6): on win32 the herdr CLI is typically an npm
  * shim (`herdr.cmd`), which modern Node refuses to spawn shell-less
  * (CVE-2024-27980 → EINVAL) and a bare spawn does not resolve at all (ENOENT).
- * The win32 launch goes through `cmd.exe /d /s /c` with per-argument quoting
- * in one tested helper (winQuoteArg); the argv stays an array end-to-end —
- * never a pre-joined shell string. The platform is injectable (optional
- * trailing `platform` parameter, module-level default DEFAULT_PLATFORM) so
- * tests on a POSIX host drive the win32 branch without a real Windows machine
- * (ARCHITECTURE.md Law 1: the platform is the API). The POSIX default path is
- * byte-identical to the pre-1.17 spawn shape. Windows kill escalation uses
+ * The win32 launch therefore resolves ONE policy per call (resolveLaunch): a
+ * native executable is spawned DIRECTLY, and only a batch shim goes through
+ * `cmd.exe /d /s /c` with per-argument quoting (winQuoteArg) passed verbatim —
+ * the argv stays an array end-to-end, never a pre-joined shell string. The
+ * shim is the sole reason cmd.exe is involved at all, and its quoting must not
+ * be re-quoted by node (BUG_FIX_CONTEXT on resolveLaunch). The platform is
+ * injectable (optional trailing `platform` parameter, module-level default
+ * DEFAULT_PLATFORM) so tests on a POSIX host drive the win32 branch without a
+ * real Windows machine (ARCHITECTURE.md Law 1: the platform is the API). The
+ * POSIX default path is byte-identical to the pre-1.17 spawn shape. Windows
+ * kill escalation uses
  * `taskkill /pid <pid> /T /F` (tree kill — herdr's own child processes die
  * too) instead of child.kill("SIGKILL"), which on Windows kills only the
  * direct child and leaves agent orphans. These herdr CLI/OS details never leak
@@ -41,6 +45,8 @@
  */
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, extname, join } from "node:path";
 
 /** Per-CLI-call timeout for mutating/fast commands (ms). */
 const CLI_TIMEOUT_MS = 30_000;
@@ -58,6 +64,14 @@ const EXEC_MAX_BUFFER = 1024 * 1024;
  *  the process's own platform and tests inject "win32" explicitly. Mirrors
  *  the optional-trailing-param pattern of src/expaths.ts builders. */
 const DEFAULT_PLATFORM: NodeJS.Platform = process.platform;
+
+/** Extensions Node refuses to spawn shell-less (CVE-2024-27980): the ONLY
+ *  reason the win32 launch ever needs the cmd.exe shim. */
+const BATCH_SHIM_EXTS = new Set([".bat", ".cmd"]);
+
+/** PATHEXT fallback for hosts whose environment does not carry one (POSIX test
+ *  hosts driving the injected win32 policy). */
+const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 
 /**
  * Windows argument quoting for the cmd.exe launch policy.
@@ -89,36 +103,127 @@ export function winQuoteArg(arg: string): string {
 	return `"${arg.replace(/"/g, '""')}"`;
 }
 
-/** One platform-resolved launch: the command to spawn and its argv.
+/** One platform-resolved launch: the command to spawn, its argv, and whether
+ *  that argv must reach the child byte-for-byte (the cmd.exe shim path).
  *  Adapter-internal — the win32 shape never crosses the seam. */
-interface SpawnPolicy {
+export interface SpawnPolicy {
 	command: string;
 	args: string[];
+	/** true → spawn() must be told `windowsVerbatimArguments: true`, because the
+	 *  args already carry their cmd.exe quoting and a second Node-applied quoting
+	 *  pass would desynchronise cmd's parser (BUG_FIX_CONTEXT below). */
+	verbatimArgs: boolean;
+}
+
+/**
+ * Does launching `command` on win32 need the cmd.exe shim?
+ * <p>
+ * Node refuses to spawn .cmd/.bat shell-less (CVE-2024-27980 → EINVAL), so a
+ * batch shim is the ONE case the shim exists for. A native executable
+ * (herdr.exe, taskkill.exe) is spawned DIRECTLY: routing arbitrary text through
+ * cmd.exe adds a re-parsing layer that mangles command-line metacharacters even
+ * when the per-argument quoting is correct (BUG_FIX_CONTEXT below).
+ * <p>
+ * The decision is a PATH+PATHEXT lookup — the same lookup the loader performs —
+ * resolved against `env` so the injected win32 policy is testable on a POSIX
+ * host. A command that resolves to nothing keeps the shim: its failure surface
+ * (an ENOENT-shaped exec error from cmd.exe) is the pre-fix behavior.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: command — binary name or path; env — the launching environment
+ *   (PATH/PATHEXT source; an env without PATH resolves to the shim)
+ * Output: true → launch through cmd.exe; false → launch directly
+ * Guarantees:
+ *   - pure lookup: no process is started, nothing is written
+ *   - a path-shaped command is classified by its OWN extension
+ *   - the first hit in PATH order wins; extensions are supplied in PATHEXT
+ *     order, and a bare name match inside a directory is probed first
+ * Raises: never
+ */
+export function needsCmdShim(command: string, env: NodeJS.ProcessEnv = process.env): boolean {
+	const commandExt = extname(command).toLowerCase();
+	if (command.includes("/") || command.includes("\\")) return BATCH_SHIM_EXTS.has(commandExt);
+	const exts = (env.PATHEXT ?? DEFAULT_PATHEXT)
+		.split(";")
+		.map((e) => e.trim().toLowerCase())
+		.filter((e) => e.length > 0);
+	for (const dir of (env.PATH ?? "").split(delimiter).filter((d) => d.length > 0)) {
+		// A bare name has no Windows meaning on PATH (CreateProcess needs an
+		// extension), so the direct probe applies only to an already-extended
+		// command such as `herdr.exe`.
+		if (commandExt.length > 0 && existsSync(join(dir, command))) return BATCH_SHIM_EXTS.has(commandExt);
+		for (const ext of exts) {
+			if (existsSync(join(dir, command + ext))) return BATCH_SHIM_EXTS.has(ext);
+		}
+	}
+	return true;
 }
 
 /**
  * Apply the platform spawn policy to one CLI launch (TZ §3.6.3).
  * <p>
+ * BUG_FIX_CONTEXT (cmd.exe double-quoting, field incident 2026-10-27):
+ * symptom — on a Windows host with a native `herdr.exe` on PATH EVERY worker
+ * spawn ended in E_PROMPT_STALLED: the worker pane started and showed the
+ * resolved tier, but the fixed delegate prompt never arrived, and herdr's
+ * stderr carried cmd.exe's ERROR_FILE_NOT_FOUND instead of any herdr output.
+ * Root cause — the win32 launch quoted every argument itself (winQuoteArg, cmd
+ * convention `"…"` with `""` doubling) and then handed the ALREADY-QUOTED array
+ * to node's spawn, which quoted each element a second time for the C runtime
+ * (`"` → `\"`); cmd.exe is not a C-runtime argument parser, so its quote state
+ * desynchronised and the `<`/`>` characters of the prompt became redirection
+ * operators — cmd tried to OPEN A FILE named after the token following `<` and
+ * died before herdr ran. The delegate prompt is fixed text and always contains
+ * `<verb>` / `--pct <0-100>`, so the failure was total, not intermittent; a
+ * 32-byte prompt containing `<x>` reproduced it and the same prompt with `[x]`
+ * did not (length was irrelevant). Why the suite missed it —
+ * test/transport-win-check.ts modelled the stub cmd.exe as an argv-array
+ * consumer, but real cmd.exe re-parses ONE command-line string, so no check
+ * ever exercised the reparse.
+ * What was done, in two parts: (1) a native executable is now spawned DIRECTLY,
+ * removing cmd.exe from the path entirely — the metacharacter class cannot
+ * reach the child at all; (2) when a batch shim genuinely requires cmd.exe, the
+ * pre-quoted argv is passed with `windowsVerbatimArguments: true` so node adds
+ * no second quoting pass. Residual, documented: on the shim path cmd.exe still
+ * performs its own `%VAR%` expansion inside quotes; that residual cannot occur
+ * on the direct path, which is the only path a native herdr.exe takes.
+ * <p>
  * FUNCTION_CONTRACT:
  * Input: command — the CLI binary name as invoked on POSIX ("herdr",
  *   "taskkill"); args — the raw argv array; platform — the (possibly
- *   injected) platform
+ *   injected) platform; env — PATH/PATHEXT source for the shim decision
  * Output: the spawn policy for THAT platform
  * Guarantees:
- *   - POSIX: { command, args } returned UNCHANGED (byte-identical launch —
- *     the regression pin for the pre-1.17 shape)
- *   - win32: `cmd.exe /d /s /c` followed by the per-argument-quoted command
- *     and argv (argv stays an array; winQuoteArg does the quoting)
+ *   - POSIX: { command, args } returned UNCHANGED with verbatimArgs false
+ *     (byte-identical launch — the regression pin for the pre-1.17 shape)
+ *   - win32 + native executable: { command, args } returned UNCHANGED with
+ *     verbatimArgs false — the argv meets node's own C-runtime quoting, which
+ *     is what a native Windows executable expects
+ *   - win32 + batch shim (or an unresolvable command): `cmd.exe /d /s /c`
+ *     followed by the per-argument-quoted command and argv (argv stays an
+ *     array; winQuoteArg does the quoting) with verbatimArgs true
  * Raises: never
  */
-function spawnPolicyCommand(command: string, args: string[], platform: NodeJS.Platform): SpawnPolicy {
-	if (platform === "win32") {
-		return {
-			command: "cmd.exe",
-			args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
-		};
-	}
-	return { command, args };
+export function resolveLaunch(
+	command: string,
+	args: string[],
+	platform: NodeJS.Platform = DEFAULT_PLATFORM,
+	env: NodeJS.ProcessEnv = process.env,
+): SpawnPolicy {
+	if (platform !== "win32") return { command, args, verbatimArgs: false };
+	if (!needsCmdShim(command, env)) return { command, args, verbatimArgs: false };
+	return {
+		command: "cmd.exe",
+		args: ["/d", "/s", "/c", winQuoteArg(command), ...args.map(winQuoteArg)],
+		verbatimArgs: true,
+	};
+}
+
+/** The spawn() options the policy demands beyond stdio/windowsHide. Split out
+ *  so the win32 branch has ONE spelling at both call sites (launch + tree-kill)
+ *  and the POSIX branch stays byte-identical to the pre-1.17 shape. */
+function verbatimArgOption(policy: SpawnPolicy): { windowsVerbatimArguments?: true } {
+	return policy.verbatimArgs ? { windowsVerbatimArguments: true } : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +344,11 @@ function herdrSpawnError(args: string[], fields: { message: string; code?: unkno
  *     spawn("herdr", args, { stdio: ["ignore","pipe","pipe"], windowsHide:
  *     true }); escalation stays SIGTERM → (SIGKILL_GRACE_MS) → SIGKILL and
  *     is cleared when the child closes, exactly as before
- *   - win32 (injected): launch via cmd.exe /d /s /c with per-argument quoting
- *     (winQuoteArg — BUG_FIX_CONTEXT below); kill escalation via
+ *   - win32 (injected): a native executable is launched DIRECTLY (node's own
+ *     quoting — BUG_FIX_CONTEXT above); a batch shim goes through
+ *     cmd.exe /d /s /c with per-argument quoting passed verbatim
+ *     (winQuoteArg + windowsVerbatimArguments, so no second quoting pass);
+ *     kill escalation via
  *     `taskkill /pid <pid> /T /F` fire-and-forget, no second grace timer,
  *     SIGKILL_GRACE_MS unchanged; the escalation SURVIVES the direct child's
  *     close (the timeout SIGTERM = TerminateProcess kills only the direct
@@ -258,12 +366,15 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 	return new Promise((resolve, reject) => {
 		// Platform policy applied HERE and in armSigkill only — the rest of the
 		// lifecycle (timeout shape, stdio destruction, error mapping) is shared.
-		const policy = spawnPolicyCommand("herdr", args, platform);
+		// The shim decision reads the launching environment when the caller
+		// supplies one (PATH lives there), the process environment otherwise.
+		const policy = resolveLaunch("herdr", args, platform, env ?? process.env);
 		// Issue #25: an explicit env (the spawn flow's swarm identity) replaces
 		// the inherited process environment for this CLI call; absent → inherit.
 		const child = spawn(policy.command, policy.args, {
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
+			...verbatimArgOption(policy),
 			...(env ? { env } : {}),
 		});
 		let stdout = "";
@@ -308,8 +419,12 @@ function spawnHerdr(args: string[], timeoutMs: number, platform: NodeJS.Platform
 					// be undefined when the spawn itself failed — nothing to escalate.
 					const pid = child.pid;
 					if (pid !== undefined) {
-						const tk = spawnPolicyCommand("taskkill", ["/pid", String(pid), "/T", "/F"], platform);
-						const killer = spawn(tk.command, tk.args, { stdio: "ignore", windowsHide: true });
+						const tk = resolveLaunch("taskkill", ["/pid", String(pid), "/T", "/F"], platform);
+						const killer = spawn(tk.command, tk.args, {
+							stdio: "ignore",
+							windowsHide: true,
+							...verbatimArgOption(tk),
+						});
 						// Fire-and-forget: a failed taskkill must never crash the process
 						// with an unhandled 'error' event — the promise is already settled.
 						killer.on("error", () => {});

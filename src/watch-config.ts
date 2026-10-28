@@ -235,9 +235,18 @@ export function resolveWatchConfig(): WatchConfig {
 				warnBadDurableDelivery(w.durableDelivery);
 			}
 		}
+		// Hysteresis cadence pair: the ACTIVE cadence must never be SLOWER than
+		// the idle one — a resolved activeIntervalMs above intervalMs is a
+		// misconfiguration; clamp to the idle interval and warn once (the
+		// degenerate result is a fixed cadence — the safe direction; the tick
+		// then behaves exactly like the pre-hysteresis model).
+		const intervalMs = num(w.intervalMs, fallback.intervalMs, WATCH_MIN_INTERVAL_MS);
+		const activeResolved = num(w.activeIntervalMs, fallback.activeIntervalMs, WATCH_MIN_ACTIVE_INTERVAL_MS);
+		const activeIntervalMs = Math.min(activeResolved, intervalMs);
+		if (activeResolved > intervalMs) warnClampedActiveInterval(activeResolved, intervalMs);
 		return {
-			intervalMs: num(w.intervalMs, fallback.intervalMs, WATCH_MIN_INTERVAL_MS),
-			activeIntervalMs: num(w.activeIntervalMs, fallback.activeIntervalMs, WATCH_MIN_ACTIVE_INTERVAL_MS),
+			intervalMs,
+			activeIntervalMs,
 			settleGateMs: num(w.settleGateMs, fallback.settleGateMs, 1),
 			staleAfterMs: num(w.staleAfterMs, fallback.staleAfterMs, WATCH_MIN_STALE_AFTER_MS),
 			// Whitelist the explicit opt-out; everything else (missing, garbage)
@@ -261,6 +270,17 @@ function warnBadRetireTtl(v: unknown): void {
 	uiLog(
 		`[pi-delegate watch] bad watch.retireTtlMs (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${RETIRE_DEFAULT_TTL_MS} ms`,
+	);
+}
+
+/** Warn-once flag for a clamped hysteresis pair — once per process. */
+let activeIntervalClampWarned = false;
+function warnClampedActiveInterval(active: number, idle: number): void {
+	if (activeIntervalClampWarned) return;
+	activeIntervalClampWarned = true;
+	uiLog(
+		`[pi-delegate watch] watch.activeIntervalMs (${active} ms) exceeds watch.intervalMs (${idle} ms) — ` +
+			`clamped to the idle interval (the active cadence must be faster)`,
 	);
 }
 

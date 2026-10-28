@@ -364,6 +364,71 @@ function makeFutureVersionDb(dbPath: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// S4 — per-kind visibility (the §4 retention-visibility extension)
+// ---------------------------------------------------------------------------
+
+{
+	const db = join(SANDBOX, "s4", "events.db");
+	mkdirSync(dirname(db), { recursive: true });
+	const writer = createJournalWriter({ dbPath: db, clock: FIXED_CLOCK });
+	const seed: Array<{ kind: "spawn" | "ask" | "progress" | "collect"; worker: string | null }> = [
+		{ kind: "spawn", worker: "w" },
+		{ kind: "progress", worker: "w" },
+		{ kind: "progress", worker: "w" },
+		{ kind: "ask", worker: "w" },
+		{ kind: "collect", worker: "w" },
+	];
+	for (const r of seed) {
+		const res = await writer.append({ kind: r.kind, sessionId: "sess-vis", task: "vis-fleet", worker: r.worker, payload: {} });
+		if (!res.ok) throw new Error(`seed failed: ${res.code}`);
+	}
+	// One UNKNOWN (future) kind row, inserted raw: visibility must still COUNT
+	// it — disk growth an operator must see, even though row reads skip it.
+	const raw = new Database(db);
+	raw.run(
+		"INSERT INTO events(ts, kind, session_id, task, worker, payload) VALUES (?, ?, ?, ?, ?, ?)",
+		[FIXED_TS, "future-kind", "sess-vis", "vis-fleet", null, "{}"],
+	);
+	raw.close();
+	writer.close();
+
+	const reader = createJournalReader({ dbPath: db });
+	const stats = reader.kindStats();
+	reader.close();
+	const byKind = Object.fromEntries(stats.map((s) => [s.kind, s]));
+	check(
+		"S4.1 kindStats: per-kind counts (progress=2), ordered by kind, oldest ts stamped",
+		stats.length === 5 &&
+			stats.map((s) => s.kind).join(",") === "ask,collect,future-kind,progress,spawn" &&
+			byKind["progress"]!.count === 2 &&
+			byKind["spawn"]!.count === 1 &&
+			byKind["ask"]!.oldestTs === FIXED_TS,
+		JSON.stringify(stats),
+	);
+	check(
+		"S4.2 visibility counts EVERY row: the unknown future kind is counted, never hidden",
+		byKind["future-kind"] !== undefined && byKind["future-kind"]!.count === 1,
+		JSON.stringify(byKind["future-kind"]),
+	);
+
+	// S4.3 — the events read surface carries the same stats.
+	const r = runCli(["events", "--after", "0", "--task", "vis-fleet"], { SWARM_JOURNAL_DB: db });
+	const kinds = (r.json?.journal as { kinds?: unknown } | undefined)?.kinds;
+	check(
+		"S4.3 `swarm events` surfaces journal.kinds (per-kind counts + oldest-row-ts) from the read surface",
+		r.status === 0 && JSON.stringify(kinds) === JSON.stringify(stats),
+		JSON.stringify({ status: r.status, kinds }),
+	);
+
+	const absent = createJournalReader({ dbPath: join(SANDBOX, "s4-absent", "events.db") });
+	const empty = absent.kindStats().length === 0 && absent.count() === 0;
+	absent.close();
+	check("S4.4 kindStats is tolerant: an absent database yields [] (never a throw)", empty);
+
+	rmSync(dirname(db), { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
 // Static pins — the byte-pinned v1 DDL and the closed message-kind set
 // ---------------------------------------------------------------------------
 

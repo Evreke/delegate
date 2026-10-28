@@ -411,7 +411,9 @@ async function fleetEventsResponse(deps: SwarmServerDeps, req: Http1Request, raw
 			journal: {
 				count: events.length,
 				dbSizeBytes: journal ? journal.dbSizeBytes() : 0,
-				kinds: journal ? journal.kindStats() : [],
+				// Scoped to the fleet's own rows — the scoped envelope never
+				// reports another fleet's disk growth (no cross-traffic).
+				kinds: journal ? journal.kindStats(tasks) : [],
 			},
 		}),
 	};

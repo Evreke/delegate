@@ -74,9 +74,9 @@ export function openSessionJournal(dbPath: string | undefined): JournalReader {
 			ensureOpen();
 			return reader.count();
 		},
-		kindStats() {
+		kindStats(tasks?: ReadonlySet<string>) {
 			ensureOpen();
-			return reader.kindStats();
+			return reader.kindStats(tasks);
 		},
 		dbSizeBytes() {
 			ensureOpen();

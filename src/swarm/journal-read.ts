@@ -84,8 +84,10 @@ export interface JournalReader {
 	/** Total row count (0 when the database is absent/unsupported). */
 	count(): number;
 	/** Per-kind row counts + oldest-row ts, ordered by kind (the §4 retention
-	 *  visibility extension; [] when the database is absent/unsupported). */
-	kindStats(): JournalKindStat[];
+	 *  visibility extension; [] when the database is absent/unsupported).
+	 *  With `tasks`, the stats scope to those tasks' rows only (the fleet-
+	 *  scoped routes — attention never crosses fleets). */
+	kindStats(tasks?: ReadonlySet<string>): JournalKindStat[];
 	/** Database file size in bytes (0 when absent) — the retention-visibility
 	 *  half of §4.1.2. */
 	dbSizeBytes(): number;
@@ -215,12 +217,18 @@ export function createJournalReader(opts: JournalReaderOptions = {}): JournalRea
 				return 0;
 			}
 		},
-		kindStats() {
+		kindStats(tasks?: ReadonlySet<string>) {
 			if (db === null) return [];
 			try {
-				const rows = db.queryAll<{ kind: string; c: number; oldest: string | null }>(
-					"SELECT kind, COUNT(*) AS c, MIN(ts) AS oldest FROM events GROUP BY kind ORDER BY kind ASC",
-				);
+				const scoped = tasks !== undefined && tasks.size > 0;
+				const rows = scoped
+					? db.queryAll<{ kind: string; c: number; oldest: string | null }>(
+							`SELECT kind, COUNT(*) AS c, MIN(ts) AS oldest FROM events WHERE task IN (${[...tasks].map(() => "?").join(",")}) GROUP BY kind ORDER BY kind ASC`,
+							[...tasks],
+						)
+					: db.queryAll<{ kind: string; c: number; oldest: string | null }>(
+							"SELECT kind, COUNT(*) AS c, MIN(ts) AS oldest FROM events GROUP BY kind ORDER BY kind ASC",
+						);
 				return rows.map((r) => ({
 					kind: String(r.kind),
 					count: Number(r.c),

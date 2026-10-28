@@ -131,11 +131,12 @@ export const HTTP_GOLDENS = {
 	/** 400 invalid events cursor. */
 	invalidAfter: '{"ok":false,"schemaVersion":1,"error":{"code":"E_SWARM_USAGE","message":"--after must be an integer journal seq cursor, got \\"{{VALUE}}\\"","hint":"Run the swarm CLI with a known verb and the flags that verb requires."}}',
 
-	/** GET /api/swarm/events over the seeded two-row journal. */
-	events: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}}}}`,
+	/** GET /api/swarm/events over the seeded two-row journal. The kinds
+	 *  visibility (store core): per-kind counts ordered by kind, oldest ts. */
+	events: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}},"kinds":[{"kind":"progress","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"},{"kind":"spawn","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"}]}}`,
 
 	/** GET /api/swarm/events over an ABSENT journal (empty-but-valid). */
-	eventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0}}',
+	eventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0,"kinds":[]}}',
 
 	/** The fleet-unknown refusal (issue #65 item 3): the ONE spelling shared
 	 *  by the index, events and scoped-stream routes. */
@@ -146,11 +147,11 @@ export const HTTP_GOLDENS = {
 
 	/** GET /fleets/<id>/api/swarm/events — the fleet's OWN rows only (the
 	 *  per-audience cursor precedent: attention never crosses fleets). */
-	fleetEvents: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}}}}`,
+	fleetEvents: `{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":${SEEDED_EVENTS_ROWS},"journal":{"count":2,"dbSizeBytes":{{DBSIZE}},"kinds":[{"kind":"progress","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"},{"kind":"spawn","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"}]}}`,
 
 	/** The same route for a fleet with no rows of its own — an empty-but-valid
 	 *  envelope, never a foreign row (no cross-traffic). */
-	fleetEventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":{{DBSIZE}}}}',
+	fleetEventsEmpty: '{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":{{DBSIZE}},"kinds":[]}}',
 
 	/** GET /api/swarm/snapshot — re-frozen at #136/#139/#141/#133: contains/owned_by
 	 *  edges (spawned_by is worker→orchestrator lineage ONLY), the projected

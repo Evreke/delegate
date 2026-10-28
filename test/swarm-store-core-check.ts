@@ -214,6 +214,156 @@ function makeFutureVersionDb(dbPath: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// S2 — shadow message writes behind swarm.messageShadow (K2 + envelope silence)
+// ---------------------------------------------------------------------------
+
+{
+	const db = join(SANDBOX, "s2", "events.db");
+	const task = "shadow-fleet";
+	const worker = "shadoww";
+	const baseEnv = { SWARM_JOURNAL_DB: db, SWARM_SESSION_ID: "sess-shadow" };
+
+	// S2.1 — files mode, shadow ON (default): the verb succeeds, the envelope
+	// carries NO journal field (envelope-silent), the file is published, and
+	// the db gained the ask row + the sender's sent receipt.
+	const rOn = runCli(["ask", "--question", "shadow?", "--task", task, "--worker", worker], baseEnv);
+	const qOn = join(EX, task, `q-${worker}.json`);
+	const onEnvelope = rOn.json ?? {};
+	check(
+		"S2.1 files-mode ask under the shadow: exit 0, NO journal field, the q-file published",
+		rOn.status === 0 && onEnvelope.ok === true && !("journal" in onEnvelope) && existsSync(qOn),
+		JSON.stringify({ status: rOn.status, stdout: rOn.stdout.slice(0, 200) }),
+	);
+	{
+		const raw = new Database(db);
+		const rows = raw.query("SELECT kind, session_id, worker FROM events ORDER BY seq").all() as Array<Record<string, unknown>>;
+		const receipts = raw.query("SELECT msg_seq, audience_session, receipt, writer_session FROM message_receipts").all() as Array<
+			Record<string, unknown>
+		>;
+		raw.close();
+		check(
+			"S2.2 the shadow wrote the ask row + the sender's sent receipt (files stay truth; the receipt's audience = the sender session)",
+			rows.length === 1 && rows[0]!.kind === "ask" && rows[0]!.session_id === "sess-shadow" &&
+				receipts.length === 1 && receipts[0]!.receipt === "sent" && receipts[0]!.audience_session === "sess-shadow" && receipts[0]!.writer_session === "sess-shadow",
+			JSON.stringify({ rows, receipts }),
+		);
+	}
+
+	// S2.3 — BYTE-IDENTITY: the same ask under shadow-off (the exact 1.18
+	// surface) produces the same stdout envelope bytes and the same q-file
+	// bytes in the SAME task dir (the projection wiped between runs), and
+	// shadow-off creates NO database at all.
+	const onStdout = rOn.stdout;
+	const onFile = readFileSync(qOn);
+	rmSync(qOn, { force: true });
+	rmSync(dirname(db), { recursive: true, force: true });
+	const rOff = runCli(["ask", "--question", "shadow?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_MESSAGE_SHADOW: "0",
+	});
+	check(
+		"S2.3 shadow-off stdout is byte-identical to shadow-on (the journal field stays absent in both) and the q-file bytes match",
+		rOff.status === 0 && rOff.stdout === onStdout && readFileSync(qOn).equals(onFile),
+		JSON.stringify({ on: onStdout.slice(0, 120), off: rOff.stdout.slice(0, 120) }),
+	);
+	check("S2.4 shadow-off creates NO database (the exact 1.18 write surface)", !existsSync(db));
+
+	// S2.5 — write-progress shadows too: row + receipt, envelope-silent.
+	rmSync(qOn, { force: true });
+	const rp = runCli(["write-progress", "--phase", "build", "--pct", "40", "--task", task, "--worker", worker], baseEnv);
+	{
+		const raw = new Database(db);
+		const kinds = (raw.query("SELECT kind FROM events ORDER BY seq").all() as Array<{ kind: string }>).map((r) => r.kind);
+		const receipts = raw.query("SELECT receipt FROM message_receipts").all() as Array<{ receipt: string }>;
+		raw.close();
+		check(
+			"S2.5 files-mode write-progress under the shadow: exit 0, no journal field, the progress row + sent receipt landed",
+			rp.status === 0 && !("journal" in (rp.json ?? {})) && kinds.join(",") === "progress" && receipts.length === 1 && receipts[0]!.receipt === "sent",
+			JSON.stringify({ status: rp.status, kinds, receipts, stdout: rp.stdout.slice(0, 200) }),
+		);
+	}
+
+	// S2.6 — K2 visibility: a FAILED shadow write keeps the verb green and the
+	// envelope byte-identical, and surfaces ONE warn-once uiLog line on stderr.
+	const blocker = join(SANDBOX, "s2-blocker");
+	writeFileSync(blocker, "not a directory");
+	const rFault = runCli(["ask", "--question", "shadow?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_JOURNAL_DB: join(blocker, "events.db"),
+	});
+	check(
+		"S2.6 a failed shadow write is advisory: exit 0, byte-identical envelope, the file still published",
+		rFault.status === 0 && rFault.stdout === onStdout && existsSync(qOn),
+		JSON.stringify({ status: rFault.status, stdout: rFault.stdout.slice(0, 200), stderr: rFault.stderr.slice(0, 200) }),
+	);
+	check(
+		"S2.7 the failed shadow write is VISIBLE: one warn-once uiLog line on stderr (K2 — never silent)",
+		rFault.stderr.includes("message shadow write failed") && rFault.stderr.includes("the file stays truth"),
+		JSON.stringify(rFault.stderr.slice(0, 300)),
+	);
+
+	// S2.8 — the loud gate through the CLI (C5): files mode + shadow on + a
+	// future-version db fails the verb structured E_JOURNAL_VERSION and
+	// publishes nothing; shadow-off on the same db keeps the 1.18 surface.
+	const futureDb = join(SANDBOX, "s2-future", "events.db");
+	makeFutureVersionDb(futureDb);
+	const qFuture = join(EX, task, `q-${worker}.json`);
+	rmSync(qFuture, { force: true });
+	const rGate = runCli(["ask", "--question", "gate?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_JOURNAL_DB: futureDb,
+	});
+	check(
+		"S2.8 `swarm ask` on a future-version db (shadow on) fails structured E_JOURNAL_VERSION and publishes nothing",
+		rGate.status === 1 && errCode(rGate) === "E_JOURNAL_VERSION" && !existsSync(qFuture),
+		JSON.stringify({ status: rGate.status, stdout: rGate.stdout.slice(0, 200), qExists: existsSync(qFuture) }),
+	);
+	const rGateOff = runCli(["ask", "--question", "gate?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_JOURNAL_DB: futureDb,
+		SWARM_MESSAGE_SHADOW: "0",
+	});
+	check(
+		"S2.9 shadow-off on a future-version db keeps the exact 1.18 surface: exit 0, no journal field, the file published",
+		rGateOff.status === 0 && !("journal" in (rGateOff.json ?? {})) && existsSync(qFuture),
+		JSON.stringify({ status: rGateOff.status, stdout: rGateOff.stdout.slice(0, 200) }),
+	);
+
+	// S2.10 — journal mode: the message row + receipt ride the existing write,
+	// the envelope surfaces journal:{seq}; a future-version db fails LOUD.
+	const jdb = join(SANDBOX, "s2-journal", "events.db");
+	const rJ = runCli(["ask", "--question", "jmode?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_STORAGE: "journal",
+		SWARM_JOURNAL_DB: jdb,
+	});
+	{
+		const raw = new Database(jdb);
+		const kinds = (raw.query("SELECT kind FROM events ORDER BY seq").all() as Array<{ kind: string }>).map((r) => r.kind);
+		const receipts = raw.query("SELECT receipt FROM message_receipts").all() as Array<{ receipt: string }>;
+		raw.close();
+		const jseq = (rJ.json?.journal as { seq?: unknown } | undefined)?.seq;
+		check(
+			"S2.10 journal-mode ask: envelope journal:{seq}, the ask row + sent receipt landed",
+			rJ.status === 0 && typeof jseq === "number" && kinds.join(",") === "ask" && receipts.length === 1,
+			JSON.stringify({ status: rJ.status, stdout: rJ.stdout.slice(0, 200), kinds, receipts }),
+		);
+	}
+	const rJGate = runCli(["ask", "--question", "jgate?", "--task", task, "--worker", worker], {
+		...baseEnv,
+		SWARM_STORAGE: "journal",
+		SWARM_JOURNAL_DB: futureDb,
+	});
+	check(
+		"S2.11 journal-mode ask on a future-version db fails structured E_JOURNAL_VERSION (the loud gate in every mode)",
+		rJGate.status === 1 && errCode(rJGate) === "E_JOURNAL_VERSION",
+		JSON.stringify({ status: rJGate.status, stdout: rJGate.stdout.slice(0, 200) }),
+	);
+
+	rmSync(join(SANDBOX, "s2-future"), { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
 // Static pins — the byte-pinned v1 DDL and the closed message-kind set
 // ---------------------------------------------------------------------------
 

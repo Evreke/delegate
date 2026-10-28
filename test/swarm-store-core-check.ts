@@ -490,7 +490,13 @@ function makeFutureVersionDb(dbPath: string): void {
 	// S3.1 — a live audience with an unconsumed range refuses (C6).
 	const liveConsole = join(SANDBOX, "s3-live.jsonl");
 	writeFileSync(liveConsole, "{}");
-	writeManifest([{ name: "w", orchestratorSessionPath: liveConsole, collectedAt: FIXED_TS }]);
+	// "sess-aud" (the seeded receipt/wake-fact audience) must be manifest-
+	// registered TERMINAL: the C6 guard refuses audiences the manifest does
+	// not know (never guesses dead) — S3.12 pins exactly that refusal.
+	writeManifest([
+		{ name: "w", orchestratorSessionPath: liveConsole, collectedAt: FIXED_TS },
+		{ name: "aud", orchestratorSessionPath: "sess-aud", collectedAt: FIXED_TS },
+	]);
 	{
 		const raw = new Database(db);
 		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [liveConsole, task, 1, FIXED_TS]);
@@ -550,7 +556,11 @@ function makeFutureVersionDb(dbPath: string): void {
 		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [join(SANDBOX, "gone.jsonl"), task, 1, FIXED_TS]);
 		raw.close();
 	}
-	writeManifest([]);
+	writeManifest([
+		{ name: "aud", orchestratorSessionPath: "sess-aud", collectedAt: FIXED_TS },
+		{ name: "gone", orchestratorSessionPath: join(SANDBOX, "gone.jsonl"), collectedAt: FIXED_TS },
+		{ name: "live", orchestratorSessionPath: liveConsole, collectedAt: FIXED_TS },
+	]);
 	const rDead = await compactFleet({ dbPath: db, sessionId: "sess-other", task, dir });
 	check(
 		"S3.7 a dead audience (session JSONL gone, no live fleet) is deletable — the fleet keeps its audit marker",
@@ -578,7 +588,10 @@ function makeFutureVersionDb(dbPath: string): void {
 		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [goneOwner, task, 1, FIXED_TS]);
 		raw.close();
 	}
-	writeManifest([{ name: "w", orchestratorSessionPath: goneOwner }]);
+	writeManifest([
+		{ name: "w", orchestratorSessionPath: goneOwner },
+		{ name: "aud", orchestratorSessionPath: "sess-aud", collectedAt: FIXED_TS },
+	]);
 	const rGhost = await compactFleet({ dbPath: db, sessionId: "sess-guard", task, dir });
 	check(
 		"S3.9 a JSONL-gone audience still owning a manifest worker without a terminal stamp refuses (never guess)",
@@ -599,6 +612,25 @@ function makeFutureVersionDb(dbPath: string): void {
 	// S3.11 — an empty fleet refuses (nothing to compact).
 	const rEmpty = await compactFleet({ dbPath: db, sessionId: "sess-none", task, dir });
 	check("S3.11 a fleet with no rows refuses E_COMPACT_EMPTY", rEmpty.ok === false && rEmpty.code === "E_COMPACT_EMPTY", JSON.stringify(rEmpty));
+
+	// S3.12 — a receipt audience whose spelling resolves to NO JSONL path and
+	// NO manifest session (the interim dir-hash receipt class) is
+	// UNCLASSIFIABLE, never dead — the C6 guard must not silently delete the
+	// dedup facts of an audience it cannot classify (critic F1).
+	await seedFleet("sess-receipt", true);
+	{
+		const raw = new Database(db);
+		const seqs = (raw.query("SELECT seq FROM events WHERE session_id = ? AND task = ? ORDER BY seq").all("sess-receipt", task) as Array<{ seq: number }>).map((r) => Number(r.seq));
+		raw.run("INSERT INTO message_receipts(msg_seq, audience_session, receipt, ts, writer_session) VALUES (?, ?, ?, ?, ?)", [seqs[0]!, "dir-hash-unregistered", "sent", FIXED_TS, "sess-receipt"]);
+		raw.close();
+	}
+	writeManifest([]);
+	const rHash = await compactFleet({ dbPath: db, sessionId: "sess-receipt", task, dir });
+	check(
+		"S3.12 a receipt audience unresolvable to JSONL and manifest refuses (E_COMPACT_UNCLASSIFIABLE, never dead)",
+		rHash.ok === false && rHash.code === "E_COMPACT_UNCLASSIFIABLE" && counts("sess-receipt").receipts === 1,
+		JSON.stringify(rHash),
+	);
 
 	rmSync(join(SANDBOX, "s3"), { recursive: true, force: true });
 	rmSync(join(SANDBOX, "s3-future"), { recursive: true, force: true });

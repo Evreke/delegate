@@ -126,8 +126,11 @@ function readCursorFor(db: JournalDb, audienceSession: string, task: string): nu
 	return Number(row?.seq ?? 0);
 }
 
-/** Distinct audiences holding side-table rows for the task. */
-function audienceSet(db: JournalDb, task: string): string[] {
+/** Distinct audiences holding side-table rows for the task (C6: every
+ *  audience_session with rows in the deleted range is classified — receipts
+ *  included; the receipt join runs over the range's message rows because the
+ *  receipts table carries no task column). */
+function audienceSet(db: JournalDb, task: string, sessionId: string): string[] {
 	const wakes = db.queryAll<{ audience_session: string }>(
 		"SELECT DISTINCT audience_session FROM wake_facts WHERE task = ?",
 		[task],
@@ -136,7 +139,12 @@ function audienceSet(db: JournalDb, task: string): string[] {
 		"SELECT DISTINCT audience_session FROM read_cursors WHERE task = ?",
 		[task],
 	);
-	return [...new Set([...wakes, ...cursors].map((r) => r.audience_session))];
+	const receipts = db.queryAll<{ audience_session: string }>(
+		"SELECT DISTINCT audience_session FROM message_receipts WHERE msg_seq IN " +
+			"(SELECT seq FROM events WHERE session_id = ? AND task = ?)",
+		[sessionId, task],
+	);
+	return [...new Set([...wakes, ...cursors, ...receipts].map((r) => r.audience_session))];
 }
 
 /** The healthy-snapshot guard (C6): the manifest must read cleanly and carry
@@ -156,6 +164,16 @@ function manifestShowsLiveFleet(m: ExchangeManifest, audienceSession: string): b
 		if (owner !== audienceSession) return false;
 		return w.collectedAt === undefined && w.retiredAt === undefined;
 	});
+}
+
+/** The audience spelling is registered by the healthy manifest at all (any
+ *  worker, terminal or not). Only manifest-registered sessions may ever read
+ *  as dead; every other spelling (e.g. the interim dir-hash receipt ids) is
+ *  unclassifiable. */
+function manifestShowsSession(m: ExchangeManifest, audienceSession: string): boolean {
+	return m.workers.some(
+		(w) => typeof w.orchestratorSessionPath === "string" && w.orchestratorSessionPath === audienceSession,
+	);
 }
 
 /**
@@ -229,7 +247,7 @@ export async function compactFleet(opts: CompactFleetOptions): Promise<CompactFl
 		}
 
 		// C6 — classify EVERY audience with side-table rows for the task.
-		const audiences = audienceSet(db, opts.task);
+		const audiences = audienceSet(db, opts.task, opts.sessionId);
 		let manifest: ExchangeManifest | null = null;
 		if (audiences.length > 0) {
 			manifest = healthyManifestSnapshot(opts.dir, opts.task);
@@ -257,6 +275,15 @@ export async function compactFleet(opts: CompactFleetOptions): Promise<CompactFl
 						ok: false,
 						code: "E_COMPACT_LIVE_AUDIENCE",
 						error: `audience ${a} owns a possibly-live fleet in the manifest (no terminal stamp) — the range is refused, never guessed`,
+					};
+				} else if (!manifestShowsSession(manifest, a)) {
+					// The spelling resolves to nothing this task's manifest knows (the
+					// interim receipt dir-hash class): UNCLASSIFIABLE, never dead —
+					// a misclassified dead audience loses its dedup facts silently.
+					return {
+						ok: false,
+						code: "E_COMPACT_UNCLASSIFIABLE",
+						error: `audience ${a} resolves to no JSONL path and no manifest session — unclassifiable; the range is refused, never guessed`,
 					};
 				}
 				// else: DEAD audience (session JSONL gone, no live fleet) — deletable.

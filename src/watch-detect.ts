@@ -160,7 +160,7 @@ export type WakeReactionClass = "read-only" | "idempotent" | "consume-once-acked
  *     by the release ACK (release-<name>.json); the ACK is consumed only
  *     after the close (src/watch-retire.ts:344-368).
  *   - scheduled wakes (not a kind — they ride the same send) →
- *     markDelivered = exactly-once via the id#run key (src/watcher.ts:693),
+ *     markDelivered = exactly-once via the id#run key (src/watcher.ts:740),
  *     recorded BEFORE the durable cursor commit. This is the in-tick
  *     precedent of the ack-before-advance ordering.
  */

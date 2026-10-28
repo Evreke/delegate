@@ -412,8 +412,10 @@ async function fleetEventsResponse(deps: SwarmServerDeps, req: Http1Request, raw
 				count: events.length,
 				dbSizeBytes: journal ? journal.dbSizeBytes() : 0,
 				// Scoped to the fleet's own rows — the scoped envelope never
-				// reports another fleet's disk growth (no cross-traffic).
-				kinds: journal ? journal.kindStats(tasks) : [],
+				// reports another fleet's disk growth (no cross-traffic). An
+				// EMPTY task set (a known fleet with no task nodes) scopes to
+				// nothing — it must NOT fall through to the global stats.
+				kinds: journal && tasks.size > 0 ? journal.kindStats(tasks) : [],
 			},
 		}),
 	};

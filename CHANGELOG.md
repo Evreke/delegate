@@ -200,6 +200,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Fixed
 
+- **The compaction audience guard classifies RECEIPT audiences (the final-gate
+  review F1).** `audienceSet` unioned only `wake_facts` and `read_cursors`, while
+  `message_receipts` is the ONE side table production code writes — on a real
+  1.19.0 database the guard saw an empty audience set while per-audience receipt
+  rows existed and were deleted unclassified (falsifying the Added sentence).
+  The union now joins receipts over the range's message rows (the receipts table
+  carries no task column), and an audience spelling that resolves to neither a
+  JSONL path nor a manifest session (the interim dir-hash receipt class) is
+  `E_COMPACT_UNCLASSIFIABLE` — never silently dead. Pinned by S3.12 in
+  `test/swarm-store-core-check.ts`.
+- **The fleet events route can no longer leak GLOBAL kind stats (the final-gate
+  review F2).** `kindStats` treats an explicitly-passed EMPTY task set as
+  unscoped, and `resolveFleetTasks` returns an empty set for a known fleet whose
+  session node carries no tasks — the fleet route then reported every fleet's
+  disk growth, contradicting its own no-cross-traffic pin. The route now emits
+  `kinds: []` when the resolved task set is empty.
+- **The hysteresis pair is clamped (the verify round's B3.10 gap).** A resolved
+  `watch.activeIntervalMs` above `watch.intervalMs` is a misconfiguration (the
+  active cadence must be faster); the resolver clamps it to the idle interval
+  with a warn-once line — the degenerate result is a fixed cadence, the safe
+  direction. Previously the pair was never compared.
 - **CI is green again after the upstream history rewrite — the skill-quality
   harness no longer depends on a pinned rev.** The report builder's default
   `--before` was hard-coded to `629a030^` (the pre-rewrite skill commit).

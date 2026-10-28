@@ -18,6 +18,9 @@
  *       cursor commit on a real send, and neither fires on a failed or a
  *       silent send. The marker-consumed-after-close ordering is pinned by
  *       retire-check R5.8c — not duplicated here.
+ *   M3  The wake-latency trial line: exactly ONE line per real send, with
+ *       both stamps and the non-negative delta; no line on a quiet tick, a
+ *       failed send or a silent send; the pure format is pinned byte-exact.
  * Exit 0 only if all checks pass.
  */
 
@@ -25,6 +28,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createWatcher, evaluateRetire } from "../src/observe.ts";
+import { formatWakeLatencyAuditLine } from "../src/watcher.ts";
 import {
 	wakeReactionClass,
 	workersFromManifests,
@@ -252,6 +256,109 @@ const REACTION_OF_EVERY_KIND: Record<WatchEventKind, WakeReactionClass> = {
 	await silentHandle.tick();
 	check("M2.7 silent send → neither the ACK nor the cursor advance fires", silentOrder.length === 0, JSON.stringify(silentOrder));
 	silentHandle.stop();
+}
+
+// ---------------------------------------------------------------------------
+// M3. The wake-latency trial line
+// ---------------------------------------------------------------------------
+
+{
+	// Pure format, byte-exact: the operator's grep target.
+	const detectedAtMs = Date.parse("2026-09-06T12:00:00.000Z");
+	const sentAtMs = detectedAtMs + 10_000;
+	const e1 = { worker: "w1", dir: "/tmp/x", kind: "report-ready", message: "m" } as WatchEvent;
+	const e2 = { worker: "w2", dir: "/tmp/x", kind: "mailbox-question", message: "m" } as WatchEvent;
+	const wake: DueWake = { id: "w1", run: 2, kind: "periodic", text: "t", dueAtMs: detectedAtMs };
+	const line = formatWakeLatencyAuditLine(detectedAtMs, sentAtMs, [e1, e2], [wake]);
+	const expected =
+		"wake-up latency: detected 2026-09-06T12:00:00.000Z → sent 2026-09-06T12:00:10.000Z (10000 ms) — 2 event(s) + 1 scheduled";
+	check("M3.1 the trial line format is byte-exact (the operator's grep target)", line === expected, line);
+	const eventsOnly = formatWakeLatencyAuditLine(detectedAtMs, sentAtMs, [e1], []);
+	check(
+		"M3.2 no scheduled wakes → the tail carries events only",
+		eventsOnly === "wake-up latency: detected 2026-09-06T12:00:00.000Z → sent 2026-09-06T12:00:10.000Z (10000 ms) — 1 event(s)",
+		eventsOnly,
+	);
+}
+
+{
+	// Through the loop: exactly ONE latency line per real send; none on a
+	// quiet tick, a failed send or a silent send; the stamps parse and the
+	// delta is the true sent−detected difference.
+	const dir = taskDir("latency");
+	const w = mkWorker(dir, "w-lat");
+	let snap = snapshotFor([w], [LIVE("w-lat")]); // no report yet — the first tick stays quiet
+	const logs: string[] = [];
+	const transport = { backendName: () => "herdr", listStatuses: async () => [LIVE("w-lat")] } as unknown as Transport;
+	const handle = createWatcher({
+		transport,
+		intervalMs: 3_600_000,
+		send: () => ({ delivered: true, mode: "sent" }),
+		snapshot: async () => snap,
+		journal: null,
+		schedules: null,
+		self: { sessionFile: TEST_SELF },
+		detect: { legacyFailOpen: true },
+		log: (m) => logs.push(m),
+	});
+
+	check("M3.3 quiet tick → no latency line", (await handle.tick()).length === 0 && latencyLines(logs).length === 0);
+
+	writeValidReport(dir, "w-lat");
+	snap = snapshotFor([w], [LIVE("w-lat")]);
+	await handle.tick();
+	const lines = latencyLines(logs);
+	check("M3.4 a real send → exactly ONE latency line", lines.length === 1, JSON.stringify(lines));
+	const m = lines[0]?.match(/detected (\S+) → sent (\S+) \((\d+) ms\)/) ?? [];
+	const detected = Date.parse(m[1] ?? "");
+	const sent = Date.parse(m[2] ?? "");
+	const delta = Number(m[3]);
+	check(
+		"M3.5 the line carries both ISO stamps and the true non-negative delta",
+		Number.isFinite(detected) && Number.isFinite(sent) && sent >= detected && delta === sent - detected,
+		lines[0] ?? "",
+	);
+	handle.stop();
+
+	// Failed send: the send never happened → no latency line.
+	const failLogs: string[] = [];
+	const failHandle = createWatcher({
+		transport,
+		intervalMs: 3_600_000,
+		send: () => {
+			throw new Error("sink exploded");
+		},
+		snapshot: async () => snap,
+		journal: null,
+		schedules: null,
+		self: { sessionFile: TEST_SELF },
+		detect: { legacyFailOpen: true },
+		log: (m) => failLogs.push(m),
+	});
+	await failHandle.tick();
+	check("M3.6 failed send → no latency line (no real send, no trial datum)", latencyLines(failLogs).length === 0, JSON.stringify(failLogs));
+	failHandle.stop();
+
+	// Silent send: the same refusal.
+	const silentLogs: string[] = [];
+	const silentHandle = createWatcher({
+		transport,
+		intervalMs: 3_600_000,
+		send: () => ({ delivered: false, mode: "silent" }),
+		snapshot: async () => snap,
+		journal: null,
+		schedules: null,
+		self: { sessionFile: TEST_SELF },
+		detect: { legacyFailOpen: true },
+		log: (m) => silentLogs.push(m),
+	});
+	await silentHandle.tick();
+	check("M3.7 silent send → no latency line", latencyLines(silentLogs).length === 0, JSON.stringify(silentLogs));
+	silentHandle.stop();
+}
+
+function latencyLines(logs: string[]): string[] {
+	return logs.filter((l) => l.startsWith("wake-up latency:"));
 }
 
 if (failures > 0) {

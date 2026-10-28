@@ -63,8 +63,8 @@
  *     `audience_session` (store design §3), else `E_JOURNAL_FORBIDDEN`.
  */
 
-import { openJournalDatabase, type JournalDb } from "./journal-driver.ts";
-import { dirname, join } from "node:path";
+import { type JournalDb } from "./journal-driver.ts";
+import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { systemClock, type ClockPort } from "../clock.ts";
 import {

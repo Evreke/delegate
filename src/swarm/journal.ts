@@ -4,53 +4,92 @@
  * MODULE_CONTRACT — append-only, single-writer, durable (ARCHITECTURE §4.1.2).
  *
  * Purpose: the writer half of the journal module family (`src/swarm/journal*.ts`)
- * — the ONLY writer CODE for `events.db`, schema migration to version 1, the
- * closed v1 kind set, and the append protocol. Phase A note: the module may
- * land while receiving no production writes (§4.1.3); it is a product surface,
- * advisory to the pipeline (Law 8/Law 13) — `append()` NEVER throws and never
- * propagates a failure to a spawn or collect.
+ * — the ONLY writer CODE for `events.db`: the closed kind set, the event
+ * append protocol, the writer factory, and the Law 7 version gate. The family
+ * siblings own the rest: `journal-schema.ts` the versioned DDL contract (the
+ * byte-pinned v1 events table + the v2 side tables + the open+migrate path),
+ * `journal-retry.ts` the bounded SQLITE_BUSY protocol, `journal-receipt.ts`
+ * the receipt side-table writer, `journal-read.ts` the tolerant reader,
+ * `journal-compact.ts` the operator-invoked compaction (the family's one
+ * DELETE site).
  *
- * Location (Law 1): ONE database at
- * `join(getAgentDir(), "delegate-journal", "events.db")` — resolved through
- * pi's `getAgentDir()` (never hardcoded, never the exchange root, never the
- * repository). `journalDbPath()` is the single source of that path.
+ * Advisory to the pipeline (Law 8/Law 13): `append()` NEVER throws and never
+ * propagates a failure to a spawn or collect. The ONE loud exception is the
+ * Law 7 version gate: a FUTURE `user_version` makes every append return the
+ * structured `E_JOURNAL_VERSION` failure — never a silent no-op (the store
+ * design's C5 amendment; the reader stays tolerant).
+ *
+ * Location (Law 1): ONE database at `join(getAgentDir(), "delegate-journal", "events.db")`
+ * — resolved through pi's `getAgentDir()` (never hardcoded, never the exchange
+ * root). `journalDbPath()` is the single source of that path.
  *
  * Single-writer code, multi-process database: every concurrent pi session
  * process writes the same `events.db`, so SQLite itself serializes writers.
- * This module pins `busy_timeout = 5000` ms, retries `SQLITE_BUSY` with
- * bounded backoff-plus-jitter, and keeps every append a short single-statement
- * transaction. A torn write (process death mid-append) leaves the last record
- * intact or absent — never corrupt; WAL + `synchronous = FULL` is what buys
- * that (verified by `test/journal-check.ts` against a SIGKILLed writer child).
+ * The pinned DDL sets `busy_timeout = 5000` ms; every append retries
+ * `SQLITE_BUSY` under the bounded backoff-plus-jitter (./journal-retry.ts)
+ * and stays a short single-statement transaction. A torn write (process death
+ * mid-append) leaves the last record intact or absent — never corrupt; WAL +
+ * `synchronous = FULL` is what buys that (verified by `test/journal-check.ts`
+ * against a SIGKILLed writer child).
  *
  * Append-only by absence: this module contains NO UPDATE and NO DELETE
  * statement. The sole documented exception in §4.1.2 is the operator-invoked
- * compaction path (export fleet events to JSONL, then delete, gated on the
- * all-terminal rule); compaction is DEFERRED out of #22 and lands in its own
- * family file `src/swarm/journal-compact.ts` (covered by the journal*.ts glob)
+ * compaction path; it lives in its own family file `src/swarm/journal-compact.ts`
  * so this writer never grows past the Law 5 threshold — it is the one place a
  * DELETE may appear in the family, and `journal-check.ts` scans these sources
- * for write keywords so the deferral is a tested state, not a convention.
+ * for write keywords so that confinement is a tested state, not a convention.
  *
- * Dependencies: the sqlite driver via `./journal-driver.ts` (adaptive bun:sqlite / node:sqlite — pi runs under both runtimes; see that module's contract).
- * API), pi's `getAgentDir()`, node builtins, and `./clock.ts` (the injected
- * ClockPort supplies `ts`). No herdr adapter import (Law 4).
+ * Dependencies: the sqlite driver via `./journal-driver.ts` (adaptive bun:sqlite / node:sqlite — pi runs under both runtimes),
+ * the family siblings, pi's `getAgentDir()`, node builtins, and `./clock.ts`
+ * (the injected ClockPort supplies `ts`). No herdr adapter import (Law 4).
  *
  * Critical invariants:
- *   - `JOURNAL_SCHEMA_V1_DDL` is the DDL pinned in §4.1.2, applied verbatim;
- *     `PRAGMA user_version = 1` is the Law 7 version gate for the database.
- *   - `createJournalWriter()` and `append()` are total: they return structured
- *     results and never throw (advisory-by-contract, Law 8).
+ *   - `JOURNAL_SCHEMA_V1_DDL` (./journal-schema.ts) is the DDL pinned in
+ *     §4.1.2, applied verbatim — BYTE-IDENTICAL including its `PRAGMA user_version = 1`
+ *     line (Law 7); the v2 DDL re-stamps the version after it on every open.
+ *   - The Law 7 version gate is LOUD (C5): a FUTURE `user_version` makes
+ *     `append()`/`appendReceipt()` return the structured `E_JOURNAL_VERSION`
+ *     failure — never a silent no-op writer; the READER stays tolerant
+ *     (missing db / future version → empty, never a throw).
+ *   - `createJournalWriter()`, `append()` and `appendReceipt()` are total:
+ *     structured results, never a throw (Law 8) — the version gate included.
  *   - The kind set is closed (14 kinds; the §4.1.2 thirteen plus `report`,
  *     the operator-approved #23 addition); an unknown kind is refused, not
- *     stored.
+ *     stored. The message kinds (`ask`/`answer`/`steer`/`progress`) are the closed
+ *     subset the message-store shadow writes (store design §2).
+ *   - The receipt set is closed (`sent` | `delivered` | `consumed` | `failed`,
+ *     additive); a receipt's writer-owned key is enforced in code — the
+ *     writing process's own session id must equal the receipt's
+ *     `audience_session` (store design §3), else `E_JOURNAL_FORBIDDEN`.
  */
 
 import { openJournalDatabase, type JournalDb } from "./journal-driver.ts";
-import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { systemClock, type ClockPort } from "../clock.ts";
+import {
+	JOURNAL_DB_VERSION,
+	openMigratedDatabase,
+} from "./journal-schema.ts";
+import {
+	errorMessage,
+	isBusyError,
+	JOURNAL_RETRY_DEFAULTS,
+	runWithBusyRetry,
+	type JournalRetryOptions,
+} from "./journal-retry.ts";
+import { appendReceiptTo, type JournalReceiptInput, type JournalReceiptResult } from "./journal-receipt.ts";
+
+// Family re-exports (ONE import surface for clients; the checks and the verb
+// plumbing import the versioned contract and the receipt types from here).
+export { JOURNAL_DB_VERSION, JOURNAL_SCHEMA_V1_DDL, JOURNAL_SCHEMA_V2_DDL } from "./journal-schema.ts";
+export { journalBackoffMs, JOURNAL_RETRY_DEFAULTS, type JournalRetryOptions } from "./journal-retry.ts";
+export {
+	JOURNAL_RECEIPTS,
+	type JournalReceipt,
+	type JournalReceiptInput,
+	type JournalReceiptResult,
+} from "./journal-receipt.ts";
 
 // ---------------------------------------------------------------------------
 // Location (Law 1) — one spelling
@@ -75,38 +114,6 @@ export const JOURNAL_DB_FILE_NAME = "events.db";
 export function journalDbPath(): string {
 	return join(getAgentDir(), JOURNAL_DB_DIR_NAME, JOURNAL_DB_FILE_NAME);
 }
-
-// ---------------------------------------------------------------------------
-// Law 7 — the database version gate + the pinned v1 DDL
-// ---------------------------------------------------------------------------
-
-/** Database schema version (Law 7). Absent (0) migrates to 1; ABOVE this a
- *  future version writers refuse, readers yield empty. */
-export const JOURNAL_DB_VERSION = 1;
-
-/**
- * The v1 DDL, byte-pinned by ARCHITECTURE §4.1.2. Applied on every writer open
- * (idempotent: `IF NOT EXISTS` + a version gate that refuses future versions
- * BEFORE this runs). Do not reshape — the schema is a versioned contract.
- */
-export const JOURNAL_SCHEMA_V1_DDL = `PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
-PRAGMA busy_timeout = 5000;  -- cross-process write rule, see below
-PRAGMA user_version = 1;
-CREATE TABLE IF NOT EXISTS events (
-  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts         TEXT NOT NULL,   -- ISO-8601 UTC, injected clock (ClockPort)
-  kind       TEXT NOT NULL,   -- one of the closed kind set below
-  session_id TEXT NOT NULL,   -- owning orchestrator session (the SwarmGraph SessionId: stable hash of the session file path)
-  task       TEXT NOT NULL,   -- exchange task name
-  worker     TEXT,            -- canonical worker name; NULL on fleet-scoped events
-  payload    TEXT NOT NULL    -- kind-shaped JSON (contract below)
-);
-CREATE INDEX IF NOT EXISTS events_by_fleet ON events(session_id, task, seq);`;
-
-/** The single-statement append (bound params, never interpolated). */
-const INSERT_EVENT_SQL =
-	"INSERT INTO events(ts, kind, session_id, task, worker, payload) VALUES (?, ?, ?, ?, ?, ?)";
 
 // ---------------------------------------------------------------------------
 // The closed v1 kind set (§4.1.2) — new kinds only by addition, never rename
@@ -141,17 +148,36 @@ export function isJournalKind(v: unknown): v is JournalKind {
 	return typeof v === "string" && JOURNAL_KIND_SET.has(v);
 }
 
+/** The closed MESSAGE kind subset (the store design §2): the four kinds whose
+ *  rows ARE messages — the shadow-write surface (`swarm.messageShadow`) and
+ *  the 1.20.0 truth flip ride exactly these. `report` stays reserved for the
+ *  report axis and is NEVER a message kind. */
+export const JOURNAL_MESSAGE_KINDS = ["ask", "answer", "steer", "progress"] as const;
+
+export type JournalMessageKind = (typeof JOURNAL_MESSAGE_KINDS)[number];
+
+const JOURNAL_MESSAGE_KIND_SET: ReadonlySet<string> = new Set(JOURNAL_MESSAGE_KINDS);
+
+export function isJournalMessageKind(v: unknown): v is JournalMessageKind {
+	return typeof v === "string" && JOURNAL_MESSAGE_KIND_SET.has(v);
+}
+
 // ---------------------------------------------------------------------------
 // Structured, never-throwing results (Law 8)
 // ---------------------------------------------------------------------------
 
 /** Failure codes this module can return. `E_JOURNAL_BUSY` means the bounded
- *  retry budget was exhausted under cross-process contention. */
+ *  retry budget was exhausted under cross-process contention.
+ *  `E_JOURNAL_VERSION` is the LOUD Law 7 gate (C5): the database carries a
+ *  FUTURE `user_version` — a newer build's schema. `E_JOURNAL_FORBIDDEN` is
+ *  the receipt writer-authority refusal (store design §3). */
 export type JournalFailureCode =
 	| "E_JOURNAL_KIND"
 	| "E_JOURNAL_BUSY"
 	| "E_JOURNAL_WRITE"
-	| "E_JOURNAL_OPEN";
+	| "E_JOURNAL_OPEN"
+	| "E_JOURNAL_VERSION"
+	| "E_JOURNAL_FORBIDDEN";
 
 export interface JournalSuccess {
 	ok: true;
@@ -179,32 +205,6 @@ export interface JournalAppendInput {
 }
 
 // ---------------------------------------------------------------------------
-// Bounded, jittered SQLITE_BUSY backoff (§4.1.2 cross-process rule)
-// ---------------------------------------------------------------------------
-
-/** Bounded SQLITE_BUSY retry budget: attempts, base/exponential ms, and max ms. */
-export interface JournalRetryOptions { attempts?: number; baseMs?: number; maxMs?: number; }
-
-export const JOURNAL_RETRY_DEFAULTS: Required<JournalRetryOptions> = { attempts: 4, baseMs: 20, maxMs: 400 };
-
-/**
- * Bounded jittered backoff for attempt index `attempt` (0-based).
- * FUNCTION_CONTRACT: Input — attempt, rng (jitter in [0,1)), opts. Output —
- * a delay in [0, maxMs]. Pure given rng; never throws.
- */
-export function journalBackoffMs(
-	attempt: number,
-	rng: () => number = Math.random,
-	opts: JournalRetryOptions = {},
-): number {
-	const base = opts.baseMs ?? JOURNAL_RETRY_DEFAULTS.baseMs;
-	const max = opts.maxMs ?? JOURNAL_RETRY_DEFAULTS.maxMs;
-	const cap = Math.min(max, base * 2 ** Math.max(0, attempt));
-	const jitter = 0.5 + 0.5 * Math.min(1, Math.max(0, rng()));
-	return Math.max(0, Math.floor(cap * jitter));
-}
-
-// ---------------------------------------------------------------------------
 // Writer factory
 // ---------------------------------------------------------------------------
 
@@ -226,21 +226,23 @@ export interface JournalWriterOptions {
 export interface JournalWriter {
 	readonly dbPath: string;
 	/** Append one event. Total: never throws; a failure is a structured result
-	 *  the pipeline records and skips (advisory-by-contract). */
+	 *  the pipeline records and skips (advisory-by-contract) — EXCEPT the Law 7
+	 *  version gate, which returns the structured `E_JOURNAL_VERSION` failure
+	 *  the verb plumbing turns into a LOUD verb failure (C5: never a silent
+	 *  no-op against a newer schema). */
 	append(input: JournalAppendInput): Promise<JournalAppendResult>;
+	/** Append one receipt fact for a message row. Total: never throws; the
+	 *  writer-owned key is enforced (E_JOURNAL_FORBIDDEN when `audienceSession`
+	 *  is not the writing process's own session id). */
+	appendReceipt(input: JournalReceiptInput): Promise<JournalReceiptResult>;
 	/** Close the connection (idempotent). */
 	close(): void;
 }
 
-function errorMessage(e: unknown): string {
-	if (e instanceof Error) return e.message;
-	return typeof e === "string" ? e : JSON.stringify(e);
-}
-
-function isBusyError(e: unknown): boolean {
-	const code = typeof e === "object" && e !== null ? (e as { code?: unknown }).code : undefined;
-	if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") return true;
-	return /database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(errorMessage(e));
+/** Never-throwing read of the input kind (append(null) is caught by append). */
+function safeKind(input: unknown): string {
+	const k = typeof input === "object" && input !== null ? (input as { kind?: unknown }).kind : undefined;
+	return typeof k === "string" ? k : "unknown";
 }
 
 /** Invoke the advisory error sink, swallowing a throwing sink (the sink is
@@ -257,40 +259,9 @@ function notifySink(
 	}
 }
 
-/** Never-throwing read of the input kind (append(null) is caught by append). */
-function safeKind(input: unknown): string {
-	const k = typeof input === "object" && input !== null ? (input as { kind?: unknown }).kind : undefined;
-	return typeof k === "string" ? k : "unknown";
-}
-
-function readUserVersion(db: JournalDb): number {
-	const row = db.queryOne<{ user_version?: number }>("PRAGMA user_version");
-	return Number(row?.user_version ?? 0);
-}
-
-/**
- * Open + migrate the database. Returns null when the file cannot be opened or
- * carries a FUTURE `user_version` (Law 7 gate) — the caller degrades to an
- * advisory no-op writer.
- */
-function openDatabase(dbPath: string, busyTimeoutMs?: number): JournalDb | null {
-	try {
-		mkdirSync(dirname(dbPath), { recursive: true });
-		const db = openJournalDatabase(dbPath, { create: true });
-		if (readUserVersion(db) > JOURNAL_DB_VERSION) {
-			db.close();
-			return null;
-		}
-		db.exec(JOURNAL_SCHEMA_V1_DDL);
-		if (busyTimeoutMs !== undefined) {
-			const ms = Math.max(0, Math.floor(busyTimeoutMs));
-			db.run(`PRAGMA busy_timeout = ${ms}`);
-		}
-		return db;
-	} catch {
-		return null;
-	}
-}
+/** The single-statement append (bound params, never interpolated). */
+const INSERT_EVENT_SQL =
+	"INSERT INTO events(ts, kind, session_id, task, worker, payload) VALUES (?, ?, ?, ?, ?, ?)";
 
 /**
  * Create the journal writer. Total by contract: a database that cannot be
@@ -306,8 +277,21 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 		baseMs: opts.retry?.baseMs ?? JOURNAL_RETRY_DEFAULTS.baseMs,
 		maxMs: opts.retry?.maxMs ?? JOURNAL_RETRY_DEFAULTS.maxMs,
 	};
-	let db: JournalDb | null = openDatabase(dbPath, opts.busyTimeoutMs);
+	const opened = openMigratedDatabase(dbPath, opts.busyTimeoutMs);
+	// The LOUD Law 7 gate (C5): a future version is remembered and every append
+	// fails structured E_JOURNAL_VERSION — never a silent no-op writer.
+	const versionRefused = "reason" in opened && opened.reason === "future-version" ? opened.found : null;
+	let db: JournalDb | null = opened.db;
 	let closed = false;
+
+	function versionFailure(): JournalFailure {
+		return {
+			ok: false,
+			code: "E_JOURNAL_VERSION",
+			error: `journal database user_version ${versionRefused} is ahead of this build's schema version ${JOURNAL_DB_VERSION} — upgrade the extension before writing`,
+			attempts: 0,
+		};
+	}
 
 	return {
 		dbPath,
@@ -320,6 +304,11 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 						error: `unknown journal kind: ${String(input.kind)}`,
 						attempts: 0,
 					};
+				}
+				if (versionRefused !== null) {
+					const refused = versionFailure();
+					notifySink(opts.onError, { ...refused, kind: input.kind });
+					return refused;
 				}
 				if (closed || db === null) {
 					return {
@@ -342,32 +331,26 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 					};
 				}
 				const ts = new Date(clock.now()).toISOString();
-				let lastError: unknown = null;
-				let attempts = 0;
-				for (let attempt = 0; attempt < retry.attempts; attempt++) {
-					attempts = attempt + 1;
-					try {
-						const res = db.run(INSERT_EVENT_SQL, [
+				const handle = db;
+				const run = await runWithBusyRetry(
+					() =>
+						handle.run(INSERT_EVENT_SQL, [
 							ts,
 							input.kind,
 							input.sessionId,
 							input.task,
 							input.worker ?? null,
 							payloadText,
-						]);
-						return { ok: true, seq: Number(res.lastInsertRowid) };
-					} catch (e) {
-						lastError = e;
-						if (!isBusyError(e) || attempt >= retry.attempts - 1) break;
-						await clock.delay(journalBackoffMs(attempt, rng, retry));
-					}
-				}
-				const busy = isBusyError(lastError);
+						]),
+					{ clock, rng, retry },
+				);
+				if (run.ok) return { ok: true, seq: Number(run.value.lastInsertRowid) };
+				const busy = isBusyError(run.lastError);
 				const failure: JournalFailure & { kind: string } = {
 					ok: false,
 					code: busy ? "E_JOURNAL_BUSY" : "E_JOURNAL_WRITE",
-					error: errorMessage(lastError),
-					attempts,
+					error: errorMessage(run.lastError),
+					attempts: run.attempts,
 					kind: input.kind,
 				};
 				notifySink(opts.onError, failure);
@@ -384,6 +367,23 @@ export function createJournalWriter(opts: JournalWriterOptions = {}): JournalWri
 				notifySink(opts.onError, failure);
 				return failure;
 			}
+		},
+		async appendReceipt(input: JournalReceiptInput): Promise<JournalReceiptResult> {
+			if (versionRefused !== null) {
+				const refused = versionFailure();
+				notifySink(opts.onError, { ...refused, kind: `receipt:${String(input.receipt)}` });
+				return refused;
+			}
+			if (closed || db === null) {
+				return {
+					ok: false,
+					code: "E_JOURNAL_OPEN",
+					error: "journal database is not open",
+					attempts: 0,
+				};
+			}
+			const handle = db;
+			return appendReceiptTo(handle, input, { clock, rng, retry });
 		},
 		close() {
 			if (closed) return;

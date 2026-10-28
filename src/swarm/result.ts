@@ -31,7 +31,11 @@
  */
 
 /** E_* codes the swarm CLI can emit. Existing seam codes are reused with
- *  their host.ts meaning; E_SWARM_* codes are this process's additions. */
+ *  their host.ts meaning; E_SWARM_* codes are this process's additions.
+ *  E_JOURNAL_VERSION is the LOUD Law 7 version gate (the store design's C5
+ *  amendment): the journal database carries a FUTURE `user_version` — a newer
+ *  build's schema — and the verb refuses instead of silently skipping its
+ *  journal write. */
 export type SwarmErrorCode =
 	| "E_BRIEF"
 	| "E_NAME"
@@ -39,7 +43,8 @@ export type SwarmErrorCode =
 	| "E_SWARM_USAGE"
 	| "E_SWARM_IDENTITY"
 	| "E_SWARM_SCHEMA"
-	| "E_SWARM_IO";
+	| "E_SWARM_IO"
+	| "E_JOURNAL_VERSION";
 
 /** Recovery hints (the CLI's own guidance table — the seam dictionary in
  *  src/host.ts stays the tool-side source; this process is not a tool). */
@@ -51,6 +56,7 @@ export const SWARM_GUIDANCE: Record<SwarmErrorCode, string> = {
 	E_SWARM_IDENTITY: "Export SWARM_TASK and SWARM_WORKER (set by the spawn flow), or pass --task/--worker as an explicit override.",
 	E_SWARM_SCHEMA: "Fix the brief's reportSchema declaration (or the schema-library file it names), then retry write-report.",
 	E_SWARM_IO: "Check the exchange dir exists and is writable, then retry the verb.",
+	E_JOURNAL_VERSION: "The journal database was written by a newer build (user_version is ahead of this build's schema). Update the pi-delegate extension, then retry the verb.",
 };
 
 /** A structured verb failure. Verbs throw it; the CLI entry renders it as the

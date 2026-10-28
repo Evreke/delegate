@@ -103,6 +103,85 @@ export type WatchEventKind =
 	 *  names), so a draining fleet re-arms the wake-up honestly. */
 	| "fleet-in-flight";
 
+/**
+ * The P2 reaction class of a wake kind (design-queue-delivery §6.4): what
+ * the reaction to a (re)delivered wake may do to durable state.
+ *   - "read-only": the wake mutates nothing. The reader decides against
+ *     live state; a redelivered wake re-runs the same decision.
+ *   - "idempotent": the reaction writes, but a re-run is harmless. It
+ *     re-restates the same text, or the reducer refuses the re-stamp.
+ *   - "consume-once-acked": the reaction is destructive. A consume-once
+ *     ACK must exist before the cursor advances (the release-ACK pattern,
+ *     src/watch-retire.ts).
+ */
+export type WakeReactionClass = "read-only" | "idempotent" | "consume-once-acked";
+
+/**
+ * The kind → reaction map (critic A1 / safety H10): the mechanical form of
+ * the P2 rule. A wake reaction must be idempotent under redelivery. A
+ * non-idempotent reaction needs a consume-once ack before the cursor
+ * advances. Every kind of the CLOSED WatchEventKind set declares its class
+ * in this exhaustive switch. There is NO default clause on purpose: a new
+ * kind without a declared reaction falls out of the switch, the end of the
+ * function becomes reachable, and the declared return type fails the build
+ * (TS2366) — a new kind never defaults silently.
+ * <p>
+ * Home (Law 5): the map lives next to the kind definitions, not at the
+ * reaction sites. It is part of the event model — the same species of
+ * per-kind fact as the fingerprint rules above. The reaction sites stay in
+ * spawn.ts (collect), watch-retire.ts (teardown) and watcher.ts (the steer
+ * nudge, markDelivered).
+ * <p>
+ * The known classifications, with their anchors (design-queue-delivery
+ * §6.4, verified at HEAD 1edf1f8):
+ *   - report-ready → collect = "idempotent". The collectedAt reducer
+ *     refuses an illegal re-stamp (src/spawn.ts:1236-1262); collect
+ *     re-validates the report before it acts (src/spawn.ts:1352-1364).
+ *   - report-invalid → diagnose + the automatic fix steer (autoHealNudge)
+ *     = "idempotent". A duplicate steer restates the same text into the
+ *     same single-slot envelope; the nudge dedups per report mtime.
+ *   - mailbox-question → answer = "idempotent". A duplicate answer
+ *     restates the same text into the same single-slot a-file.
+ *   - nudge-failed → retry the steer = "idempotent". A duplicate restates;
+ *     a successful nudge or a fresh spawn clears the marker
+ *     (src/spawn.ts:883-891).
+ *   - grill-deck → human answer at the console, or a steer = "idempotent".
+ *     A duplicate wake restates the same guidance.
+ *   - context-critical → steer = "idempotent". A duplicate steer restates
+ *     the same compact mandate.
+ *   - worker-dead, provider-empty → diagnose, then decide = "read-only".
+ *     The wake mutates nothing; the retry is a NEW decision against live
+ *     state (the launch-stamp fingerprint allows one wake per launch). If
+ *     a future change automates the re-spawn, P2 forces the class to
+ *     "consume-once-acked" — change it HERE, with the ACK machinery.
+ *   - fleet-in-flight → wait = "read-only". The tier-1 watcher wakes the
+ *     worker-orchestrator as its fleet reports land.
+ *   - worker-stale → teardown = "consume-once-acked". The close is gated
+ *     by the release ACK (release-<name>.json); the ACK is consumed only
+ *     after the close (src/watch-retire.ts:344-368).
+ *   - scheduled wakes (not a kind — they ride the same send) →
+ *     markDelivered = exactly-once via the id#run key (src/watcher.ts:693),
+ *     recorded BEFORE the durable cursor commit. This is the in-tick
+ *     precedent of the ack-before-advance ordering.
+ */
+export function wakeReactionClass(kind: WatchEventKind): WakeReactionClass {
+	switch (kind) {
+		case "report-ready":
+		case "report-invalid":
+		case "mailbox-question":
+		case "nudge-failed":
+		case "grill-deck":
+		case "context-critical":
+			return "idempotent";
+		case "worker-dead":
+		case "provider-empty":
+		case "fleet-in-flight":
+			return "read-only";
+		case "worker-stale":
+			return "consume-once-acked";
+	}
+}
+
 export interface WatchEvent {
 	worker: string;
 	dir: string;

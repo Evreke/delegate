@@ -36,6 +36,7 @@ import {
 	answerPathFor,
 	nudgeFailedPathFor,
 	questionPathFor,
+	readAnswerFile,
 	readNudgeFailedMarker,
 	readQuestionState,
 } from "./mailbox-store.ts";
@@ -101,7 +102,16 @@ export type WatchEventKind =
 	 *  whose tier-1 watcher will wake it as its fleet's reports land. Fires
 	 *  once per live-set shape (the fingerprint is the sorted live child
 	 *  names), so a draining fleet re-arms the wake-up honestly. */
-	| "fleet-in-flight";
+	| "fleet-in-flight"
+	/** answer-pending (the delivery round): an UNREAD answer for a live,
+	 *  uncollected worker — the a-<name>.json exists, is valid, and its mtime
+	 *  postdates the worker's report mtime (the drain rule's consumed
+	 *  definition reused, src/watch-retire.ts mailboxDrained). Closes the
+	 *  answer-slot loss channel: the orchestrator learns the worker has not
+	 *  picked the answer up instead of waiting for a poll that may never
+	 *  come. Fingerprint = the answer envelope ts (a NEW answer re-arms).
+	 *  Reaction class = read-only (below). */
+	| "answer-pending";
 
 /**
  * The P2 reaction class of a wake kind (design-queue-delivery §6.4): what
@@ -156,6 +166,11 @@ export type WakeReactionClass = "read-only" | "idempotent" | "consume-once-acked
  *     "consume-once-acked" — change it HERE, with the ACK machinery.
  *   - fleet-in-flight → wait = "read-only". The tier-1 watcher wakes the
  *     worker-orchestrator as its fleet reports land.
+ *   - answer-pending → poll/nudge the worker = "read-only". The wake mutates
+ *     nothing; the condition is file-truth (the a-file vs the report mtime)
+ *     and turns itself off when the worker consumes the answer (its report
+ *     postdates it). Re-fires while unread (noise, bounded by the drain
+ *     rule); silent only when consumed.
  *   - worker-stale → teardown = "consume-once-acked". The close is gated
  *     by the release ACK (release-<name>.json); the ACK is consumed only
  *     after the close (src/watch-retire.ts:344-368).
@@ -176,6 +191,7 @@ export function wakeReactionClass(kind: WatchEventKind): WakeReactionClass {
 		case "worker-dead":
 		case "provider-empty":
 		case "fleet-in-flight":
+		case "answer-pending":
 			return "read-only";
 		case "worker-stale":
 			return "consume-once-acked";
@@ -672,6 +688,36 @@ function contextEpisodeFingerprint(w: WatchWorker, threshold: number): string {
 }
 
 /**
+ * Shared answer-pending condition (detect + rearm): an UNREAD answer for a
+ * live, uncollected worker. The drain rule's consumed definition reused
+ * verbatim (src/watch-retire.ts mailboxDrained): the a-file exists, parses
+ * to a valid envelope, and its mtime POSTDATES the report's mtime — the
+ * worker has not picked the answer up. The worker must be actively reachable
+ * (status working or blocked — a terminal worker is gone, an unknown status
+ * means herdr cannot see the console) and uncollected (a collected worker
+ * has been delivered — nobody to wake).
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: w — the snapshot row (WatchWorker)
+ * Output: the unread answer's envelope ts (the fingerprint), or null
+ * Guarantees: total — every failure mode (absent a-file, absent report,
+ *   stat throw, torn envelope) → null (no wake), never a throw
+ * Raises: never
+ */
+export function answerPendingUnread(w: WatchWorker): string | null {
+	if (w.status !== "working" && w.status !== "blocked") return null;
+	if (w.collectedAt !== undefined) return null; // collected → delivered; nobody to wake
+	const answerPath = answerPathFor(w.dir, w.name);
+	const answer = readAnswerFile(answerPath);
+	if (answer.state !== "valid") return null; // absent/invalid → nothing pending
+	const answerMtime = fileMtimeMs(answerPath);
+	if (answerMtime === null) return null; // vanished between read and stat
+	const reportMtime = fileMtimeMs(w.reportPath);
+	if (reportMtime !== null && reportMtime >= answerMtime) return null; // consumed (drain rule)
+	return answer.answer.ts;
+}
+
+/**
  * All conditions currently true for one worker (already-deduped by the caller).
  * Detection order = orchestrator priority: a landed report outranks a question,
  * which outranks a deck, which outranks the gauges, which outrank death.
@@ -953,6 +999,29 @@ export function detectWorkerEvents(w: WatchWorker, opts: DetectOptions = {}): Wa
 				`collected ${Math.round((nowMs - collectedMs) / 60_000)} min ago and still mounted — ` +
 					"tear it down (/delegate-teardown) or keep",
 				w.collectedAt,
+			),
+		);
+	}
+
+	// 7. answer-pending (the delivery round) — an UNREAD answer for a live,
+	//    uncollected worker: the a-file exists, is valid, and postdates the
+	//    report (the drain rule's consumed definition, mailboxDrained). The
+	//    wake mutates nothing (read-only class) — the orchestrator learns the
+	//    worker has not picked the answer up instead of waiting for a poll
+	//    that may never come. Fingerprint = the answer envelope ts: a NEW
+	//    answer re-arms; the condition turning false (the worker consumes the
+	//    answer — its report postdates it) forgets the key via the D1 reset.
+	//    Probes: no report ever lands, so an answer to a probe would wake
+	//    every tick — but probes never receive answers (the smoke gate is
+	//    one-shot); the condition stays file-truth, no special case.
+	const answerTs = answerPendingUnread(w);
+	if (answerTs !== null) {
+		events.push(
+			mk(
+				"answer-pending",
+				`an answer was posted for this worker and is still unread (the worker's report predates the answer) — ` +
+					"the worker has not picked it up; poll-answer or nudge it, or release it if the answer is stale",
+				answerTs,
 			),
 		);
 	}

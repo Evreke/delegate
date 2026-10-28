@@ -10,6 +10,85 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **The journal store is now PER-TASK SHARDS (the sharding decision, store
+  criticism C1 criterion (a)).** One SQLite database per task at
+  `<agentDir>/delegate-journal/tasks/<safe(task)>-<fnv1a8(task)>.db` — the
+  blast radius of database loss or compaction shrinks to one task, and
+  cross-session compaction interference dies by file topology. The shard
+  name spelling is pinned in `src/swarm/journal-shards.ts` (the new layout
+  module): a sanitized task-name prefix plus the FNV-1a 32-bit hex of the
+  raw task name — the same file-safe key discipline as the watcher satellite
+  keys; the spelling is total over hostile task names (traversal, separators,
+  unicode, length) and deterministic across writer, reader and compaction.
+  Every journal row carries a non-empty task (the DDL pins `task NOT NULL`;
+  the CLI identity resolver refuses an empty task), so no `_global` shard
+  exists. Fleet-scoped reads open exactly one shard; global reads (`swarm
+  events` unscoped, `count()`, `dbSizeBytes()`, `kindStats()` without tasks)
+  are unions over the shards found by scanning `tasks/` — the unscoped
+  cursor applies per shard (seq is per shard) and the union orders by
+  `(ts, seq, shardPath)`. The Law 7 version gate and the tolerant reader
+  hold PER SHARD: a future-version shard refuses its own appends loudly
+  (`E_JOURNAL_VERSION`) while other tasks' shards keep working. The legacy
+  global `events.db` is renamed `events-legacy-<epochMs>.db` (+ WAL/SHM
+  sidecars) by the FIRST writer-side open of the new layout — best-effort
+  and advisory; shards start empty and the legacy rows become inert copies
+  (files are truth — losing them is the noise direction; lifecycle rows
+  re-accumulate). Readers never migrate (the pure-read law): the legacy file
+  is naturally invisible to reads. The watcher's journal cursor read is
+  PER-TASK: each live fleet's shard is read with that task dir's own cursor
+  position (`eventsAfter(cursor, { sessionId, task })`), and the durable
+  commit advances that dir's cursor to that shard's position — the cursor
+  file shape is unchanged (one file per task dir already), so the FIRST
+  post-upgrade run replays a bounded volley per task (the #26 precedent:
+  the cursor is never seeded). The `dbPath` override (`SWARM_JOURNAL_DB` /
+  writer/reader/compaction options) keeps the pre-shard single-database
+  behavior for tests and scripting. Compaction operates within one shard
+  (the C6 audience guard and the DP7 all-terminal rule unchanged, evaluated
+  against the shard's side tables); the export lands next to the shard.
+  Pinned by the new `test/journal-shards-check.ts` (path scheme +
+  sanitization, one db per task, unions over ≥2 shards, per-shard version
+  gate, the cutover rename, shard-path compaction legs) and the extended
+  `test/journal-check.ts`.
+- **The `answer-pending` wake class (the delivery round, store criticism C1
+  criterion (b)).** A new read-only watcher event kind: an UNREAD answer for
+  a live, uncollected worker — the `a-<name>.json` exists, parses to a valid
+  envelope, and its mtime POSTDATES the worker's report mtime (the drain
+  rule's consumed definition reused verbatim from `mailboxDrained`). The
+  wake mutates nothing: the orchestrator learns the worker has not picked
+  the answer up instead of waiting for a poll that may never come. The
+  fingerprint is the answer envelope ts, so a NEW answer re-arms; the
+  condition turning false (the worker consumes the answer — its report
+  postdates it) forgets the key through the standard D1 reset. Terminal
+  (done/idle) and collected workers are structurally silent; a torn a-file
+  degrades to no wake (total helper, never a throw). The tolerant answer
+  reader (`readAnswerFile`) moved to `src/mailbox-store.ts` — the ONE
+  envelope-read home (Law 9); the poll-answer verb re-exports it. The
+  closed kind set grows 10 → 11; the M2 consume-once-acked set stays exactly
+  `{worker-stale}`. Pinned by the new M3 block in
+  `test/watch-reaction-map-check.ts` (unread → wake, consumed → silent,
+  re-arm on a new answer, terminal/collected gates, torn-file tolerance,
+  the detectEvents dedupe + D1 reset legs).
+- **The hysteresis two-speed tick (the delivery round, store criticism C1
+  criterion (c); instant push delivery is explicitly DEFERRED).** The
+  watcher's fixed `setInterval` becomes a self-rearming chain: after every
+  tick the loop re-arms with the ACTIVE cadence (`watch.activeIntervalMs`,
+  default 1 s, floor 250 ms) when that tick observed live work (a worker
+  whose herdr status is working or blocked), else with the idle cadence
+  (`watch.intervalMs`, default 10 s — unchanged). An unobservable fleet
+  counts as idle (a thrown snapshot or unknown statuses — fast-polling
+  cannot help there; the same statuses-unknown-≠-dead rule as worker-dead).
+  The first arm waits the idle interval (no observation yet, no reason to
+  hurry). Effect: while a fleet works, report-land and answer-pending
+  reactions happen at ~1 s latency instead of waiting out the idle 10 s;
+  an idle fleet costs exactly what it cost before. The new read-only
+  `armedDelayMs()` handle seam exposes the pending re-arm delay so checks
+  assert the cadence without real-timer races. Pinned by the new W24 block
+  in `test/watcher-check.ts` (idle-first arm, working → active, settled →
+  idle, unknown statuses → idle, thrown snapshot → idle, stop clears the
+  timer, stop idempotent) and the P10b–P10d config legs in
+  `test/profile-check.ts` (default 1 s, in-range honored, below-floor
+  falls back).
+
 - **The durable message store lands its 1.19.0-shadow core.** The journal
   database gains schema v2: three side tables (`message_receipts`,
   `wake_facts`, `read_cursors`), created idempotently on every writer open

@@ -24,7 +24,7 @@
  * Exit 0 only if all checks pass.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createWatcher, evaluateRetire } from "../src/observe.ts";
@@ -40,6 +40,8 @@ import {
 import type { DueWake, SchedulePort } from "../src/watch-schedule.ts";
 import type { AgentStatus, Transport } from "../src/host.ts";
 import { releasePathFor, reportPathFor, type ExchangeManifest, type ManifestWorker } from "../src/exchange.ts";
+import { answerPathFor, writeAnswer } from "../src/mailbox-store.ts";
+import { answerPendingUnread, detectEvents } from "../src/watch-detect.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -134,6 +136,7 @@ const REACTION_OF_EVERY_KIND: Record<WatchEventKind, WakeReactionClass> = {
 	"worker-dead": "read-only",
 	"provider-empty": "read-only",
 	"fleet-in-flight": "read-only",
+	"answer-pending": "read-only",
 	"worker-stale": "consume-once-acked",
 };
 
@@ -143,7 +146,7 @@ const REACTION_OF_EVERY_KIND: Record<WatchEventKind, WakeReactionClass> = {
 		i++;
 		check(`M1.${i} ${kind} → ${expected}`, wakeReactionClass(kind as WatchEventKind) === expected);
 	}
-	check("M1.11 the closed kind set has 10 kinds (growth is the event the gate exists for)", i === 10, String(i));
+	check("M1.11 the closed kind set has 11 kinds (growth is the event the gate exists for)", i === 11, String(i));
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +362,79 @@ const REACTION_OF_EVERY_KIND: Record<WatchEventKind, WakeReactionClass> = {
 
 function latencyLines(logs: string[]): string[] {
 	return logs.filter((l) => l.startsWith("wake-up latency:"));
+}
+
+// ---------------------------------------------------------------------------
+// M3. answer-pending — the unread-answer wake class (the delivery round)
+// ---------------------------------------------------------------------------
+
+{
+	// The condition is file-truth: the a-file exists, is valid, and postdates
+	// the report (the drain rule's consumed definition, mailboxDrained). The
+	// worker must be actively reachable (working/blocked) and uncollected.
+	const dir = taskDir("answer-pending");
+	const w = mkWorker(dir, "w-ans");
+	const reportPath = writeValidReport(dir, "w-ans");
+	// Backdate the report: the mtime comparisons are millisecond-resolution,
+	// and the fixture writes would otherwise tie with the answer writes.
+	utimesSync(reportPath, new Date(NOW - 60_000), new Date(NOW - 60_000));
+	const live = () => snapshotFor([w], [LIVE("w-ans")]).workers[0]!;
+
+	check("M3.1 no answer → no wake", answerPendingUnread(live()) === null);
+
+	// The answer is posted AFTER the report → unread.
+	writeFileSync(answerPathFor(dir, "w-ans"), JSON.stringify({ from: "orchestrator", ts: "2026-09-06T12:00:01.000Z", answer: "use plan B" }));
+	const fp1 = answerPendingUnread(live());
+	check("M3.2 an unread answer (newer than the report) → wake with the envelope ts as the fingerprint", fp1 === "2026-09-06T12:00:01.000Z", String(fp1));
+
+	// The worker consumes the answer: its report mtime postdates the answer.
+	writeValidReport(dir, "w-ans"); // rewrite the report → newer mtime
+	check("M3.3 a consumed answer (report newer than the answer) → silent", answerPendingUnread(live()) === null);
+
+	// A NEW answer re-arms (the fingerprint changes → the D1 reset forgets the
+	// old key and the new one fires fresh).
+	utimesSync(reportPath, new Date(NOW - 60_000), new Date(NOW - 60_000)); // re-backdate (ms ties)
+	writeFileSync(answerPathFor(dir, "w-ans"), JSON.stringify({ from: "orchestrator", ts: "2026-09-06T12:00:02.000Z", answer: "also plan C" }));
+	const fp2 = answerPendingUnread(live());
+	check("M3.4 a NEW answer re-arms (fingerprint = the new envelope ts)", fp2 === "2026-09-06T12:00:02.000Z" && fp2 !== fp1, String(fp2));
+
+	// Terminal workers are not woken (nobody home).
+	const settled = snapshotFor([w], [DONE("w-ans")]).workers[0]!;
+	check("M3.5 a settled (done) worker is not woken", answerPendingUnread(settled) === null);
+
+	// A collected worker is not woken (already delivered — nobody to wake).
+	const collected = { ...live(), collectedAt: "2026-09-06T11:00:00.000Z" };
+	check("M3.6 a collected worker is not woken", answerPendingUnread(collected) === null);
+
+	// A torn a-file degrades to no wake (total, never a throw).
+	writeFileSync(answerPathFor(dir, "w-ans"), "{not json");
+	check("M3.7 a torn a-file → no wake (tolerant, never a throw)", answerPendingUnread(live()) === null);
+
+	// End-to-end through detectEvents: the event is emitted once, deduped on
+	// the second tick (same fingerprint), and forgotten when consumed.
+	utimesSync(reportPath, new Date(NOW - 60_000), new Date(NOW - 60_000)); // re-backdate (ms ties)
+	writeFileSync(answerPathFor(dir, "w-ans"), JSON.stringify({ from: "orchestrator", ts: "2026-09-06T12:00:03.000Z", answer: "go" }));
+	const seen = new Map();
+	const snap = () => snapshotFor([w], [LIVE("w-ans")]);
+	// The fixture manifest carries no owner fields → the canonical no-owner
+	// verdict is fail-closed; the legacyFailOpen rollback is the fixture's
+	// explicit stand-in for a real owner match (the ownership gate itself is
+	// pinned by watcher-check, not here).
+	const opts = { legacyFailOpen: true, selfSessionFile: TEST_SELF };
+	const first = detectEvents(snap(), seen, opts);
+	const second = detectEvents(snap(), seen, opts);
+	check(
+		"M3.8 detectEvents emits answer-pending once, dedupes the next tick",
+		first.filter((e) => e.kind === "answer-pending").length === 1 && second.filter((e) => e.kind === "answer-pending").length === 0,
+		JSON.stringify({ first: first.map((e) => e.kind), second: second.map((e) => e.kind) }),
+	);
+	writeValidReport(dir, "w-ans"); // the worker consumes the answer
+	const third = detectEvents(snap(), seen, opts);
+	check(
+		"M3.9 consumption resets the key (the D1 rule — the condition turned false)",
+		third.every((e) => e.kind !== "answer-pending"),
+		JSON.stringify(third.map((e) => e.kind)),
+	);
 }
 
 if (failures > 0) {

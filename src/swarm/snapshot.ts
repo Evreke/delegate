@@ -121,7 +121,7 @@ export function manifestSource(
 export async function runSnapshot(env: NodeJS.ProcessEnv = process.env): Promise<void> {
 	const cfg = resolveSwarmStorage(env);
 	const backendName = activeBackendName();
-	const { reader: journal, cleanup } = withJournalCopy(cfg.dbPath);
+	const { reader: journal, cleanup } = withJournalCopy({ dbPath: cfg.dbPath });
 	try {
 		const graph = await buildSwarmGraph({
 			journal,

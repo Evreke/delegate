@@ -49,7 +49,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { JournalDb } from "./journal-driver.ts";
 import { openMigratedDatabase, JOURNAL_DB_VERSION } from "./journal-schema.ts";
-import { createJournalWriter, journalDbPath } from "./journal.ts";
+import { createJournalWriter } from "./journal.ts";
+import { journalShardPathFor, migrateLegacyJournalDatabase } from "./journal-shards.ts";
 import { errorMessage, isBusyError, runWithBusyRetry, type JournalRetryOptions, JOURNAL_RETRY_DEFAULTS } from "./journal-retry.ts";
 import { readManifest, type ExchangeManifest } from "../manifest-store.ts";
 import { systemClock, type ClockPort } from "../clock.ts";
@@ -67,8 +68,12 @@ export type CompactFailureCode =
 	| "E_COMPACT_IO";
 
 export interface CompactFleetOptions {
-	/** Database path override (tests sandbox here). Default `journalDbPath()`. */
+	/** Single-database override (tests sandbox here). Default: the task's
+	 *  SHARD (the per-task layout) — compaction operates within one shard. */
 	dbPath?: string;
+	/** Shard-root override (tests): the shard resolves under
+	 *  `<rootDir>/tasks/`. Ignored when dbPath is set. */
+	rootDir?: string;
 	/** The fleet's session id (the events.session_id spelling). */
 	sessionId: string;
 	/** The exchange task name (the events.task spelling). */
@@ -197,7 +202,13 @@ function manifestShowsSession(m: ExchangeManifest, audienceSession: string): boo
  * Raises: never
  */
 export async function compactFleet(opts: CompactFleetOptions): Promise<CompactFleetResult> {
-	const dbPath = opts.dbPath ?? journalDbPath();
+	// The dbPath override keeps the pre-shard single-database behavior; the
+	// default compacts the task's OWN shard. The production path is a
+	// writer-side open of the new layout → the legacy cutover rename runs
+	// first (advisory; the renamed legacy rows are inert copies — a fleet
+	// whose rows live only in the legacy file compacts to E_COMPACT_EMPTY).
+	if (opts.dbPath === undefined) migrateLegacyJournalDatabase(opts.rootDir);
+	const dbPath = opts.dbPath ?? journalShardPathFor(opts.task, opts.rootDir);
 	const clock = opts.clock ?? systemClock;
 	const rng = opts.rng ?? Math.random;
 	const retry: Required<JournalRetryOptions> = {

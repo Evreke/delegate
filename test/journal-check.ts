@@ -90,9 +90,12 @@ check(
 	journalDbPath(),
 );
 {
-	const src = readFileSync(resolve(ROOT, "src/swarm/journal.ts"), "utf8");
+	// The location spelling lives in the layout module (journal-shards.ts —
+	// the shard layout's home); the writer resolves every path through it.
+	const src = readFileSync(resolve(ROOT, "src/swarm/journal.ts"), "utf8") +
+		readFileSync(resolve(ROOT, "src/swarm/journal-shards.ts"), "utf8");
 	check(
-		"J1.2 the writer resolves the location through pi's getAgentDir() and never the exchange root",
+		"J1.2 the journal family resolves the location through pi's getAgentDir() and never the exchange root",
 		src.includes("getAgentDir()") && !src.includes("exchangeRoot"),
 	);
 	const pinned = [
@@ -370,7 +373,7 @@ check(
 	);
 	// The compaction path LANDED (the store core): it is the family's ONE
 	// DELETE site, confined to its own file (journal-compact.ts).
-	const familyFiles = ["journal.ts", "journal-schema.ts", "journal-retry.ts", "journal-receipt.ts", "journal-read.ts", "journal-copy.ts", "journal-compact.ts", "journal-manifest-store.ts"]
+	const familyFiles = ["journal.ts", "journal-schema.ts", "journal-shards.ts", "journal-retry.ts", "journal-receipt.ts", "journal-read.ts", "journal-copy.ts", "journal-compact.ts", "journal-manifest-store.ts"]
 		.map((f) => resolve(ROOT, "src/swarm", f))
 		.filter((f) => existsSync(f));
 	const deleteSites = familyFiles

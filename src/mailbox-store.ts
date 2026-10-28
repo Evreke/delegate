@@ -223,6 +223,48 @@ export function readQuestion(path: string): QuestionEnvelope | null {
 	return r.state === "valid" ? r.question : null;
 }
 
+/** The result-plane read of an answer file. */
+export type AnswerRead =
+	| { state: "absent" }
+	| { state: "invalid"; error: string }
+	| { state: "valid"; answer: AnswerEnvelope };
+
+/** Synchronous bounded sleep (Atomics on a throwaway buffer). */
+function sleepSync(ms: number): void {
+	if (ms <= 0) return;
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Tolerant answer-file read (never throws). */
+export function readAnswerFile(path: string): AnswerRead {
+	let raw: string;
+	try {
+		raw = readFileSync(path, "utf8");
+	} catch {
+		return { state: "absent" };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch (err) {
+		return { state: "invalid", error: `not valid JSON (${(err as Error).message})` };
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		return { state: "invalid", error: "JSON is not an answer envelope" };
+	}
+	const o = parsed as Record<string, unknown>;
+	if (!isSupportedSchemaVersion(o.schemaVersion)) {
+		return {
+			state: "invalid",
+			error: `unsupported answer envelope schemaVersion (${String(o.schemaVersion)} — this build reads version ${EXCHANGE_SCHEMA_VERSION})`,
+		};
+	}
+	if (o.from !== "orchestrator" || typeof o.ts !== "string" || typeof o.answer !== "string") {
+		return { state: "invalid", error: "JSON is not an answer envelope (from, ts and answer are expected)" };
+	}
+	return { state: "valid", answer: parsed as AnswerEnvelope };
+}
+
 /**
  * Write an answer envelope atomically (tmp+rename; withFileMutationQueue on the path).
  * <p>

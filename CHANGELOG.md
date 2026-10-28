@@ -49,6 +49,25 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   sanitization, one db per task, unions over ≥2 shards, per-shard version
   gate, the cutover rename, shard-path compaction legs) and the extended
   `test/journal-check.ts`.
+- **The `answer-pending` wake class (the delivery round, store criticism C1
+  criterion (b)).** A new read-only watcher event kind: an UNREAD answer for
+  a live, uncollected worker — the `a-<name>.json` exists, parses to a valid
+  envelope, and its mtime POSTDATES the worker's report mtime (the drain
+  rule's consumed definition reused verbatim from `mailboxDrained`). The
+  wake mutates nothing: the orchestrator learns the worker has not picked
+  the answer up instead of waiting for a poll that may never come. The
+  fingerprint is the answer envelope ts, so a NEW answer re-arms; the
+  condition turning false (the worker consumes the answer — its report
+  postdates it) forgets the key through the standard D1 reset. Terminal
+  (done/idle) and collected workers are structurally silent; a torn a-file
+  degrades to no wake (total helper, never a throw). The tolerant answer
+  reader (`readAnswerFile`) moved to `src/mailbox-store.ts` — the ONE
+  envelope-read home (Law 9); the poll-answer verb re-exports it. The
+  closed kind set grows 10 → 11; the M2 consume-once-acked set stays exactly
+  `{worker-stale}`. Pinned by the new M3 block in
+  `test/watch-reaction-map-check.ts` (unread → wake, consumed → silent,
+  re-arm on a new answer, terminal/collected gates, torn-file tolerance,
+  the detectEvents dedupe + D1 reset legs).
 
 - **The durable message store lands its 1.19.0-shadow core.** The journal
   database gains schema v2: three side tables (`message_receipts`,

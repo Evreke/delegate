@@ -49,6 +49,7 @@ import {
 	JOURNAL_DB_VERSION,
 	JOURNAL_KINDS,
 	JOURNAL_SCHEMA_V1_DDL,
+	JOURNAL_SCHEMA_V2_DDL,
 	type JournalAppendInput,
 } from "../src/swarm/journal.ts";
 import { createJournalReader, type JournalEvent } from "../src/swarm/journal-read.ts";
@@ -107,9 +108,23 @@ check(
 	];
 	const missing = pinned.filter((p) => !JOURNAL_SCHEMA_V1_DDL.includes(p));
 	check(
-		`J1.3 JOURNAL_SCHEMA_V1_DDL is the §4.1.2 DDL and user_version=${JOURNAL_DB_VERSION}`,
-		missing.length === 0 && JOURNAL_DB_VERSION === 1,
+		`J1.3 JOURNAL_SCHEMA_V1_DDL is the §4.1.2 DDL (byte-pinned, user_version=1 line included) and JOURNAL_DB_VERSION=${JOURNAL_DB_VERSION}`,
+		missing.length === 0 && JOURNAL_DB_VERSION === 2 && JOURNAL_SCHEMA_V1_DDL.includes("PRAGMA user_version = 1;"),
 		missing.join(" | "),
+	);
+	const v2Pinned = [
+		"CREATE TABLE IF NOT EXISTS message_receipts",
+		"CREATE TABLE IF NOT EXISTS wake_facts",
+		"CREATE TABLE IF NOT EXISTS read_cursors",
+		"PRIMARY KEY (audience_session, task, worker, wake_kind, fingerprint)",
+		"msg_seq          INTEGER,",
+		"PRAGMA user_version = 2;",
+	];
+	const missingV2 = v2Pinned.filter((p) => !JOURNAL_SCHEMA_V2_DDL.includes(p));
+	check(
+		"J1.4 JOURNAL_SCHEMA_V2_DDL carries the three side tables, the wake_facts PK and the nullable msg_seq (NULL = file-detected, no 0 sentinel)",
+		missingV2.length === 0,
+		missingV2.join(" | "),
 	);
 }
 
@@ -128,16 +143,37 @@ const writer = createJournalWriter({ dbPath: DB });
 	const index = raw
 		.query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'events_by_fleet'")
 		.get();
+	const receipts = raw
+		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'message_receipts'")
+		.get();
+	const wakes = raw
+		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'wake_facts'")
+		.get();
+	const cursors = raw
+		.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'read_cursors'")
+		.get();
 	// user_version and journal_mode are PERSISTENT database state; the
 	// per-connection pragmas (synchronous, busy_timeout) cannot be read back
 	// through a second connection — they are pinned textually by J1.3 and
 	// behaviorally by J8.4.
 	check(
-		"J2.1 writer open stamps the persistent schema state: user_version=1, journal_mode=wal",
-		uv.user_version === 1 && jm.journal_mode === "wal",
+		"J2.1 writer open stamps the persistent schema state: user_version=2, journal_mode=wal",
+		uv.user_version === 2 && jm.journal_mode === "wal",
 		JSON.stringify({ uv, jm }),
 	);
 	check("J2.2 events table + events_by_fleet index exist", !!table && !!index);
+	check(
+		"J2.3 the v2 side tables exist (message_receipts, wake_facts, read_cursors) — created idempotently on open",
+		!!receipts && !!wakes && !!cursors,
+	);
+	const wakeCols = raw.query("PRAGMA table_info(wake_facts)").all() as Array<{ name: string; notnull: number; pk: number }>;
+	const msgSeq = wakeCols.find((c) => c.name === "msg_seq");
+	const pkCols = wakeCols.filter((c) => c.pk > 0).map((c) => c.name).join(",");
+	check(
+		"J2.4 wake_facts PK is (audience_session, task, worker, wake_kind, fingerprint) and msg_seq is NULLABLE (no 0 sentinel)",
+		pkCols === "audience_session,task,worker,wake_kind,fingerprint" && !!msgSeq && msgSeq.notnull === 0,
+		JSON.stringify({ pkCols, msgSeq }),
+	);
 	raw.close();
 }
 
@@ -324,13 +360,27 @@ check(
 	const readerSrc = stripComments(readFileSync(resolve(ROOT, "src/swarm/journal-read.ts"), "utf8"));
 	const writeVerb = /\b(UPDATE|DELETE)\b/i;
 	check(
-		"J6.1 the writer module contains no UPDATE/DELETE statement (compaction deferred)",
+		"J6.1 the writer module contains no UPDATE/DELETE statement (the append protocol stays append-only)",
 		!writeVerb.test(writerSrc),
 		(writerSrc.match(writeVerb) ?? []).join(","),
 	);
 	check(
 		"J6.2 the reader module contains no INSERT/UPDATE/DELETE statement",
 		!/\b(INSERT|UPDATE|DELETE)\b/i.test(readerSrc),
+	);
+	// The compaction path LANDED (the store core): it is the family's ONE
+	// DELETE site, confined to its own file (journal-compact.ts).
+	const familyFiles = ["journal.ts", "journal-schema.ts", "journal-retry.ts", "journal-receipt.ts", "journal-read.ts", "journal-copy.ts", "journal-compact.ts", "journal-manifest-store.ts"]
+		.map((f) => resolve(ROOT, "src/swarm", f))
+		.filter((f) => existsSync(f));
+	const deleteSites = familyFiles
+		.map((f) => ({ f, src: stripComments(readFileSync(f, "utf8")) }))
+		.filter(({ src }) => /\bDELETE\s+FROM\b/i.test(src))
+		.map(({ f }) => f);
+	check(
+		"J6.4 journal-compact.ts is the family's ONE DELETE site (compaction landed, confinement tested)",
+		existsSync(resolve(ROOT, "src/swarm/journal-compact.ts")) && deleteSites.length === 1 && deleteSites[0]!.endsWith("journal-compact.ts"),
+		deleteSites.map((f) => f.split("/").pop()).join(","),
 	);
 	const reader = createJournalReader({ dbPath: DB });
 	const writerKeys = Object.keys(writer);
@@ -554,15 +604,15 @@ setTimeout(() => { db.exec("ROLLBACK"); process.exit(0); }, 150);
 
 	const futureDb = join(SANDBOX, "future.db");
 	const raw = new Database(futureDb, { create: true });
-	raw.exec("PRAGMA user_version = 2; CREATE TABLE events (seq INTEGER PRIMARY KEY, ts TEXT, kind TEXT, session_id TEXT, task TEXT, worker TEXT, payload TEXT);");
+	raw.exec("PRAGMA user_version = 3; CREATE TABLE events (seq INTEGER PRIMARY KEY, ts TEXT, kind TEXT, session_id TEXT, task TEXT, worker TEXT, payload TEXT);");
 	raw.close();
 	const futureWriter = createJournalWriter({ dbPath: futureDb });
 	const futureAppend = await futureWriter.append({ kind: "spawn", sessionId: "s", task: "t" });
 	futureWriter.close();
 	const futureReader = createJournalReader({ dbPath: futureDb });
 	check(
-		"J9.4 a future user_version is refused by the writer and reads empty (Law 7 gate)",
-		futureAppend.ok === false && futureAppend.code === "E_JOURNAL_OPEN" && futureReader.eventsAfter(0).length === 0,
+		"J9.4 a future user_version is refused LOUDLY (E_JOURNAL_VERSION, the C5 gate) and reads empty (Law 7)",
+		futureAppend.ok === false && futureAppend.code === "E_JOURNAL_VERSION" && futureReader.eventsAfter(0).length === 0,
 		JSON.stringify(futureAppend),
 	);
 	futureReader.close();

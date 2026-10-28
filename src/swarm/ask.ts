@@ -12,7 +12,13 @@
  * Phase B (issue #23, §4.1.3): under `swarm.storage: "journal"` the verb
  * appends the journal event (kind `ask`, payload = the QuestionEnvelope
  * verbatim) BEFORE writing the file projection; the append is advisory
- * (Law 8) and surfaces in the success envelope's `journal` field.
+ * (Law 8) and surfaces in the success envelope's `journal` field. Under the
+ * 1.19.0 shadow (swarm.messageShadow, default true) the SAME row + the
+ * sender's `sent` receipt are written in files mode too — advisory and
+ * ENVELOPE-SILENT (the `journal` field stays absent, byte-identical to 1.18;
+ * files stay truth). The ONE loud exception (C5): a FUTURE `user_version`
+ * fails the verb structured E_JOURNAL_VERSION before the projection is
+ * written — the row is the publication, and a refused row publishes nothing.
  *
  * Dependencies: node:fs, ../expaths.ts (questionPathFor — the ONE path
  * builder), ../manifest-store.ts (atomicWriteFileSync — the ONE atomic writer),

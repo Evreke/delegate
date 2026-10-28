@@ -111,7 +111,11 @@ export async function runWriteReport(ctx: SwarmContext, parsed: ParsedArgs, env:
 		// payload = the validated report JSON verbatim) AFTER the atomic publish —
 		// the journal never announces a report that did not reach its path. A
 		// journal failure is advisory (Law 8: swallowed + a structured stderr
-		// note) and never fails the write. A REJECTED report is journaled nowhere.
+		// note) and never fails the write — EXCEPT the loud Law 7 version gate
+		// (C5): a FUTURE user_version throws the structured E_JOURNAL_VERSION
+		// (the report file is already published; the verb still fails loudly —
+		// never a silent no-op against a newer schema). A REJECTED report is
+		// journaled nowhere.
 		renameSync(tmpPath, reportPath);
 		journal = await appendSwarmEvent({ task: d.task, worker: ctx.worker, dir: d.dir }, "report", parsedReport, env);
 	} finally {

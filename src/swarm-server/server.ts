@@ -239,7 +239,9 @@ function eventsResponse(deps: SwarmServerDeps, req: Http1Request): Http1Response
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
 			after: cursor,
 			events: journal ? journal.eventsAfter(cursor, { limit: JOURNAL_EVENTS_PAGE_LIMIT }) : [],
-			journal: journal ? { count: journal.count(), dbSizeBytes: journal.dbSizeBytes() } : { count: 0, dbSizeBytes: 0 },
+			journal: journal
+				? { count: journal.count(), dbSizeBytes: journal.dbSizeBytes(), kinds: journal.kindStats() }
+				: { count: 0, dbSizeBytes: 0, kinds: [] },
 		}),
 	};
 }
@@ -406,7 +408,13 @@ async function fleetEventsResponse(deps: SwarmServerDeps, req: Http1Request, raw
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
 			after: cursor,
 			events,
-			journal: { count: events.length, dbSizeBytes: journal ? journal.dbSizeBytes() : 0 },
+			journal: {
+				count: events.length,
+				dbSizeBytes: journal ? journal.dbSizeBytes() : 0,
+				// Scoped to the fleet's own rows — the scoped envelope never
+				// reports another fleet's disk growth (no cross-traffic).
+				kinds: journal ? journal.kindStats(tasks) : [],
+			},
 		}),
 	};
 }

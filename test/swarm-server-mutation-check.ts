@@ -454,15 +454,15 @@ async function main(): Promise<void> {
 		if (hf) {
 			const steer = await req(hf.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "files-mode steer" } });
 			check(
-				"M9.2 files-mode steer → journal null + confirmation \"unavailable\" (Phase A appends no row)",
+				"M9.2 files-mode steer → envelope journal null + confirmation \"unavailable\" (the envelope stays silent in files mode)",
 				steer.status === 200 && steer.json?.ok === true && steer.json?.journal === null && steer.json?.confirmation === "unavailable",
 				`${steer.status} ${steer.body}`,
 			);
 			const ev = await req(hf.port, "GET", "/api/swarm/events?after=0");
 			const events = (ev.json?.events as Array<Record<string, unknown>>) ?? [];
 			check(
-				"M9.3 files mode → NO durable steer row exists (the journal received no write)",
-				events.every((e) => !(e.kind === "steer" && (e.payload as Record<string, unknown> | undefined)?.text === "files-mode steer")),
+				"M9.3 files mode under the shadow (default) → the steer row EXISTS (the shadow write; the envelope stays journal-null per M9.2)",
+				events.some((e) => e.kind === "steer" && (e.payload as Record<string, unknown> | undefined)?.text === "files-mode steer"),
 				JSON.stringify(events.map((e) => e.kind)),
 			);
 			// The REAL dashboard pipeline submits and settles the marker from the
@@ -478,6 +478,27 @@ async function main(): Promise<void> {
 			mf.fold([]);
 			check("M9.5 no journal fold ever reverts the delivered marker to pending", mf.latestPending("w1", "steer")?.status === "unconfirmed", JSON.stringify(mf.latestPending("w1", "steer")));
 			hf.stop();
+		}
+		// The shadow OFF keeps the exact 1.18 files-mode write surface.
+		const FILES_DB_OFF = join(SANDBOX, "journal-files-off", "events.db");
+		const hfo = await mountSwarmServer({
+			sessionFile: SELF,
+			transport: fakeTransport(),
+			manifests,
+			operatorToken: TOKEN,
+			env: { ...process.env, SWARM_STORAGE: "files", SWARM_JOURNAL_DB: FILES_DB_OFF, SWARM_MESSAGE_SHADOW: "0" },
+		});
+		check("M9.3a a files-mode shadow-off mount returns a handle", hfo !== null);
+		if (hfo) {
+			const steer = await req(hfo.port, "POST", "/api/workers/w1/steer", { token: TOKEN, body: { text: "files-mode shadow-off steer" } });
+			const ev = await req(hfo.port, "GET", "/api/swarm/events?after=0");
+			const events = (ev.json?.events as Array<Record<string, unknown>>) ?? [];
+			check(
+				"M9.3b files mode with the shadow OFF → NO durable steer row exists (the exact 1.18 surface)",
+				steer.status === 200 && steer.json?.ok === true && steer.json?.journal === null && events.every((e) => e.kind !== "steer"),
+				JSON.stringify({ status: steer.status, kinds: events.map((e) => e.kind) }),
+			);
+			hfo.stop();
 		}
 
 		// --- journal mode (companion): durable row → "confirmed" --------------

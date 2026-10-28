@@ -51,6 +51,17 @@ export interface JournalQuery {
 	limit?: number;
 }
 
+/** One per-kind visibility row (the §4 retention-visibility extension): the
+ *  kind's row count and its OLDEST row ts (ISO-8601 UTC; lexicographic MIN —
+ *  chronological for the injected-clock spelling). `kind` is the raw stored
+ *  string: visibility counts EVERY row (an unknown future kind is still disk
+ *  growth an operator must see), unlike the row reads which skip it. */
+export interface JournalKindStat {
+	kind: string;
+	count: number;
+	oldestTs: string | null;
+}
+
 /** The explicit cursor-read page size of the HTTP/WS read API (issue #88): one
  *  events response or WS frame never carries more than this many rows; a caller
  *  pages with `after=<lastSeq>`. The reader itself applies a limit only when a
@@ -72,6 +83,11 @@ export interface JournalReader {
 	eventsForWorker(sessionId: string, task: string, worker: string, after?: number): JournalEvent[];
 	/** Total row count (0 when the database is absent/unsupported). */
 	count(): number;
+	/** Per-kind row counts + oldest-row ts, ordered by kind (the §4 retention
+	 *  visibility extension; [] when the database is absent/unsupported).
+	 *  With `tasks`, the stats scope to those tasks' rows only (the fleet-
+	 *  scoped routes — attention never crosses fleets). */
+	kindStats(tasks?: ReadonlySet<string>): JournalKindStat[];
 	/** Database file size in bytes (0 when absent) — the retention-visibility
 	 *  half of §4.1.2. */
 	dbSizeBytes(): number;
@@ -199,6 +215,27 @@ export function createJournalReader(opts: JournalReaderOptions = {}): JournalRea
 				return Number(row?.c ?? 0);
 			} catch {
 				return 0;
+			}
+		},
+		kindStats(tasks?: ReadonlySet<string>) {
+			if (db === null) return [];
+			try {
+				const scoped = tasks !== undefined && tasks.size > 0;
+				const rows = scoped
+					? db.queryAll<{ kind: string; c: number; oldest: string | null }>(
+							`SELECT kind, COUNT(*) AS c, MIN(ts) AS oldest FROM events WHERE task IN (${[...tasks].map(() => "?").join(",")}) GROUP BY kind ORDER BY kind ASC`,
+							[...tasks],
+						)
+					: db.queryAll<{ kind: string; c: number; oldest: string | null }>(
+							"SELECT kind, COUNT(*) AS c, MIN(ts) AS oldest FROM events GROUP BY kind ORDER BY kind ASC",
+						);
+				return rows.map((r) => ({
+					kind: String(r.kind),
+					count: Number(r.c),
+					oldestTs: r.oldest === null || r.oldest === undefined ? null : String(r.oldest),
+				}));
+			} catch {
+				return [];
 			}
 		},
 		dbSizeBytes() {

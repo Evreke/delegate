@@ -10,6 +10,139 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Added
 
+- **The journal store is now PER-TASK SHARDS (the sharding decision, store
+  criticism C1 criterion (a)).** One SQLite database per task at
+  `<agentDir>/delegate-journal/tasks/<safe(task)>-<fnv1a8(task)>.db` — the
+  blast radius of database loss or compaction shrinks to one task, and
+  cross-session compaction interference dies by file topology. The shard
+  name spelling is pinned in `src/swarm/journal-shards.ts` (the new layout
+  module): a sanitized task-name prefix plus the FNV-1a 32-bit hex of the
+  raw task name — the same file-safe key discipline as the watcher satellite
+  keys; the spelling is total over hostile task names (traversal, separators,
+  unicode, length) and deterministic across writer, reader and compaction.
+  Every journal row carries a non-empty task (the DDL pins `task NOT NULL`;
+  the CLI identity resolver refuses an empty task), so no `_global` shard
+  exists. Fleet-scoped reads open exactly one shard; global reads (`swarm
+  events` unscoped, `count()`, `dbSizeBytes()`, `kindStats()` without tasks)
+  are unions over the shards found by scanning `tasks/` — the unscoped
+  cursor applies per shard (seq is per shard) and the union orders by
+  `(ts, seq, shardPath)`. The Law 7 version gate and the tolerant reader
+  hold PER SHARD: a future-version shard refuses its own appends loudly
+  (`E_JOURNAL_VERSION`) while other tasks' shards keep working. The legacy
+  global `events.db` is renamed `events-legacy-<epochMs>.db` (+ WAL/SHM
+  sidecars) by the FIRST writer-side open of the new layout — best-effort
+  and advisory; shards start empty and the legacy rows become inert copies
+  (files are truth — losing them is the noise direction; lifecycle rows
+  re-accumulate). Readers never migrate (the pure-read law): the legacy file
+  is naturally invisible to reads. The watcher's journal cursor read is
+  PER-TASK: each live fleet's shard is read with that task dir's own cursor
+  position (`eventsAfter(cursor, { sessionId, task })`), and the durable
+  commit advances that dir's cursor to that shard's position — the cursor
+  file shape is unchanged (one file per task dir already), so the FIRST
+  post-upgrade run replays a bounded volley per task (the #26 precedent:
+  the cursor is never seeded). The `dbPath` override (`SWARM_JOURNAL_DB` /
+  writer/reader/compaction options) keeps the pre-shard single-database
+  behavior for tests and scripting. Compaction operates within one shard
+  (the C6 audience guard and the DP7 all-terminal rule unchanged, evaluated
+  against the shard's side tables); the export lands next to the shard.
+  Pinned by the new `test/journal-shards-check.ts` (path scheme +
+  sanitization, one db per task, unions over ≥2 shards, per-shard version
+  gate, the cutover rename, shard-path compaction legs) and the extended
+  `test/journal-check.ts`.
+- **The `answer-pending` wake class (the delivery round, store criticism C1
+  criterion (b)).** A new read-only watcher event kind: an UNREAD answer for
+  a live, uncollected worker — the `a-<name>.json` exists, parses to a valid
+  envelope, and its mtime POSTDATES the worker's report mtime (the drain
+  rule's consumed definition reused verbatim from `mailboxDrained`). The
+  wake mutates nothing: the orchestrator learns the worker has not picked
+  the answer up instead of waiting for a poll that may never come. The
+  fingerprint is the answer envelope ts, so a NEW answer re-arms; the
+  condition turning false (the worker consumes the answer — its report
+  postdates it) forgets the key through the standard D1 reset. Terminal
+  (done/idle) and collected workers are structurally silent; a torn a-file
+  degrades to no wake (total helper, never a throw). The tolerant answer
+  reader (`readAnswerFile`) moved to `src/mailbox-store.ts` — the ONE
+  envelope-read home (Law 9); the poll-answer verb re-exports it. The
+  closed kind set grows 10 → 11; the M2 consume-once-acked set stays exactly
+  `{worker-stale}`. Pinned by the new M3 block in
+  `test/watch-reaction-map-check.ts` (unread → wake, consumed → silent,
+  re-arm on a new answer, terminal/collected gates, torn-file tolerance,
+  the detectEvents dedupe + D1 reset legs).
+- **The hysteresis two-speed tick (the delivery round, store criticism C1
+  criterion (c); instant push delivery is explicitly DEFERRED).** The
+  watcher's fixed `setInterval` becomes a self-rearming chain: after every
+  tick the loop re-arms with the ACTIVE cadence (`watch.activeIntervalMs`,
+  default 1 s, floor 250 ms) when that tick observed live work (a worker
+  whose herdr status is working or blocked), else with the idle cadence
+  (`watch.intervalMs`, default 10 s — unchanged). An unobservable fleet
+  counts as idle (a thrown snapshot or unknown statuses — fast-polling
+  cannot help there; the same statuses-unknown-≠-dead rule as worker-dead).
+  The first arm waits the idle interval (no observation yet, no reason to
+  hurry). Effect: while a fleet works, report-land and answer-pending
+  reactions happen at ~1 s latency instead of waiting out the idle 10 s;
+  an idle fleet costs exactly what it cost before. The new read-only
+  `armedDelayMs()` handle seam exposes the pending re-arm delay so checks
+  assert the cadence without real-timer races. Pinned by the new W24 block
+  in `test/watcher-check.ts` (idle-first arm, working → active, settled →
+  idle, unknown statuses → idle, thrown snapshot → idle, stop clears the
+  timer, stop idempotent) and the P10b–P10d config legs in
+  `test/profile-check.ts` (default 1 s, in-range honored, below-floor
+  falls back).
+
+- **The durable message store lands its 1.19.0-shadow core.** The journal
+  database gains schema v2: three side tables (`message_receipts`,
+  `wake_facts`, `read_cursors`), created idempotently on every writer open
+  with `user_version` bumped 1→2 through the existing Law 7 gate (the v1
+  events DDL stays byte-identical; the `wake_facts` primary key is
+  `(audience_session, task, worker, wake_kind, fingerprint)` and its
+  `msg_seq` is nullable — NULL = a file-detected condition, never a 0
+  sentinel). Message writes are shadowed behind the new config key
+  `swarm.messageShadow` (boolean, default true; env twin
+  `SWARM_MESSAGE_SHADOW`; invalid values warn once and keep the default):
+  the message-kind verbs (ask/answer/steer/progress) append their message
+  rows plus the sender's `sent` receipt in EVERY storage mode — in files
+  mode as an advisory shadow whose success envelope stays byte-identical to
+  1.18 (the `journal` field stays absent; files stay truth), in journal mode
+  as the existing row append plus the receipt. A failed shadow write is
+  recorded and skipped with ONE warn-once `uiLog` line — never silent,
+  never a verb failure. The writer gains `appendReceipt` with the
+  writer-owned key enforced in code (a receipt whose `audience_session` is
+  not the writing process's own session id refuses with
+  `E_JOURNAL_FORBIDDEN`). The events read surface gains per-kind
+  visibility: `swarm events` now reports `journal.kinds` — per-kind row
+  counts plus the oldest row timestamp — next to `count` and
+  `dbSizeBytes` (an unknown future kind is counted, never hidden). The
+  operator-invoked compaction path lands in its own journal-family file
+  (`src/swarm/journal-compact.ts`, the family's one DELETE site): export a
+  fleet's rows to JSONL, then delete them in one transaction with their
+  receipts and wake facts (no dangling references; read cursors and
+  NULL-msg_seq wake facts survive), gated on the DP7 all-terminal rule AND
+  the C6 audience guard — every audience with side-table rows for the task
+  is classified first; a live console with unconsumed rows or an
+  unclassifiable audience (corrupt/half-succeeded manifest) refuses the
+  range, never guesses. Pinned by the new `test/swarm-store-core-check.ts`
+  (receipt API, loud gate, shadow advisory + envelope silence, compaction
+  refusals, visibility) and the extended `test/journal-check.ts`.
+- **Every wake kind declares its reaction class (the P2 safety gate).**
+  `wakeReactionClass` in `src/watch-detect.ts` maps the closed
+  `WatchEventKind` set to `read-only`, `idempotent` or
+  `consume-once-acked` in an exhaustive switch with no default clause: a
+  new kind without a declared reaction fails typecheck instead of
+  defaulting silently. The map documents the known classifications with
+  their anchors (the collect re-stamp refusal, the release-ACK teardown,
+  the restating steers). Pinned by `test/watch-reaction-map-check.ts`
+  (M1/M2), including the ack-before-advance ordering for the consume-once
+  kinds.
+
+- **The wake-latency trial instrument.** Every real wake send logs ONE
+  audit line — `wake-up latency: detected <iso> → sent <iso> (<n> ms)` —
+  with the tick's detection stamp and the send stamp. Always-on (one line
+  per wake batch, the existing audit-file idiom). This is the trial
+  instrument for the `swarm.delivery` decision: the operator compares tick
+  cadence latency vs a future edge path from the audit lines alone. No new
+  machinery, no cadence change, no rows. Pinned by
+  `test/watch-reaction-map-check.ts` (M3).
+
 - **The skill-quality report gains an optional `liveVerdicts` section.**
   `test/skill/quality/build.ts` accepts `--live-traces <dir>`: given a
   directory of stage-1 replay traces (`<scenario>.json` `TraceDoc` files),
@@ -38,6 +171,19 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Changed
 
+- **The journal's Law 7 version gate is LOUD (the store design's C5
+  amendment).** When a verb's journal write meets a database with a FUTURE
+  `user_version` (a newer build's schema), the append no longer degrades to
+  a silent no-op: the writer returns the new structured `E_JOURNAL_VERSION`
+  failure (added to the CLI's E_* taxonomy by addition, with a recovery
+  hint), and the verb FAILS — exit 1 with a structured error envelope on the
+  swarm CLI, a structured refusal outcome on the orchestrator mutation core.
+  A verb that previously succeeded silently may now fail; that is the
+  desired pressure — upgrade the extension. The READER stays tolerant (a
+  missing or future-version database reads empty, never throws), and
+  shadow-off files mode never opens the writer, so the exact 1.18 surface
+  cannot trip the gate. Every other journal failure stays advisory (Law 8).
+
 - **The delegate skill text is pruned to judgment only.** `skills/delegate/SKILL.md`
   drops its restatements of tool mechanics (the header mechanics enumeration, the
   exchange-dir path, the report-contract field list — the tool's schema owns them) and
@@ -54,6 +200,27 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Fixed
 
+- **The compaction audience guard classifies RECEIPT audiences (the final-gate
+  review F1).** `audienceSet` unioned only `wake_facts` and `read_cursors`, while
+  `message_receipts` is the ONE side table production code writes — on a real
+  1.19.0 database the guard saw an empty audience set while per-audience receipt
+  rows existed and were deleted unclassified (falsifying the Added sentence).
+  The union now joins receipts over the range's message rows (the receipts table
+  carries no task column), and an audience spelling that resolves to neither a
+  JSONL path nor a manifest session (the interim dir-hash receipt class) is
+  `E_COMPACT_UNCLASSIFIABLE` — never silently dead. Pinned by S3.12 in
+  `test/swarm-store-core-check.ts`.
+- **The fleet events route can no longer leak GLOBAL kind stats (the final-gate
+  review F2).** `kindStats` treats an explicitly-passed EMPTY task set as
+  unscoped, and `resolveFleetTasks` returns an empty set for a known fleet whose
+  session node carries no tasks — the fleet route then reported every fleet's
+  disk growth, contradicting its own no-cross-traffic pin. The route now emits
+  `kinds: []` when the resolved task set is empty.
+- **The hysteresis pair is clamped (the verify round's B3.10 gap).** A resolved
+  `watch.activeIntervalMs` above `watch.intervalMs` is a misconfiguration (the
+  active cadence must be faster); the resolver clamps it to the idle interval
+  with a warn-once line — the degenerate result is a fixed cadence, the safe
+  direction. Previously the pair was never compared.
 - **CI is green again after the upstream history rewrite — the skill-quality
   harness no longer depends on a pinned rev.** The report builder's default
   `--before` was hard-coded to `629a030^` (the pre-rewrite skill commit).

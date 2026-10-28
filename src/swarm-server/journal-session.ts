@@ -19,7 +19,7 @@
  * offline-only in v1).
  *
  * Dependencies: node:fs (stat only), ../swarm/journal-read.ts,
- * ../swarm/journal.ts (journalDbPath — the ONE location resolver). No herdr
+ * ../swarm/journal-read.ts (the reader + its location options). No herdr
  * import (Law 4); no sqlite driver import (the journal module family owns
  * that seam).
  *
@@ -31,23 +31,30 @@
  */
 
 import { existsSync } from "node:fs";
-import { createJournalReader, journalDbPath, type JournalReader } from "../swarm/journal-read.ts";
+import { createJournalReader, type JournalReader } from "../swarm/journal-read.ts";
 
 /**
- * Open the session's ONE journal reader (with the cold-start reopen).
+ * Open the session's ONE journal reader.
  * <p>
  * FUNCTION_CONTRACT:
- * Input: dbPath — the resolved db path override (undefined → the ONE
- *   location resolver journalDbPath())
+ * Input: dbPath — a single-database override (undefined → SHARD MODE)
  * Output: a JournalReader whose every read first reopens itself if the
- *   database appeared since the open
+ *   override database appeared since the open (the override mode's cold
+ *   start); in shard mode the reader discovers shards dynamically (the
+ *   per-read tasks/ scan) and needs no reopen
  * Guarantees:
  *   - total: never throws; a missing/corrupt database reads empty
- *   - the absence→presence transition reopens exactly once
+ *   - the override mode's absence→presence transition reopens exactly once
  * Raises: never
  */
 export function openSessionJournal(dbPath: string | undefined): JournalReader {
-	const resolved = dbPath ?? journalDbPath();
+	if (dbPath === undefined) {
+		// Shard mode: the reader scans tasks/ per global read and opens task
+		// shards on demand — a journal that appears later is discovered
+		// without any reopen.
+		return createJournalReader();
+	}
+	const resolved = dbPath;
 	let cold = !existsSync(resolved);
 	let reader = createJournalReader({ dbPath: resolved });
 	const ensureOpen = (): void => {
@@ -73,6 +80,10 @@ export function openSessionJournal(dbPath: string | undefined): JournalReader {
 		count() {
 			ensureOpen();
 			return reader.count();
+		},
+		kindStats(tasks?: ReadonlySet<string>) {
+			ensureOpen();
+			return reader.kindStats(tasks);
 		},
 		dbSizeBytes() {
 			ensureOpen();

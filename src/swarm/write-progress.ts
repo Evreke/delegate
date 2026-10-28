@@ -11,7 +11,12 @@
  * Phase B (issue #23, §4.1.3): under `swarm.storage: "journal"` the verb
  * appends the journal event (kind `progress`, payload = the ProgressEvent
  * verbatim) BEFORE appending the file line; the journal append is advisory
- * (Law 8) and surfaces in the success envelope's `journal` field.
+ * (Law 8) and surfaces in the success envelope's `journal` field. Under the
+ * 1.19.0 shadow (swarm.messageShadow, default true) the SAME row + the
+ * sender's `sent` receipt are written in files mode too — advisory and
+ * ENVELOPE-SILENT (the `journal` field stays absent, byte-identical to 1.18;
+ * files stay truth). The ONE loud exception (C5): a FUTURE `user_version`
+ * fails the verb structured E_JOURNAL_VERSION — never a silent no-op.
  *
  * Dependencies: node:fs, node:path (dirname), ../expaths.ts (progressPathFor —
  * the ONE path builder), ../host.ts (ProgressEvent type ONLY), ./args.ts,

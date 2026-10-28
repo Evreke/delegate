@@ -30,6 +30,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WATCH_DEFAULT_ACTIVE_INTERVAL_MS, WATCH_MIN_ACTIVE_INTERVAL_MS } from "../src/watch-config.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -173,6 +174,35 @@ function loadMerged(env: Record<string, string>): { ok: true; cfg: Record<string
 		v.d.tier === "local-tier" && v.t.join(",") === "local-tier" && v.w === 111_000,
 		r.stdout.trim(),
 	);
+}
+
+// --- P10b: the hysteresis two-speed tick config (the delivery round) ----------
+{
+	// The base fixture carries no watch section → the defaults: the idle
+	// interval 10 s and the ACTIVE interval 1 s.
+	const src = `import {resolveWatchConfig, WATCH_DEFAULT_ACTIVE_INTERVAL_MS, WATCH_MIN_ACTIVE_INTERVAL_MS} from ${JSON.stringify(WATCHCFG)};
+		console.log(JSON.stringify(resolveWatchConfig()));`;
+	const r = runInChild(src, {});
+	const v = JSON.parse(r.stdout.trim() || "{}") as Record<string, unknown>;
+	check(
+		"P10b no watch section → activeIntervalMs defaults to 1 s (the hysteresis active cadence)",
+		r.code === 0 && v.activeIntervalMs === WATCH_DEFAULT_ACTIVE_INTERVAL_MS && WATCH_DEFAULT_ACTIVE_INTERVAL_MS === 1_000,
+		r.stdout.trim(),
+	);
+	// A present value is used; a below-floor value falls back to the default.
+	writeFileSync(BASE, JSON.stringify({ ...BASE_CFG, watch: { activeIntervalMs: 400 } }));
+	const r2 = runInChild(src, {});
+	const v2 = JSON.parse(r2.stdout.trim() || "{}") as Record<string, unknown>;
+	check("P10c an in-range activeIntervalMs is honored", r2.code === 0 && v2.activeIntervalMs === 400, r2.stdout.trim());
+	writeFileSync(BASE, JSON.stringify({ ...BASE_CFG, watch: { activeIntervalMs: 5 } }));
+	const r3 = runInChild(src, {});
+	const v3 = JSON.parse(r3.stdout.trim() || "{}") as Record<string, unknown>;
+	check(
+		"P10d a below-floor activeIntervalMs falls back to the default (the floor is " + WATCH_MIN_ACTIVE_INTERVAL_MS + " ms)",
+		r3.code === 0 && v3.activeIntervalMs === WATCH_DEFAULT_ACTIVE_INTERVAL_MS,
+		r3.stdout.trim(),
+	);
+	writeFileSync(BASE, JSON.stringify(BASE_CFG)); // restore fixture A
 }
 
 // --- P10: advisory watch surface degrades on a broken profile -------------------------

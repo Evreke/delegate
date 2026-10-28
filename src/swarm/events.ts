@@ -17,6 +17,8 @@
  *   - journal.count  — total rows in the database (DP7 retention visibility,
  *                      §4.1.2: surfaced through the read API, not just files)
  *   - journal.dbSizeBytes — the events.db file size in bytes (DP7)
+ *   - journal.kinds  — per-kind row counts + oldest-row ts (the §4 retention
+ *                      visibility extension), ordered by kind
  *
  * Identity: NONE required — this is an orchestrator-side read, not a worker
  * verb, so there is no SWARM_TASK/SWARM_WORKER gate (§4.1.1; the decision is
@@ -79,13 +81,13 @@ export function parseAfterCursor(raw: string | undefined): number {
 export function runEvents(parsed: ParsedArgs, env: NodeJS.ProcessEnv = process.env): void {
 	const cursor = parseAfterCursor(flagStr(parsed, "after"));
 	const cfg = resolveSwarmStorage(env);
-	const { reader, cleanup } = withJournalCopy(cfg.dbPath);
+	const { reader, cleanup } = withJournalCopy({ dbPath: cfg.dbPath });
 	try {
 		emitSuccess("events", {
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,
 			after: cursor,
 			events: reader.eventsAfter(cursor),
-			journal: { count: reader.count(), dbSizeBytes: reader.dbSizeBytes() },
+			journal: { count: reader.count(), dbSizeBytes: reader.dbSizeBytes(), kinds: reader.kindStats() },
 		});
 	} finally {
 		cleanup();

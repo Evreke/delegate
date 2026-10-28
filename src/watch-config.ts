@@ -60,6 +60,15 @@ export const WATCH_DEFAULT_INTERVAL_MS = 10_000;
 export const WATCH_DEFAULT_SETTLE_GATE_MS = 15_000;
 /** Floor for intervalMs — a typo like 1 must not hammer herdr every ms. */
 export const WATCH_MIN_INTERVAL_MS = 1_000;
+/** The hysteresis two-speed tick (the delivery round): the ACTIVE cadence —
+ *  the delay re-armed while the last tick observed live work (a worker whose
+ *  herdr status is working or blocked). The idle cadence stays
+ *  watch.intervalMs. Default 1 s: while work is live, the fleet reacts at
+ *  report-land latency instead of waiting out the idle 10 s. */
+export const WATCH_DEFAULT_ACTIVE_INTERVAL_MS = 1_000;
+/** Floor for activeIntervalMs — same rationale as the idle floor, lower
+ *  because the active phase is short-lived and bounded by the fleet's life. */
+export const WATCH_MIN_ACTIVE_INTERVAL_MS = 250;
 /** worker-stale threshold (§22): a collected worker still mounted after this
  *  long wakes its owner ("tear it down or keep"). The overlay's `s` flag
  *  shares the same 30-min default — ONE constant, canonically owned by
@@ -86,6 +95,10 @@ export const DURABLE_DELIVERY_DEFAULT_ENABLED = true;
 
 export interface WatchConfig {
 	intervalMs: number;
+	/** The hysteresis ACTIVE cadence (the delivery round): the delay re-armed
+	 *  while the last tick observed live work; intervalMs stays the idle
+	 *  cadence. Floor 250 ms, default 1 s. */
+	activeIntervalMs: number;
 	settleGateMs: number;
 	/** worker-stale threshold (default 30 min, floor 60 s). */
 	staleAfterMs: number;
@@ -163,6 +176,7 @@ function readDelegateConfig(): Record<string, unknown> | null {
 export function resolveWatchConfig(): WatchConfig {
 	const fallback: WatchConfig = {
 		intervalMs: WATCH_DEFAULT_INTERVAL_MS,
+		activeIntervalMs: WATCH_DEFAULT_ACTIVE_INTERVAL_MS,
 		settleGateMs: WATCH_DEFAULT_SETTLE_GATE_MS,
 		staleAfterMs: WATCH_DEFAULT_STALE_AFTER_MS,
 		releaseOn: "started",
@@ -221,8 +235,18 @@ export function resolveWatchConfig(): WatchConfig {
 				warnBadDurableDelivery(w.durableDelivery);
 			}
 		}
+		// Hysteresis cadence pair: the ACTIVE cadence must never be SLOWER than
+		// the idle one — a resolved activeIntervalMs above intervalMs is a
+		// misconfiguration; clamp to the idle interval and warn once (the
+		// degenerate result is a fixed cadence — the safe direction; the tick
+		// then behaves exactly like the pre-hysteresis model).
+		const intervalMs = num(w.intervalMs, fallback.intervalMs, WATCH_MIN_INTERVAL_MS);
+		const activeResolved = num(w.activeIntervalMs, fallback.activeIntervalMs, WATCH_MIN_ACTIVE_INTERVAL_MS);
+		const activeIntervalMs = Math.min(activeResolved, intervalMs);
+		if (activeResolved > intervalMs) warnClampedActiveInterval(activeResolved, intervalMs);
 		return {
-			intervalMs: num(w.intervalMs, fallback.intervalMs, WATCH_MIN_INTERVAL_MS),
+			intervalMs,
+			activeIntervalMs,
 			settleGateMs: num(w.settleGateMs, fallback.settleGateMs, 1),
 			staleAfterMs: num(w.staleAfterMs, fallback.staleAfterMs, WATCH_MIN_STALE_AFTER_MS),
 			// Whitelist the explicit opt-out; everything else (missing, garbage)
@@ -246,6 +270,17 @@ function warnBadRetireTtl(v: unknown): void {
 	uiLog(
 		`[pi-delegate watch] bad watch.retireTtlMs (${JSON.stringify(v) ?? "undefined"}) — ` +
 			`using the default ${RETIRE_DEFAULT_TTL_MS} ms`,
+	);
+}
+
+/** Warn-once flag for a clamped hysteresis pair — once per process. */
+let activeIntervalClampWarned = false;
+function warnClampedActiveInterval(active: number, idle: number): void {
+	if (activeIntervalClampWarned) return;
+	activeIntervalClampWarned = true;
+	uiLog(
+		`[pi-delegate watch] watch.activeIntervalMs (${active} ms) exceeds watch.intervalMs (${idle} ms) — ` +
+			`clamped to the idle interval (the active cadence must be faster)`,
 	);
 }
 

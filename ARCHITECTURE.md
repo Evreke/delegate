@@ -71,6 +71,17 @@ read-model edge.
 
 ## 1. The laws
 
+> **Status: DRAFT — binding priority lowered (operator decision, 2026-10-28).**
+> These laws were written ad hoc during the agent development phase. They record
+> working cautions from that phase; they do not pin operator intent. Treat each
+> law as a design input that a proposal must answer, not as a rule that blocks
+> one. A design may revise or retire a law when it states what the law protected
+> and how the replacement protects it.
+>
+> One exception stays binding: rules that trace to a filed field incident
+> (the threat catalog in §2, each incident in CHANGELOG) keep their force until
+> the operator retires them by decision.
+
 ### Law 1 — The platform is the API. Import, never reimplement.
 
 pi is not a passive host; it is a library with exports. Before writing any

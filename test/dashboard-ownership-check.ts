@@ -246,6 +246,7 @@ async function main(): Promise<void> {
 			eventsForWorker: () => [],
 			count: () => rows.length,
 			dbSizeBytes: () => 0,
+			kindStats: () => [],
 			close: () => {},
 		};
 		const table = createRouteTable({ journal: fakeJournal, pollMs: 30 });

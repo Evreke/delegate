@@ -54,7 +54,7 @@ import {
 import { watcherKeyFor, type StampLayerCacheEntry } from "./watch-store.ts";
 import { createJournalReader, type JournalEvent, type JournalReader } from "./swarm/journal-read.ts";
 import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from "./swarm/storage.ts";
-import { WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
+import { WATCH_DEFAULT_ACTIVE_INTERVAL_MS, WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
 import { sameSessionPath } from "./watch-role.ts";
 // Wave 4 item 5 (reliability finding 10): per-mount caches for the tick's
 // satellite reads — the caller-held closures Law 3 wants (no module globals).
@@ -152,6 +152,42 @@ export function formatWakeUpAuditLine(events: WatchEvent[], wakes: DueWake[] = [
 	return `wake-up sent: ${events.length} event(s)${scheduled} — ${content}`;
 }
 
+/**
+ * Audit line for the wake-latency trial (design-queue-delivery §6.5).
+ * <p>
+ * ONE line per REAL send: the moment this tick began to observe the fleet
+ * (the detection stamp) and the moment the send was confirmed. The operator
+ * compares tick-cadence latency vs a future edge delivery path from the
+ * audit lines alone — this is the trial instrument for the swarm.delivery
+ * decision. Always-on by design: one line per wake batch, the same
+ * audit-file idiom as formatWakeUpAuditLine (routine lines reach the audit
+ * file, never the console). Silent mode and a failed send have their own
+ * lines and never reach this formatter — no real send, no latency line.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: detectedAtMs — the tick's detection stamp (Date.now() at tick
+ *   start, before the snapshot); sentAtMs — the send-confirmation stamp;
+ *   events/wakes — the really-sent batch (the self-describing tail)
+ * Output: one line, e.g.
+ *   `wake-up latency: detected 2026-09-06T12:00:00.000Z → sent 2026-09-06T12:00:10.000Z (10000 ms) — 2 event(s) + 1 scheduled`
+ * Guarantees: pure formatting; no I/O; the delta renders as sent−detected
+ *   (≥ 0 on a monotonic clock; never clamped — a clock skew must stay
+ *   visible in the audit, not hide behind a floor)
+ * Raises: never
+ */
+export function formatWakeLatencyAuditLine(
+	detectedAtMs: number,
+	sentAtMs: number,
+	events: WatchEvent[],
+	wakes: DueWake[] = [],
+): string {
+	const scheduled = wakes.length > 0 ? ` + ${wakes.length} scheduled` : "";
+	return (
+		`wake-up latency: detected ${new Date(detectedAtMs).toISOString()} → sent ${new Date(sentAtMs).toISOString()} ` +
+		`(${sentAtMs - detectedAtMs} ms) — ${events.length} event(s)${scheduled}`
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Watcher loop
 // ---------------------------------------------------------------------------
@@ -166,6 +202,11 @@ export interface WatcherDeps {
 	 *  "sent"). The durable commit happens ONLY for a real send. */
 	send: (text: string) => SendOutcome | void | Promise<SendOutcome | void>;
 	intervalMs?: number;
+	/** The hysteresis ACTIVE cadence (the delivery round): the delay re-armed
+	 *  while the last tick observed live work (a worker whose herdr status is
+	 *  working or blocked). Default WATCH_DEFAULT_ACTIVE_INTERVAL_MS; the idle
+	 *  cadence stays intervalMs. Tests inject both. */
+	activeIntervalMs?: number;
 	self?: SelfIdentity;
 	detect?: DetectOptions;
 	/** Journal-cursor dedup (default TRUE — watch.durableDelivery): after a
@@ -182,14 +223,15 @@ export interface WatcherDeps {
 		dir: string,
 		entries: ReadonlyArray<{ worker: string; kind: string; fingerprint: string }>,
 	) => Promise<void>;
-	/** Journal read seam (issue #26): the cursor source. Defaults to
-	 *  createJournalReader() (lazily opened on the first tick). The watcher
-	 *  reads `eventsAfter(cursor)` each tick and advances the cursor `seq` ONLY
-	 *  over rows of THIS audience's live fleets (session_id + task); foreign-
-	 *  fleet rows never move it. A throwing reader SKIPS the tick (advisory,
-	 *  Law 8) and can never affect a spawn or collect. `null` disables the read
-	 *  entirely (tests without a journal). */
-	journal?: { eventsAfter(cursor: number): JournalEvent[] } | null;
+	/** Journal read seam (issue #26; PER-TASK since the shard layout): the
+	 *  cursor source. Defaults to createJournalReader() (lazily opened on the
+	 *  first tick). The watcher reads each live fleet's shard
+	 *  `eventsAfter(cursor, { sessionId, task })` each tick and advances that
+	 *  task dir's cursor `seq` ONLY over rows of THIS audience's live fleets
+	 *  (session_id + task); foreign-fleet rows never move it. A throwing
+	 *  reader SKIPS the tick (advisory, Law 8) and can never affect a spawn or
+	 *  collect. `null` disables the read entirely (tests without a journal). */
+	journal?: { eventsAfter(cursor: number, query?: { sessionId?: string; task?: string }): JournalEvent[] } | null;
 	/** Scheduled-wake source (issue #10, stage A): the ONE new event source of
 	 *  the tick. Every tick asks it for due, not-yet-delivered wakes and folds
 	 *  them into the SAME guarded send as the event batch; only a successful
@@ -211,6 +253,12 @@ export interface WatcherHandle {
 	/** One poll+deliver cycle — exposed so tests drive it without timers. */
 	tick: () => Promise<WatchEvent[]>;
 	stop: () => void;
+	/** The hysteresis test seam (read-only): the delay the CURRENT pending
+	 *  re-arm was created with (activeIntervalMs while the last tick observed
+	 *  live work, intervalMs otherwise), or null when stopped / no timer
+	 *  pending. Lets checks assert the two-speed cadence without real-timer
+	 *  races. */
+	armedDelayMs: () => number | null;
 }
 
 // Wave 3 decomposition (step 4): errText moved to src/tool-result.ts (the
@@ -269,10 +317,13 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
 	// Journal read (issue #26): lazily opened on the first tick so a watcher
 	// mount never touches the journal before it polls. `undefined` = not yet
 	// resolved; `null` = explicitly disabled (deps.journal === null).
-	let journalReader: { eventsAfter(cursor: number): JournalEvent[] } | null | undefined =
-		deps.journal === null ? null : deps.journal;
+	let journalReader: {
+		eventsAfter(cursor: number, query?: { sessionId?: string; task?: string }): JournalEvent[];
+	} | null | undefined = deps.journal === null ? null : deps.journal;
 	const ownsJournalReader = deps.journal === undefined;
-	function journalFor(): { eventsAfter(cursor: number): JournalEvent[] } | null {
+	function journalFor(): {
+		eventsAfter(cursor: number, query?: { sessionId?: string; task?: string }): JournalEvent[];
+	} | null {
 		if (journalReader !== undefined) return journalReader;
 		try {
 			journalReader = createJournalReader();
@@ -286,7 +337,7 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
 	// foreign fleets are read (one cursor read) but never advance this
 	// audience's cursor and never fold owner fields.
 	let swarmCfg: SwarmStorageConfig | undefined;
-	const fleetKeyFor = (dir: string): string => {
+	const swarmCfgFor = (): SwarmStorageConfig => {
 		if (swarmCfg === undefined) {
 			try {
 				swarmCfg = resolveSwarmStorage();
@@ -294,8 +345,10 @@ export function createWatcher(deps: WatcherDeps): WatcherHandle {
 				swarmCfg = { storage: "files", projection: true, warnings: [] };
 			}
 		}
-		return `${swarmSessionIdFor(dir, swarmCfg)}\u0000${basename(dir)}`;
+		return swarmCfg;
 	};
+	const fleetSessionIdFor = (dir: string): string => swarmSessionIdFor(dir, swarmCfgFor());
+	const fleetKeyFor = (dir: string): string => `${fleetSessionIdFor(dir)}\u0000${basename(dir)}`;
 	// Content cache of this audience's cursor files, keyed by task dir, kept
 	// fresh by the file's mtime: a tick re-reads a dir's cursor only when its
 	// mtime moved (or the cache was invalidated by this mount's own write).
@@ -469,12 +522,26 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 
 	const tick = async (): Promise<WatchEvent[]> => {
 		if (stopped) return [];
+		// Wake-latency trial (design-queue-delivery §6.5): the detection stamp —
+		// the moment this tick began to observe the fleet. The snapshot and the
+		// detection reads run within this tick; the send-success audit line
+		// below reports the detected→sent latency from this stamp.
+		const detectedAtMs = Date.now();
 		let events: WatchEvent[];
 		let leafWorker = false;
 		let snapOrNull: WatchSnapshot | null = null;
+		// The hysteresis verdict for the NEXT arm: live work observed this tick.
+		// Reset first — a tick that cannot observe the fleet (a thrown snapshot)
+		// counts as idle (fast-polling cannot help there).
+		fleetLive = false;
 		try {
 			snapOrNull = deps.snapshot ? await deps.snapshot() : await collectSnapshot(deps.transport, deps.self ?? {}, Date.now(), stampLayerCache);
 			const snap = snapOrNull;
+			// Hysteresis (the delivery round): any worker actively consuming a
+			// turn (herdr status working or blocked) → the next arm is fast.
+			// An unknown status (herdr unreachable) is NOT live — same rule as
+			// worker-dead's suppression (statuses unknown ≠ dead).
+			fleetLive = snap.workers.some((w) => w.status === "working" || w.status === "blocked");
 			// §23 retire pass — BEFORE event delivery and fully guarded: a stamp/
 			// teardown failure is logged and retried next tick; it can never affect
 			// spawn/collect outcomes or this tick's wake-ups.
@@ -533,28 +600,36 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// (they may belong to another session's audience). The global last seq
 		// is only the migration fallback when NO fleet is live (nothing commits
 		// on a quiet tick anyway).
-		let journalSeqNow = 0;
+		// Journal cursor read (issue #26, tick step 3; PER-TASK since the shard
+		// layout): each live fleet's shard is read with THAT task dir's cursor
+		// position — `eventsAfter(cursor, { sessionId, task })` opens exactly one
+		// shard. The cursor `seq` is the per-audience, PER-TASK high-water mark
+		// persisted in the per-task-dir cursor files; the read is advisory — a
+		// THROWING reader (injected seam) skips the tick and can never affect a
+		// spawn or collect. The real reader is total (a missing/corrupt shard
+		// reads as no new rows), so this guard only fires on a genuinely broken
+		// seam. SCOPING: only rows of THIS audience's live fleet (session_id +
+		// task) advance that task dir's cursor — a foreign fleet's rows are never
+		// "consumed" here (they may belong to another session's audience).
+		const journalSeqByDir = new Map<string, number>();
 		if (durableEnabled) {
 			try {
 				const reader = journalFor();
 				if (reader !== null && snapOrNull !== null) {
-					const liveFleets = new Set<string>();
-					let baseSeq = 0;
 					for (const w of snapOrNull.workers) {
-						baseSeq = Math.max(baseSeq, storeCursorFor(w.dir).seq);
-						liveFleets.add(fleetKeyFor(w.dir));
+						if (journalSeqByDir.has(w.dir)) continue;
+						const cursor = storeCursorFor(w.dir);
+						const fleetKey = fleetKeyFor(w.dir);
+						const rows = reader.eventsAfter(cursor.seq, {
+							sessionId: fleetSessionIdFor(w.dir),
+							task: basename(w.dir),
+						});
+						let scopedSeq = cursor.seq;
+						for (const row of rows) {
+							if (`${row.sessionId}\u0000${row.task}` === fleetKey) scopedSeq = Math.max(scopedSeq, row.seq);
+						}
+						journalSeqByDir.set(w.dir, scopedSeq);
 					}
-					const rows = reader.eventsAfter(baseSeq);
-					let scopedSeq = baseSeq;
-					for (const row of rows) {
-						if (liveFleets.has(`${row.sessionId}\u0000${row.task}`)) scopedSeq = Math.max(scopedSeq, row.seq);
-					}
-					journalSeqNow =
-						liveFleets.size > 0
-							? scopedSeq
-							: rows.length > 0
-								? rows[rows.length - 1]!.seq
-								: baseSeq;
 				}
 			} catch (err) {
 				log(`tick skipped (journal read failed: ${errText(err)}) — advisory, no outcome affected`);
@@ -687,6 +762,12 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// line below then names the same batch). Silent mode and a failed send
 		// returned above with their own lines — never a third line here.
 		log(formatWakeUpAuditLine(events, dueWakes));
+		// Wake-latency trial (design-queue-delivery §6.5): ONE audit line per
+		// real send — the tick's detection stamp vs the send stamp. Always-on
+		// (one line per wake batch, the same audit-file idiom as the line
+		// above); the trial instrument for the swarm.delivery decision. No new
+		// machinery, no cadence change, no rows.
+		log(formatWakeLatencyAuditLine(detectedAtMs, Date.now(), events, dueWakes));
 		// Retire the delivered schedule runs — the in-memory analogue of the
 		// cursor commit below, and only on a REAL send: the `id#run` delivery key
 		// is recorded exactly once, so one run can never wake twice (issue #10).
@@ -712,8 +793,10 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 					} else {
 						// EXTERNAL_DEPENDENCY: the cursor file
 						// cursor-<watcherKey>.json in the task dir (watch-cursor.ts I/O).
-						// The journal `seq` read this tick advances the cursor.
-						await commitWatchCursor(dir, watcherKey, audienceSessionPath, entries, new Date().toISOString(), "sent", journalSeqNow);
+						// The journal `seq` read this tick advances the cursor — the
+						// PER-TASK position of this dir's shard (0 when the dir was
+						// never read this tick — no journal).
+						await commitWatchCursor(dir, watcherKey, audienceSessionPath, entries, new Date().toISOString(), "sent", journalSeqByDir.get(dir) ?? 0);
 					}
 					storeCache.delete(dir); // own write → the cached content is stale
 					for (const e of entries) gcCandidates.set(`${dir}#${e.worker}`, { dir, worker: e.worker });
@@ -729,17 +812,32 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 	};
 
 	const intervalMs = deps.intervalMs ?? WATCH_DEFAULT_INTERVAL_MS;
-	const timer = setInterval(() => {
-		void tick();
-	}, intervalMs);
-	// Never keep a dying process alive for an advisory poller (bun/node differ on
-	// the timer shape — unref is optional on both).
-	(timer as unknown as { unref?: () => void }).unref?.();
+	const activeIntervalMs = deps.activeIntervalMs ?? WATCH_DEFAULT_ACTIVE_INTERVAL_MS;
+	// The hysteresis two-speed tick (the delivery round): the loop re-arms
+	// itself after every tick — with the ACTIVE cadence when the last tick
+	// observed live work (a worker whose herdr status is working or blocked;
+	// an unobservable fleet — a thrown snapshot or unknown statuses — counts
+	// as idle, fast-polling cannot help there), else with the idle cadence.
+	// The first arm waits the idle interval (today's behavior: no observation
+	// yet, no reason to hurry). Instant push delivery is explicitly DEFERRED
+	// (the brief's E3): the fast cadence bounds the reaction latency instead.
+	let fleetLive = false;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	const armNext = (): void => {
+		if (stopped) return;
+		timer = setTimeout(() => {
+			void tick().finally(armNext);
+		}, fleetLive ? activeIntervalMs : intervalMs);
+		// Never keep a dying process alive for an advisory poller (bun/node
+		// differ on the timer shape — unref is optional on both).
+		(timer as unknown as { unref?: () => void }).unref?.();
+	};
+	armNext();
 
 	const stop = (): void => {
 		if (stopped) return;
 		stopped = true;
-		clearInterval(timer);
+		if (timer !== null) clearTimeout(timer);
 		if (ownsJournalReader && journalReader !== null && journalReader !== undefined) {
 			try {
 				(journalReader as Partial<JournalReader>).close?.();
@@ -749,7 +847,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		}
 	};
 
-	return { tick, stop };
+	return { tick, stop, armedDelayMs: (): number | null => (stopped || timer === null ? null : fleetLive ? activeIntervalMs : intervalMs) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,6 +1125,9 @@ export function startWatcher(
 	const handle = createWatcher({
 		transport,
 		intervalMs: cfg.intervalMs,
+		// The hysteresis two-speed tick (the delivery round): the ACTIVE cadence
+		// threads from watch.activeIntervalMs (default 1 s, floor 250 ms).
+		activeIntervalMs: cfg.activeIntervalMs,
 		self: { sessionFile, cwd: ctx.cwd },
 		send: makeSender(pi),
 		// Scheduled wakes (issue #10): the session's store instance (created by

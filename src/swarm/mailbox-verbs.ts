@@ -30,20 +30,25 @@
  * Ordering: the envelope is written/published FIRST and the journal row is
  * appended AFTER (the `report` kind precedent — the journal never announces
  * an unpublished artifact). The journal append is advisory (Law 8): a failed
- * append is recorded and skipped, never a verb failure. The append runs under
- * the REAL storage mode (#69 operator ruling, 2026-09-25): in `files` mode
- * (Phase A, §4.1.3) no journal write happens at all, and the append failed
- * advisably means no row exists either way. The success envelope states HOW
- * the mutation confirms: `confirmation: "confirmed"` when the journal row is
- * durably appended (seq present), `"unavailable"` when no row exists to wait
- * for (files mode or an advisory append failure) — "delivered" rendered
- * honestly by the dashboard.
+ * append is recorded and skipped, never a verb failure. THE ONE LOUD
+ * EXCEPTION is the Law 7 version gate (C5): a FUTURE `user_version` refuses
+ * the append with the structured E_JOURNAL_VERSION failure — surfaced as a
+ * structured refusal outcome, never silently swallowed. The append runs under
+ * the REAL storage mode (#69 operator ruling, 2026-09-25); under the 1.19.0
+ * shadow (swarm.messageShadow, default true) the message kinds also write in
+ * files mode — advisory and envelope-silent (the `journal` field stays null
+ * and `confirmation` stays "unavailable", byte-identical to 1.18). The
+ * success envelope states HOW the mutation confirms: `confirmation:
+ * "confirmed"` when the journal row is durably appended (seq present),
+ * `"unavailable"` when no row exists to wait for (files mode or an advisory
+ * append failure) — "delivered" rendered honestly by the dashboard.
  *
  * Dependencies: ../host.ts (Transport type via ../mailbox-store.ts's
  * SteerTransport), ../watch-role.ts (the canonical ownership verdict),
  * ../mailbox-store.ts (the ONE posting core + archive), ./storage.ts (the
- * verb journal plumbing). No herdr adapter import (Law 4); no sqlite driver
- * import (the journal module family owns that seam).
+ * verb journal plumbing), ./result.ts (the loud-gate SwarmError). No herdr
+ * adapter import (Law 4); no sqlite driver import (the journal module family
+ * owns that seam).
  *
  * Critical invariants:
  *   - total: every path returns a structured outcome; a write/nudge failure
@@ -63,6 +68,7 @@ import {
 } from "../mailbox-store.ts";
 import { workerAudienceMatch, type OwnerFields, type SessionIdentity } from "../watch-role.ts";
 import { appendSwarmEvent, type SwarmJournalOutcome } from "./storage.ts";
+import { SwarmError } from "./result.ts";
 
 /** The manifest slice the ownership gate reads (untyped JSON at the edge). */
 export interface OrchestratorVerbManifest {
@@ -249,16 +255,34 @@ export async function runOrchestratorVerb(
 			: { text: req.text, via: deps.via };
 	const env = deps.env ?? process.env;
 	// #69 operator ruling (2026-09-25T09:40Z): the HTTP mutation path appends
-	// under the REAL `swarm.storage` mode. In `files` mode (Phase A) nothing is
-	// appended — the journal is not the truth store there, and a forced append
-	// would bypass §4.1.3. The envelope records the resulting honest state via
-	// `confirmation` instead (see below).
-	const journal = await appendSwarmEvent(
-		{ task: target.task, worker: req.worker, dir: target.dir },
-		req.kind,
-		payload,
-		env,
-	);
+	// under the REAL `swarm.storage` mode. In `files` mode (Phase A) the 1.19.0
+	// shadow (swarm.messageShadow) writes the message row out-of-band — the
+	// envelope still records null (envelope-silent). The envelope records the
+	// resulting honest state via `confirmation` instead (see below).
+	let journal: SwarmJournalOutcome | null;
+	try {
+		journal = await appendSwarmEvent(
+			{ task: target.task, worker: req.worker, dir: target.dir },
+			req.kind,
+			payload,
+			env,
+		);
+	} catch (err) {
+		// The loud Law 7 version gate (C5) is the ONE non-advisory append
+		// failure: a future user_version refuses the mutation structured — the
+		// a-file is already published, but the outcome reports the refusal
+		// honestly instead of pretending success. Any other escape renders as
+		// the advisory-safe E_SWARM_IO outcome (the total contract holds).
+		if (err instanceof SwarmError && err.code === "E_JOURNAL_VERSION") {
+			return { ok: false, code: err.code, message: err.message, hint: err.hint };
+		}
+		return {
+			ok: false,
+			code: "E_SWARM_IO",
+			message: `journal append failed: ${err instanceof Error ? err.message : String(err)}`,
+			hint: "The journal append is advisory; retry the mutation.",
+		};
+	}
 	// The journal append is advisory (Law 8) — the envelope is already
 	// published either way. "confirmed" only when a durable row exists to
 	// confirm against; "unavailable" is the honest answer in files mode (no

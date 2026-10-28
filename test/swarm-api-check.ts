@@ -191,13 +191,15 @@ function writeGoldenManifest(): void {
 // ---------------------------------------------------------------------------
 
 /** A1: everything byte-pinned except journal.dbSizeBytes (sqlite layout size —
- *  machine/bun dependent; type+range-pinned separately below). */
+ *  machine/bun dependent; type+range-pinned separately below). Re-frozen for
+ *  the 1.19.0 store core: the journal object gained the per-kind visibility
+ *  field `kinds` (additive — the §4 retention-visibility extension). */
 const GOLDEN_A1 =
-	'{"ok":true,"verb":"events","schemaVersion":1,"after":1,"events":[{"seq":2,"ts":"2026-06-01T00:00:00.000Z","kind":"progress","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"phase":"build","pct":50}},{"seq":3,"ts":"2026-06-01T00:00:00.000Z","kind":"ask","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"text":"which color?"}},{"seq":4,"ts":"2026-06-01T00:00:00.000Z","kind":"reconcile-summary","sessionId":"sess-alpha","task":"alpha-fleet","worker":null,"payload":{"lost":["w2"],"collectedBeforeLoss":0}}],"journal":{"count":4,"dbSizeBytes":DBSIZE}}';
+	'{"ok":true,"verb":"events","schemaVersion":1,"after":1,"events":[{"seq":2,"ts":"2026-06-01T00:00:00.000Z","kind":"progress","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"phase":"build","pct":50}},{"seq":3,"ts":"2026-06-01T00:00:00.000Z","kind":"ask","sessionId":"sess-alpha","task":"alpha-fleet","worker":"w1","payload":{"text":"which color?"}},{"seq":4,"ts":"2026-06-01T00:00:00.000Z","kind":"reconcile-summary","sessionId":"sess-alpha","task":"alpha-fleet","worker":null,"payload":{"lost":["w2"],"collectedBeforeLoss":0}}],"journal":{"count":4,"dbSizeBytes":DBSIZE,"kinds":[{"kind":"ask","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"},{"kind":"progress","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"},{"kind":"reconcile-summary","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"},{"kind":"spawn","count":1,"oldestTs":"2026-06-01T00:00:00.000Z"}]}}';
 
 /** A2: fully static — zero substitutions. */
 const GOLDEN_A2 =
-	'{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0}}';
+	'{"ok":true,"verb":"events","schemaVersion":1,"after":0,"events":[],"journal":{"count":0,"dbSizeBytes":0,"kinds":[]}}';
 
 /** A5: everything byte-pinned except the sandbox exchange-root path inside
  *  task.dir (mkdtemp isolation). */

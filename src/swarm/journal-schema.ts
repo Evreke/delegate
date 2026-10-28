@@ -2,8 +2,10 @@
  * MODULE_CONTRACT
  * journal-schema.ts — the Law 7 versioning module of the journal module family
  * (`src/swarm/journal*.ts`): the database version constant, the BYTE-PINNED v1
- * events DDL, the v2 side-tables DDL, and the ONE migration spelling shared by
- * the writer open and the compaction path.
+ * events DDL, the v2 side-tables DDL, the CLOSED KIND SET (the versioned
+ * contract's row vocabulary — moved here from journal.ts, Law 5: the schema
+ * module owns every versioned contract constant), and the ONE migration
+ * spelling shared by the writer open and the compaction path.
  *
  * Why a own file: Law 5 (the 400-line decomposition ledger). The schema is a
  * versioned CONTRACT — keeping it in one module makes the byte-pin reviewable
@@ -32,6 +34,99 @@ import type { JournalDb } from "./journal-driver.ts";
 import { openJournalDatabase } from "./journal-driver.ts";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+
+// ---------------------------------------------------------------------------
+// The closed kind set (§4.1.2) — new kinds only by addition, never rename
+// (moved verbatim from journal.ts — the kind set is part of the versioned
+// contract this module owns; journal.ts re-exports it so the ONE client
+// import surface stays journal.ts)
+// ---------------------------------------------------------------------------
+
+/** The closed v1 kinds (additive-only, §4.1.2): the issue's 11 plus
+ *  `reconcile-summary`, `compaction-marker`, and the #23 `report` addition
+ *  (payload = the validated report JSON verbatim). `termination-notice` /
+ *  `partial-report` are forward-compat (#15) before their producers land. */
+export const JOURNAL_KINDS = [
+	"spawn",
+	"stamp",
+	"collect",
+	"ask",
+	"answer",
+	"steer",
+	"progress",
+	"report",
+	"retire",
+	"dead-reboot",
+	"reconcile-summary",
+	"compaction-marker",
+	"termination-notice",
+	"partial-report",
+] as const;
+
+export type JournalKind = (typeof JOURNAL_KINDS)[number];
+
+const JOURNAL_KIND_SET: ReadonlySet<string> = new Set(JOURNAL_KINDS);
+
+export function isJournalKind(v: unknown): v is JournalKind {
+	return typeof v === "string" && JOURNAL_KIND_SET.has(v);
+}
+
+/** The closed MESSAGE kind subset (the store design §2): the four kinds whose
+ *  rows ARE messages — the shadow-write surface (`swarm.messageShadow`) and
+ *  the 1.20.0 truth flip ride exactly these. `report` stays reserved for the
+ *  report axis and is NEVER a message kind. */
+export const JOURNAL_MESSAGE_KINDS = ["ask", "answer", "steer", "progress"] as const;
+
+export type JournalMessageKind = (typeof JOURNAL_MESSAGE_KINDS)[number];
+
+const JOURNAL_MESSAGE_KIND_SET: ReadonlySet<string> = new Set(JOURNAL_MESSAGE_KINDS);
+
+export function isJournalMessageKind(v: unknown): v is JournalMessageKind {
+	return typeof v === "string" && JOURNAL_MESSAGE_KIND_SET.has(v);
+}
+
+// ---------------------------------------------------------------------------
+// Structured, never-throwing results (Law 8) — the writer's result vocabulary
+// (moved verbatim from journal.ts: part of the versioned contract surface)
+// ---------------------------------------------------------------------------
+
+/** Failure codes the writer can return. `E_JOURNAL_BUSY` means the bounded
+ *  retry budget was exhausted under cross-process contention.
+ *  `E_JOURNAL_VERSION` is the LOUD Law 7 gate (C5): the database carries a
+ *  FUTURE `user_version` — a newer build's schema. `E_JOURNAL_FORBIDDEN` is
+ *  the receipt writer-authority refusal (store design §3). */
+export type JournalFailureCode =
+	| "E_JOURNAL_KIND"
+	| "E_JOURNAL_BUSY"
+	| "E_JOURNAL_WRITE"
+	| "E_JOURNAL_OPEN"
+	| "E_JOURNAL_VERSION"
+	| "E_JOURNAL_FORBIDDEN";
+
+export interface JournalSuccess {
+	ok: true;
+	/** The committed row's AUTOINCREMENT seq — the durable cursor for readers. */
+	seq: number;
+}
+
+export interface JournalFailure {
+	ok: false;
+	code: JournalFailureCode;
+	error: string;
+	attempts: number;
+}
+
+export type JournalAppendResult = JournalSuccess | JournalFailure;
+
+/** A lifecycle fact to append. `worker` is NULL/absent on fleet-scoped events;
+ *  `payload` is the kind-shaped JSON contract object (additive-only after v1). */
+export interface JournalAppendInput {
+	kind: JournalKind;
+	sessionId: string;
+	task: string;
+	worker?: string | null;
+	payload?: unknown;
+}
 
 /** Database schema version (Law 7). Absent (0) or 1 migrates to 2; ABOVE
  *  this a future version writers refuse LOUDLY (E_JOURNAL_VERSION), readers

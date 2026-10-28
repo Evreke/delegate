@@ -81,7 +81,7 @@ export function parseAfterCursor(raw: string | undefined): number {
 export function runEvents(parsed: ParsedArgs, env: NodeJS.ProcessEnv = process.env): void {
 	const cursor = parseAfterCursor(flagStr(parsed, "after"));
 	const cfg = resolveSwarmStorage(env);
-	const { reader, cleanup } = withJournalCopy(cfg.dbPath);
+	const { reader, cleanup } = withJournalCopy({ dbPath: cfg.dbPath });
 	try {
 		emitSuccess("events", {
 			schemaVersion: SWARM_EVENTS_SCHEMA_VERSION,

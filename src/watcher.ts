@@ -152,6 +152,42 @@ export function formatWakeUpAuditLine(events: WatchEvent[], wakes: DueWake[] = [
 	return `wake-up sent: ${events.length} event(s)${scheduled} — ${content}`;
 }
 
+/**
+ * Audit line for the wake-latency trial (design-queue-delivery §6.5).
+ * <p>
+ * ONE line per REAL send: the moment this tick began to observe the fleet
+ * (the detection stamp) and the moment the send was confirmed. The operator
+ * compares tick-cadence latency vs a future edge delivery path from the
+ * audit lines alone — this is the trial instrument for the swarm.delivery
+ * decision. Always-on by design: one line per wake batch, the same
+ * audit-file idiom as formatWakeUpAuditLine (routine lines reach the audit
+ * file, never the console). Silent mode and a failed send have their own
+ * lines and never reach this formatter — no real send, no latency line.
+ * <p>
+ * FUNCTION_CONTRACT:
+ * Input: detectedAtMs — the tick's detection stamp (Date.now() at tick
+ *   start, before the snapshot); sentAtMs — the send-confirmation stamp;
+ *   events/wakes — the really-sent batch (the self-describing tail)
+ * Output: one line, e.g.
+ *   `wake-up latency: detected 2026-09-06T12:00:00.000Z → sent 2026-09-06T12:00:10.000Z (10000 ms) — 2 event(s) + 1 scheduled`
+ * Guarantees: pure formatting; no I/O; the delta renders as sent−detected
+ *   (≥ 0 on a monotonic clock; never clamped — a clock skew must stay
+ *   visible in the audit, not hide behind a floor)
+ * Raises: never
+ */
+export function formatWakeLatencyAuditLine(
+	detectedAtMs: number,
+	sentAtMs: number,
+	events: WatchEvent[],
+	wakes: DueWake[] = [],
+): string {
+	const scheduled = wakes.length > 0 ? ` + ${wakes.length} scheduled` : "";
+	return (
+		`wake-up latency: detected ${new Date(detectedAtMs).toISOString()} → sent ${new Date(sentAtMs).toISOString()} ` +
+		`(${sentAtMs - detectedAtMs} ms) — ${events.length} event(s)${scheduled}`
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Watcher loop
 // ---------------------------------------------------------------------------
@@ -469,6 +505,11 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 
 	const tick = async (): Promise<WatchEvent[]> => {
 		if (stopped) return [];
+		// Wake-latency trial (design-queue-delivery §6.5): the detection stamp —
+		// the moment this tick began to observe the fleet. The snapshot and the
+		// detection reads run within this tick; the send-success audit line
+		// below reports the detected→sent latency from this stamp.
+		const detectedAtMs = Date.now();
 		let events: WatchEvent[];
 		let leafWorker = false;
 		let snapOrNull: WatchSnapshot | null = null;
@@ -687,6 +728,12 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		// line below then names the same batch). Silent mode and a failed send
 		// returned above with their own lines — never a third line here.
 		log(formatWakeUpAuditLine(events, dueWakes));
+		// Wake-latency trial (design-queue-delivery §6.5): ONE audit line per
+		// real send — the tick's detection stamp vs the send stamp. Always-on
+		// (one line per wake batch, the same audit-file idiom as the line
+		// above); the trial instrument for the swarm.delivery decision. No new
+		// machinery, no cadence change, no rows.
+		log(formatWakeLatencyAuditLine(detectedAtMs, Date.now(), events, dueWakes));
 		// Retire the delivered schedule runs — the in-memory analogue of the
 		// cursor commit below, and only on a REAL send: the `id#run` delivery key
 		// is recorded exactly once, so one run can never wake twice (issue #10).

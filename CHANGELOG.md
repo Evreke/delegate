@@ -44,6 +44,25 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   range, never guesses. Pinned by the new `test/swarm-store-core-check.ts`
   (receipt API, loud gate, shadow advisory + envelope silence, compaction
   refusals, visibility) and the extended `test/journal-check.ts`.
+- **Every wake kind declares its reaction class (the P2 safety gate).**
+  `wakeReactionClass` in `src/watch-detect.ts` maps the closed
+  `WatchEventKind` set to `read-only`, `idempotent` or
+  `consume-once-acked` in an exhaustive switch with no default clause: a
+  new kind without a declared reaction fails typecheck instead of
+  defaulting silently. The map documents the known classifications with
+  their anchors (the collect re-stamp refusal, the release-ACK teardown,
+  the restating steers). Pinned by `test/watch-reaction-map-check.ts`
+  (M1/M2), including the ack-before-advance ordering for the consume-once
+  kinds.
+
+- **The wake-latency trial instrument.** Every real wake send logs ONE
+  audit line — `wake-up latency: detected <iso> → sent <iso> (<n> ms)` —
+  with the tick's detection stamp and the send stamp. Always-on (one line
+  per wake batch, the existing audit-file idiom). This is the trial
+  instrument for the `swarm.delivery` decision: the operator compares tick
+  cadence latency vs a future edge path from the audit lines alone. No new
+  machinery, no cadence change, no rows. Pinned by
+  `test/watch-reaction-map-check.ts` (M3).
 
 - **The skill-quality report gains an optional `liveVerdicts` section.**
   `test/skill/quality/build.ts` accepts `--live-traces <dir>`: given a

@@ -43,6 +43,7 @@ import {
 	type JournalReceiptInput,
 } from "../src/swarm/journal.ts";
 import { createJournalReader } from "../src/swarm/journal-read.ts";
+import { compactFleet } from "../src/swarm/journal-compact.ts";
 
 const watchdog = setTimeout(() => {
 	console.error("swarm-store-core-check WATCHDOG TIMEOUT");
@@ -426,6 +427,181 @@ function makeFutureVersionDb(dbPath: string): void {
 	check("S4.4 kindStats is tolerant: an absent database yields [] (never a throw)", empty);
 
 	rmSync(dirname(db), { recursive: true, force: true });
+}
+
+// ---------------------------------------------------------------------------
+// S3 — audience-scoped compaction (C6 + DP7)
+// ---------------------------------------------------------------------------
+
+{
+	const db = join(SANDBOX, "s3", "events.db");
+	const task = "compact-fleet";
+	const dir = join(EX, task);
+	const session = "sess-compact";
+	mkdirSync(dir, { recursive: true });
+
+	/** Seed a fleet's rows through the writer (terminal = with a collect row). */
+	async function seedFleet(fleetSession: string, terminal: boolean): Promise<void> {
+		const w = createJournalWriter({ dbPath: db, clock: FIXED_CLOCK });
+		const rows: Array<{ kind: "spawn" | "progress" | "collect" | "ask"; worker: string | null }> = [
+			{ kind: "spawn", worker: "w" },
+			{ kind: "progress", worker: "w" },
+			{ kind: "ask", worker: "w" },
+		];
+		if (terminal) rows.push({ kind: "collect", worker: "w" });
+		for (const r of rows) {
+			const res = await w.append({ kind: r.kind, sessionId: fleetSession, task, worker: r.worker, payload: {} });
+			if (!res.ok) throw new Error(`seed failed: ${res.code}`);
+		}
+		w.close();
+	}
+
+	/** The fleet's event-row count + the global side-table row counts (raw reads). */
+	function counts(fleetSession: string): { events: number; receipts: number; wakes: number; nullWakes: number; cursors: number } {
+		const raw = new Database(db);
+		const ev = raw.query("SELECT COUNT(*) AS c FROM events WHERE session_id = ? AND task = ?").get(fleetSession, task) as { c: number };
+		const rc = raw.query("SELECT COUNT(*) AS c FROM message_receipts").get() as { c: number };
+		const wf = raw.query("SELECT COUNT(*) AS c FROM wake_facts WHERE msg_seq IS NOT NULL").get() as { c: number };
+		const wfNull = raw.query("SELECT COUNT(*) AS c FROM wake_facts WHERE msg_seq IS NULL").get() as { c: number };
+		const cu = raw.query("SELECT COUNT(*) AS c FROM read_cursors").get() as { c: number };
+		raw.close();
+		return { events: Number(ev.c), receipts: Number(rc.c), wakes: Number(wf.c), nullWakes: Number(wfNull.c), cursors: Number(cu.c) };
+	}
+
+	/** Write the fleet's manifest fixture. */
+	function writeManifest(workers: Array<Record<string, unknown>>): void {
+		writeFileSync(join(dir, "manifest.json"), `${JSON.stringify({ schemaVersion: 1, task, dir, workers }, null, "\t")}\n`, "utf8");
+	}
+
+	await seedFleet(session, true);
+	// A second fleet in the SAME db: compaction must be fleet-scoped.
+	await seedFleet("sess-other", true);
+	// Side-table rows referencing the fleet's message rows (raw seeds — the
+	// wake/cursor writers land with the delivery axis).
+	{
+		const raw = new Database(db);
+		const seqs = (raw.query("SELECT seq FROM events WHERE session_id = ? AND task = ? ORDER BY seq").all(session, task) as Array<{ seq: number }>).map((r) => Number(r.seq));
+		raw.run("INSERT INTO message_receipts(msg_seq, audience_session, receipt, ts, writer_session) VALUES (?, ?, ?, ?, ?)", [seqs[2]!, "sess-aud", "sent", FIXED_TS, "sess-aud"]);
+		raw.run("INSERT INTO wake_facts(audience_session, task, worker, wake_kind, fingerprint, delivered_at, delivery_mode, msg_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ["sess-aud", task, "w", "report-ready", "fp1", FIXED_TS, "sent", seqs[0]!]);
+		raw.run("INSERT INTO wake_facts(audience_session, task, worker, wake_kind, fingerprint, delivered_at, delivery_mode, msg_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ["sess-aud", task, "w", "question", "fp2", FIXED_TS, "sent", null]);
+		raw.close();
+	}
+
+	// S3.1 — a live audience with an unconsumed range refuses (C6).
+	const liveConsole = join(SANDBOX, "s3-live.jsonl");
+	writeFileSync(liveConsole, "{}");
+	writeManifest([{ name: "w", orchestratorSessionPath: liveConsole, collectedAt: FIXED_TS }]);
+	{
+		const raw = new Database(db);
+		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [liveConsole, task, 1, FIXED_TS]);
+		raw.close();
+	}
+	const rLive = await compactFleet({ dbPath: db, sessionId: session, task, dir });
+	check(
+		"S3.1 a LIVE audience with unconsumed rows in the range refuses the range (E_COMPACT_LIVE_AUDIENCE), rows intact",
+		rLive.ok === false && rLive.code === "E_COMPACT_LIVE_AUDIENCE" && counts(session).events === 4,
+		JSON.stringify(rLive),
+	);
+
+	// S3.2 — the same live audience with cursor >= range end is deletable.
+	{
+		const raw = new Database(db);
+		const last = (raw.query("SELECT MAX(seq) AS m FROM events WHERE session_id = ? AND task = ?").get(session, task) as { m: number }).m;
+		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [liveConsole, task, Number(last), FIXED_TS]);
+		raw.close();
+	}
+	const rConsumed = await compactFleet({ dbPath: db, sessionId: session, task, dir });
+	check(
+		"S3.2 a live audience whose cursor consumed the range does not block compaction",
+		rConsumed.ok === true,
+		JSON.stringify(rConsumed),
+	);
+	check(
+		"S3.3 the compaction is fleet-scoped: the other fleet's rows survive; the compacted fleet keeps exactly its audit marker",
+		rConsumed.ok === true && counts(session).events === 1 && counts("sess-other").events === 4,
+		JSON.stringify({ after: counts(session), other: counts("sess-other") }),
+	);
+	check(
+		"S3.4 the cascade: the range's receipts + wake facts died with their messages; the NULL-msg_seq wake fact and the read cursor survive",
+		rConsumed.ok === true && counts(session).receipts === 0 && counts(session).wakes === 0 && counts(session).nullWakes === 1 && counts(session).cursors === 1,
+		JSON.stringify(counts(session)),
+	);
+	check(
+		"S3.5 the export was written before the delete and the audit marker appended after it",
+		rConsumed.ok === true && existsSync(rConsumed.exportedTo) && readFileSync(rConsumed.exportedTo, "utf8").trim().split("\n").length === 4 && "seq" in rConsumed.marker,
+		JSON.stringify({ exportedTo: rConsumed.ok ? rConsumed.exportedTo : null, marker: rConsumed.ok ? rConsumed.marker : null }),
+	);
+
+	// S3.6 — a non-terminal fleet refuses (DP7 all-terminal rule).
+	await seedFleet("sess-open", false);
+	const rOpen = await compactFleet({ dbPath: db, sessionId: "sess-open", task, dir });
+	check(
+		"S3.6 a fleet with a non-terminal worker refuses the range (E_COMPACT_UNTERMINAL), rows intact",
+		rOpen.ok === false && rOpen.code === "E_COMPACT_UNTERMINAL" && counts("sess-open").events === 3,
+		JSON.stringify(rOpen),
+	);
+
+	// S3.7 — a DEAD audience (session JSONL gone, no manifest ownership) is deletable.
+	// The live console from S3.1/S3.2 closes first (its JSONL is removed) — a
+	// live console blocking compaction is the CORRECT conservative refusal.
+	rmSync(liveConsole, { force: true });
+	{
+		const raw = new Database(db);
+		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [join(SANDBOX, "gone.jsonl"), task, 1, FIXED_TS]);
+		raw.close();
+	}
+	writeManifest([]);
+	const rDead = await compactFleet({ dbPath: db, sessionId: "sess-other", task, dir });
+	check(
+		"S3.7 a dead audience (session JSONL gone, no live fleet) is deletable — the fleet keeps its audit marker",
+		rDead.ok === true && counts("sess-other").events === 1,
+		JSON.stringify(rDead),
+	);
+
+	// S3.8 — an unhealthy manifest snapshot refuses when audiences exist (the
+	// extended healthy-snapshot guard — never guess).
+	await seedFleet("sess-guard", true);
+	writeFileSync(join(dir, "manifest.json"), "{corrupt json", "utf8");
+	const rGuard = await compactFleet({ dbPath: db, sessionId: "sess-guard", task, dir });
+	check(
+		"S3.8 an unclassifiable audience (corrupt manifest) refuses the range (E_COMPACT_UNCLASSIFIABLE)",
+		rGuard.ok === false && rGuard.code === "E_COMPACT_UNCLASSIFIABLE" && counts("sess-guard").events === 4,
+		JSON.stringify(rGuard),
+	);
+
+	// S3.9 — a JSONL-gone audience the manifest still shows owning a
+	// non-terminal worker is NOT provably dead → refuse. (The audience must
+	// hold side-table rows to be in the classified set.)
+	const goneOwner = join(SANDBOX, "gone-owner.jsonl");
+	{
+		const raw = new Database(db);
+		raw.run("INSERT OR REPLACE INTO read_cursors(audience_session, task, seq, updated_at) VALUES (?, ?, ?, ?)", [goneOwner, task, 1, FIXED_TS]);
+		raw.close();
+	}
+	writeManifest([{ name: "w", orchestratorSessionPath: goneOwner }]);
+	const rGhost = await compactFleet({ dbPath: db, sessionId: "sess-guard", task, dir });
+	check(
+		"S3.9 a JSONL-gone audience still owning a manifest worker without a terminal stamp refuses (never guess)",
+		rGhost.ok === false && rGhost.code === "E_COMPACT_LIVE_AUDIENCE",
+		JSON.stringify(rGhost),
+	);
+
+	// S3.10 — a future-version database refuses (loud, operator-facing).
+	const futureDb = join(SANDBOX, "s3-future", "events.db");
+	makeFutureVersionDb(futureDb);
+	const rVersion = await compactFleet({ dbPath: futureDb, sessionId: session, task, dir });
+	check(
+		"S3.10 a future user_version refuses compaction (E_COMPACT_VERSION)",
+		rVersion.ok === false && rVersion.code === "E_COMPACT_VERSION",
+		JSON.stringify(rVersion),
+	);
+
+	// S3.11 — an empty fleet refuses (nothing to compact).
+	const rEmpty = await compactFleet({ dbPath: db, sessionId: "sess-none", task, dir });
+	check("S3.11 a fleet with no rows refuses E_COMPACT_EMPTY", rEmpty.ok === false && rEmpty.code === "E_COMPACT_EMPTY", JSON.stringify(rEmpty));
+
+	rmSync(join(SANDBOX, "s3"), { recursive: true, force: true });
+	rmSync(join(SANDBOX, "s3-future"), { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------

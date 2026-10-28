@@ -360,13 +360,27 @@ check(
 	const readerSrc = stripComments(readFileSync(resolve(ROOT, "src/swarm/journal-read.ts"), "utf8"));
 	const writeVerb = /\b(UPDATE|DELETE)\b/i;
 	check(
-		"J6.1 the writer module contains no UPDATE/DELETE statement (compaction deferred)",
+		"J6.1 the writer module contains no UPDATE/DELETE statement (the append protocol stays append-only)",
 		!writeVerb.test(writerSrc),
 		(writerSrc.match(writeVerb) ?? []).join(","),
 	);
 	check(
 		"J6.2 the reader module contains no INSERT/UPDATE/DELETE statement",
 		!/\b(INSERT|UPDATE|DELETE)\b/i.test(readerSrc),
+	);
+	// The compaction path LANDED (the store core): it is the family's ONE
+	// DELETE site, confined to its own file (journal-compact.ts).
+	const familyFiles = ["journal.ts", "journal-schema.ts", "journal-retry.ts", "journal-receipt.ts", "journal-read.ts", "journal-copy.ts", "journal-compact.ts", "journal-manifest-store.ts"]
+		.map((f) => resolve(ROOT, "src/swarm", f))
+		.filter((f) => existsSync(f));
+	const deleteSites = familyFiles
+		.map((f) => ({ f, src: stripComments(readFileSync(f, "utf8")) }))
+		.filter(({ src }) => /\bDELETE\s+FROM\b/i.test(src))
+		.map(({ f }) => f);
+	check(
+		"J6.4 journal-compact.ts is the family's ONE DELETE site (compaction landed, confinement tested)",
+		existsSync(resolve(ROOT, "src/swarm/journal-compact.ts")) && deleteSites.length === 1 && deleteSites[0]!.endsWith("journal-compact.ts"),
+		deleteSites.map((f) => f.split("/").pop()).join(","),
 	);
 	const reader = createJournalReader({ dbPath: DB });
 	const writerKeys = Object.keys(writer);

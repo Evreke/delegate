@@ -54,7 +54,7 @@ import {
 import { watcherKeyFor, type StampLayerCacheEntry } from "./watch-store.ts";
 import { createJournalReader, type JournalEvent, type JournalReader } from "./swarm/journal-read.ts";
 import { resolveSwarmStorage, swarmSessionIdFor, type SwarmStorageConfig } from "./swarm/storage.ts";
-import { WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
+import { WATCH_DEFAULT_ACTIVE_INTERVAL_MS, WATCH_DEFAULT_INTERVAL_MS, resolveWatchConfig } from "./watch-config.ts";
 import { sameSessionPath } from "./watch-role.ts";
 // Wave 4 item 5 (reliability finding 10): per-mount caches for the tick's
 // satellite reads — the caller-held closures Law 3 wants (no module globals).
@@ -202,6 +202,11 @@ export interface WatcherDeps {
 	 *  "sent"). The durable commit happens ONLY for a real send. */
 	send: (text: string) => SendOutcome | void | Promise<SendOutcome | void>;
 	intervalMs?: number;
+	/** The hysteresis ACTIVE cadence (the delivery round): the delay re-armed
+	 *  while the last tick observed live work (a worker whose herdr status is
+	 *  working or blocked). Default WATCH_DEFAULT_ACTIVE_INTERVAL_MS; the idle
+	 *  cadence stays intervalMs. Tests inject both. */
+	activeIntervalMs?: number;
 	self?: SelfIdentity;
 	detect?: DetectOptions;
 	/** Journal-cursor dedup (default TRUE — watch.durableDelivery): after a
@@ -248,6 +253,12 @@ export interface WatcherHandle {
 	/** One poll+deliver cycle — exposed so tests drive it without timers. */
 	tick: () => Promise<WatchEvent[]>;
 	stop: () => void;
+	/** The hysteresis test seam (read-only): the delay the CURRENT pending
+	 *  re-arm was created with (activeIntervalMs while the last tick observed
+	 *  live work, intervalMs otherwise), or null when stopped / no timer
+	 *  pending. Lets checks assert the two-speed cadence without real-timer
+	 *  races. */
+	armedDelayMs: () => number | null;
 }
 
 // Wave 3 decomposition (step 4): errText moved to src/tool-result.ts (the
@@ -519,9 +530,18 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		let events: WatchEvent[];
 		let leafWorker = false;
 		let snapOrNull: WatchSnapshot | null = null;
+		// The hysteresis verdict for the NEXT arm: live work observed this tick.
+		// Reset first — a tick that cannot observe the fleet (a thrown snapshot)
+		// counts as idle (fast-polling cannot help there).
+		fleetLive = false;
 		try {
 			snapOrNull = deps.snapshot ? await deps.snapshot() : await collectSnapshot(deps.transport, deps.self ?? {}, Date.now(), stampLayerCache);
 			const snap = snapOrNull;
+			// Hysteresis (the delivery round): any worker actively consuming a
+			// turn (herdr status working or blocked) → the next arm is fast.
+			// An unknown status (herdr unreachable) is NOT live — same rule as
+			// worker-dead's suppression (statuses unknown ≠ dead).
+			fleetLive = snap.workers.some((w) => w.status === "working" || w.status === "blocked");
 			// §23 retire pass — BEFORE event delivery and fully guarded: a stamp/
 			// teardown failure is logged and retried next tick; it can never affect
 			// spawn/collect outcomes or this tick's wake-ups.
@@ -792,17 +812,32 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 	};
 
 	const intervalMs = deps.intervalMs ?? WATCH_DEFAULT_INTERVAL_MS;
-	const timer = setInterval(() => {
-		void tick();
-	}, intervalMs);
-	// Never keep a dying process alive for an advisory poller (bun/node differ on
-	// the timer shape — unref is optional on both).
-	(timer as unknown as { unref?: () => void }).unref?.();
+	const activeIntervalMs = deps.activeIntervalMs ?? WATCH_DEFAULT_ACTIVE_INTERVAL_MS;
+	// The hysteresis two-speed tick (the delivery round): the loop re-arms
+	// itself after every tick — with the ACTIVE cadence when the last tick
+	// observed live work (a worker whose herdr status is working or blocked;
+	// an unobservable fleet — a thrown snapshot or unknown statuses — counts
+	// as idle, fast-polling cannot help there), else with the idle cadence.
+	// The first arm waits the idle interval (today's behavior: no observation
+	// yet, no reason to hurry). Instant push delivery is explicitly DEFERRED
+	// (the brief's E3): the fast cadence bounds the reaction latency instead.
+	let fleetLive = false;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	const armNext = (): void => {
+		if (stopped) return;
+		timer = setTimeout(() => {
+			void tick().finally(armNext);
+		}, fleetLive ? activeIntervalMs : intervalMs);
+		// Never keep a dying process alive for an advisory poller (bun/node
+		// differ on the timer shape — unref is optional on both).
+		(timer as unknown as { unref?: () => void }).unref?.();
+	};
+	armNext();
 
 	const stop = (): void => {
 		if (stopped) return;
 		stopped = true;
-		clearInterval(timer);
+		if (timer !== null) clearTimeout(timer);
 		if (ownsJournalReader && journalReader !== null && journalReader !== undefined) {
 			try {
 				(journalReader as Partial<JournalReader>).close?.();
@@ -812,7 +847,7 @@ function steerText(w: { reportPath?: string }, e: WatchEvent): string {
 		}
 	};
 
-	return { tick, stop };
+	return { tick, stop, armedDelayMs: (): number | null => (stopped || timer === null ? null : fleetLive ? activeIntervalMs : intervalMs) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1090,6 +1125,9 @@ export function startWatcher(
 	const handle = createWatcher({
 		transport,
 		intervalMs: cfg.intervalMs,
+		// The hysteresis two-speed tick (the delivery round): the ACTIVE cadence
+		// threads from watch.activeIntervalMs (default 1 s, floor 250 ms).
+		activeIntervalMs: cfg.activeIntervalMs,
 		self: { sessionFile, cwd: ctx.cwd },
 		send: makeSender(pi),
 		// Scheduled wakes (issue #10): the session's store instance (created by

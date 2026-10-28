@@ -2878,6 +2878,55 @@ const ownStore = (dir: string, sessionFile: string = TEST_SELF) =>
 	h5.stop();
 }
 
+// ---------------------------------------------------------------------------
+// W24. The hysteresis two-speed tick (the delivery round): the loop re-arms
+// with the ACTIVE cadence while the last tick observed live work, else the
+// idle cadence; an unobservable fleet counts as idle. Instant push delivery
+// is explicitly DEFERRED — the fast cadence bounds the reaction latency.
+// ---------------------------------------------------------------------------
+
+{
+	const dir = taskDir("two-speed");
+	const w = mkWorker(dir, "w-speed");
+	let snap = snapshotFor([w], [LIVE("w-speed")]);
+	const handle = createWatcher({
+		transport: { listStatuses: async () => [LIVE("w-speed")] } as unknown as Transport,
+		intervalMs: 10_000,
+		activeIntervalMs: 250,
+		send: () => ({ delivered: true, mode: "sent" }),
+		snapshot: async () => snap,
+		self: { sessionFile: TEST_SELF },
+		detect: { legacyFailOpen: true },
+		log: () => {},
+	});
+	check("W24.1 before any tick the loop is armed with the IDLE interval (no observation yet)", handle.armedDelayMs() === 10_000, String(handle.armedDelayMs()));
+	await handle.tick();
+	check("W24.2 a tick that observed a working worker re-arms with the ACTIVE interval", handle.armedDelayMs() === 250, String(handle.armedDelayMs()));
+	snap = snapshotFor([w], [{ name: "w-speed", status: "done" }]);
+	await handle.tick();
+	check("W24.3 a tick whose workers are all settled re-arms with the IDLE interval", handle.armedDelayMs() === 10_000, String(handle.armedDelayMs()));
+	snap = snapshotFor([w], null); // statuses unknown (herdr unreachable)
+	await handle.tick();
+	check("W24.4 unknown statuses (herdr unreachable) count as IDLE — fast-polling cannot help", handle.armedDelayMs() === 10_000, String(handle.armedDelayMs()));
+	const boom = createWatcher({
+		transport: { listStatuses: async () => [] } as unknown as Transport,
+		intervalMs: 10_000,
+		activeIntervalMs: 250,
+		send: () => ({ delivered: true, mode: "sent" }),
+		snapshot: async () => {
+			throw new Error("herdr down");
+		},
+		self: { sessionFile: TEST_SELF },
+		log: () => {},
+	});
+	await boom.tick();
+	check("W24.5 a thrown snapshot counts as IDLE (the tick's catch resets the verdict)", boom.armedDelayMs() === 10_000, String(boom.armedDelayMs()));
+	boom.stop();
+	check("W24.6 stop() clears the pending re-arm (armedDelayMs reads null)", boom.armedDelayMs() === null, String(boom.armedDelayMs()));
+	handle.stop();
+	check("W24.7 stop() is idempotent and the second call changes nothing", handle.armedDelayMs() === null);
+}
+
 rmSync(FIX, { recursive: true, force: true });
 console.log(failures === 0 ? "\nALL WATCHER CHECKS PASSED" : `\n${failures} CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -68,6 +68,26 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   `test/watch-reaction-map-check.ts` (unread → wake, consumed → silent,
   re-arm on a new answer, terminal/collected gates, torn-file tolerance,
   the detectEvents dedupe + D1 reset legs).
+- **The hysteresis two-speed tick (the delivery round, store criticism C1
+  criterion (c); instant push delivery is explicitly DEFERRED).** The
+  watcher's fixed `setInterval` becomes a self-rearming chain: after every
+  tick the loop re-arms with the ACTIVE cadence (`watch.activeIntervalMs`,
+  default 1 s, floor 250 ms) when that tick observed live work (a worker
+  whose herdr status is working or blocked), else with the idle cadence
+  (`watch.intervalMs`, default 10 s — unchanged). An unobservable fleet
+  counts as idle (a thrown snapshot or unknown statuses — fast-polling
+  cannot help there; the same statuses-unknown-≠-dead rule as worker-dead).
+  The first arm waits the idle interval (no observation yet, no reason to
+  hurry). Effect: while a fleet works, report-land and answer-pending
+  reactions happen at ~1 s latency instead of waiting out the idle 10 s;
+  an idle fleet costs exactly what it cost before. The new read-only
+  `armedDelayMs()` handle seam exposes the pending re-arm delay so checks
+  assert the cadence without real-timer races. Pinned by the new W24 block
+  in `test/watcher-check.ts` (idle-first arm, working → active, settled →
+  idle, unknown statuses → idle, thrown snapshot → idle, stop clears the
+  timer, stop idempotent) and the P10b–P10d config legs in
+  `test/profile-check.ts` (default 1 s, in-range honored, below-floor
+  falls back).
 
 - **The durable message store lands its 1.19.0-shadow core.** The journal
   database gains schema v2: three side tables (`message_receipts`,

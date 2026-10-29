@@ -25,6 +25,7 @@ next action for the situation at the end. Reply with:
 3. If spawning: worker names, mode (worktree/shared/probe), and what each
    brief must contain (reference the B-sections, do not write full briefs).
 4. If not spawning: the direct route in 1-3 lines.
+Name only the route you take; do not enumerate follow-up options.
 Be concrete and short. Skill text:
 $(cat "$SKILL_PATH")"
 

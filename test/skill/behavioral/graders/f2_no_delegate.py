@@ -102,9 +102,18 @@ def get_assert(output, context=None):
         ok = pr and not brief_applied
         reason = f"F2 probe-direct: probe named={pr}, brief contract applied={brief_applied}"
     elif route == "outside-loop":
-        bc = bool(BRIEF_CONTRACT.search(text))
-        ok = not bc
-        reason = f"F2 outside-loop: B1-B7 contract applied={bc}"
+        # Negation-aware, same rule as probe-direct: 'no B1-B7 briefs' is a
+        # negation, not an application of the contract.
+        brief_applied = False
+        for sentence in re.split(r"(?<=[.!:])\s+|\n", text):
+            if not BRIEF_CONTRACT.search(sentence):
+                continue
+            if re.search(r"\bno\b|\bnot\b|forbid|without|exempt|MUST NOT"
+                         r"|instead of|role scripts", sentence, re.I):
+                continue
+            brief_applied = True
+        ok = not brief_applied
+        reason = f"F2 outside-loop: B1-B7 contract applied={brief_applied}"
     else:
         ok, reason = False, f"F2: unknown expected_route {route!r}"
 

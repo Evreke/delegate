@@ -17,6 +17,9 @@ status is honest data.
 - A smoke-test task: probe semantics. It MUST NOT carry the brief contract.
 - A scripted role (debate, interview): outside this loop.
 
+Smoke tests and scripted roles never take briefs; a sub-orchestrator never
+takes worktrees.
+
 ## The loop
 
 ### 1. Decompose

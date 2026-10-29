@@ -1,12 +1,12 @@
 {
 	"version": 1,
-	"generatedAt": "2026-10-29T10:31:41.302Z",
-	"gitRev": "bcade9b777dd4cf7179454782567e674d2d0ec19",
+	"generatedAt": "2026-10-29T11:48:24.733Z",
+	"gitRev": "d5275a42eb3140dafb6982106d9ea3e8994ce42b",
 	"inputs": {
 		"skillDir": "skills/delegate",
 		"fixture": "test/skill/tool-contract.json",
 		"scenariosDir": "test/skill/scenarios",
-		"before": "f73b1e5bcf4a6287d85e723b1bd0339ae84f4e5f"
+		"before": "a85ccf6ac434bb882637e192b982a05232a677eb"
 	},
 	"l0": {
 		"pass": true,
@@ -253,7 +253,7 @@
 			{
 				"path": "SKILL.md",
 				"status": "changed",
-				"deltaBytes": 277,
+				"deltaBytes": 93,
 				"deltaLines": 3
 			}
 		],
@@ -264,14 +264,14 @@
 			{
 				"file": "SKILL.md",
 				"metric": "bytes",
-				"actual": 5230,
+				"actual": 5323,
 				"budget": 6400,
 				"pass": true
 			},
 			{
 				"file": "SKILL.md",
 				"metric": "lines",
-				"actual": 125,
+				"actual": 128,
 				"budget": 160,
 				"pass": true
 			},

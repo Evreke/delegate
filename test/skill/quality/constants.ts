@@ -5,11 +5,12 @@
  *
  * MODULE_CONTRACT — owns (single source of truth, Law 9):
  *   - L1_THRESHOLD — the L1 alignment bar (issue #111 demands ≥ 90).
- *   - L4_BUDGETS — the L4 size budgets per skill file (bytes + lines), set
- *     with ~30 % headroom over the current text (delegate-v2 skill swap:
- *     SKILL 4836 B / 120 lines, BRIEF 2284 B / 71 lines) so the caps catch
- *     drift, not the current text. Changing a budget is a deliberate act
- *     recorded in this file alone.
+ *   - L4_BUDGETS — the L4 size budgets per skill file (bytes + lines), one
+ *     entry per skill file: SKILL.md, REFERENCE.md and BRIEF.md (three
+ *     entries since the delegate-v2 skill swap added BRIEF.md), set with
+ *     ~30 % headroom over the current text so the caps catch drift, not the
+ *     current text. Changing a budget is a deliberate act recorded in this
+ *     file alone.
  *   - Q_WEIGHTS — the composite formula weights, summing to exactly 1:
  *     Q = 0.25·L1 + 0.35·L2 + 0.20·L3_norm + 0.20·L4_norm; L0 fail ⇒ Q = 0.
  *   - Q_BANDS + qBand() — verdict bands: Q ≥ 90 "ship", 80–89.99 "debt",

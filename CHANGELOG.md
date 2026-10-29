@@ -30,6 +30,15 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   5/7 routes correct, 1 flaky; two anchoring weaknesses surfaced
   (sub-orchestrator shared-placement red-line; smoke-test tasks still drawing
   the brief contract). Report committed with this change.
+  v2.3: the two F2 failures were traced to grader negation-blindness, not the
+  skill (the L0 P3 lesson re-learned: 'worktree placement is rejected' and
+  'no B1-B7' counted as prescriptions). f2_no_delegate.py is now
+  sentence-level negation-aware (proof pairs: negation passes, prescription
+  fails, both routes); SKILL.md gains the observable placement cue ('cwd
+  under a worktrees directory = sub-orchestrator; MUST place shared'), a
+  Route-first MUST on the probe negative, and the no-brief-file rule for
+  probe workers. Full F2 re-gate on v2.3: SHIP-OK — 7/7 routes correct
+  (4 flaky at majority 2/3 — run-to-run model variance, reported per case).
   Evals: the F3.1-F3.7 graders and a new F3.8 brief-contract grader
   (B1-B7 skeleton + language rules + B1 measurability; template and brief
   modes, red-proof bitten) landed in test/skill/language-graders/ behind the

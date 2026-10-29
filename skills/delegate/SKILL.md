@@ -14,7 +14,7 @@ status is honest data.
 ## Route first
 
 - Implementation, review, research, diagnosis, docs: the loop below.
-- A smoke-test task: probe semantics; no brief contract.
+- A smoke-test task: probe semantics. It MUST NOT carry the brief contract.
 - A scripted role (debate, interview): outside this loop.
 
 ## The loop
@@ -54,12 +54,14 @@ Done when: every brief follows BRIEF.md with all seven sections non-empty.
 
 Issue one delegate call per worker, in parallel. For a fan-out of three or more,
 run one probe worker first; its structured failure gates the rest. A probe worker
-uses the tool's probe semantics; it MUST NOT follow B1–B7.
+uses the tool's probe semantics; it MUST NOT follow B1–B7 and MUST NOT receive a
+brief file.
 
-Placement authority: a root orchestrator (cwd outside any worktree) grants
-worktree isolation. Sub-orchestrator workers share its checkout
-with disjoint file lists per brief. Read-only workers need no isolation; place
-them shared.
+Placement authority: a root orchestrator (cwd outside any worktrees directory)
+grants worktree isolation. If the cwd sits under a worktrees directory, you are
+a sub-orchestrator: you MUST place workers shared. Sub-orchestrator workers
+share the checkout with disjoint file lists per brief. Read-only workers need
+no isolation; place them shared.
 
 Done when: every planned worker is started or its failure triaged.
 

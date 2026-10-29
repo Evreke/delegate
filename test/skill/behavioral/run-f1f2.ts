@@ -81,14 +81,19 @@ const f1Rows: F1Row[] = [];
 
 for (const c of f2) {
 	const runs: { pass: boolean; reason: string }[] = [];
+	const raws: string[] = [];
 	for (let i = 0; i < repeat; i++) {
 		try {
 			const out = target(c.situation);
+			raws.push(out);
 			runs.push(pyGrader("f2_no_delegate.py", out, { expected_route: c.expected_route ?? "" }));
 		} catch (e: any) {
+			raws.push(`TARGET ERROR: ${e.message}`);
 			runs.push({ pass: false, reason: `target error: ${String(e.message).slice(0, 120)}` });
 		}
 	}
+	mkdirSync(join(REPORTS, `raw-${sha}`), { recursive: true });
+	writeFileSync(join(REPORTS, `raw-${sha}`, `${c.id}.md`), runs.map((r, i) => `## run ${i + 1} — ${r.pass ? "PASS" : "FAIL"}\n\n${raws[i]}\n`).join("\n"));
 	const passes = runs.filter((r) => r.pass).length;
 	const verdict = passes === runs.length ? "PASS" : passes === 0 ? "FAIL" : `PASS(flaky ${passes}/${runs.length})`;
 	f2Rows.push({ id: c.id, route: c.expected_route, graderPass: passes === runs.length, verdict, note: runs.find((r) => !r.pass)?.reason.slice(0, 140) ?? `${passes}/${runs.length} runs passed` });

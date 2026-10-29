@@ -1,16 +1,16 @@
 # Skill quality report — skills/delegate
 
-Generated `2026-10-29T09:07:29.426Z` at `f73b1e5bcf4a6287d85e723b1bd0339ae84f4e5f` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
+Generated `2026-10-29T10:31:41.302Z` at `bcade9b777dd4cf7179454782567e674d2d0ec19` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
 
-**Q = 96.72 — band: SHIP** (ship ≥ 90, debt ≥ 80, else reject)
+**Q = 93.44 — band: SHIP** (ship ≥ 90, debt ≥ 80, else reject)
 
 | Layer | Result | Detail |
 |---|---|---|
 | L0 pins | pass | 29 pins, 0 violations |
-| L1 alignment | 100 / 100 (bar 90) | all keywords present |
+| L1 alignment | 96.88 / 100 (bar 90) | placement-sub-orchestrator missing: share its checkout |
 | L2 projection | 90.63 / 100 (bar 70) | all scenarios 100/pass |
-| L3 delta | clean → norm 100 | regressions: none; warnings: none; files 2c/0a/0r |
-| L4 budgets | norm 100 | SKILL.md bytes 5062/6400; SKILL.md lines 123/160; REFERENCE.md bytes 11041/16384; REFERENCE.md lines 204/280; BRIEF.md bytes 2341/3072; BRIEF.md lines 72/96 |
+| L3 delta | clean → norm 87.5 | regressions: none; warnings: placement-sub-orchestrator; files 1c/0a/0r |
+| L4 budgets | norm 100 | SKILL.md bytes 5230/6400; SKILL.md lines 125/160; REFERENCE.md bytes 11041/16384; REFERENCE.md lines 204/280; BRIEF.md bytes 2341/3072; BRIEF.md lines 72/96 |
 
 Composite: Q = 0.25*L1 + 0.35*L2 + 0.20*L3_norm + 0.20*L4_norm (L0 fail => 0) with weights {"l1":0.25,"l2":0.35,"l3":0.2,"l4":0.2}.
 
@@ -20,7 +20,7 @@ Composite: Q = 0.25*L1 + 0.35*L2 + 0.20*L3_norm + 0.20*L4_norm (L0 fail => 0) wi
 |---|---|---|---|---|---|
 | completion-report-file | blocker | 31.25 | 1 | 31.25 | — |
 | retry-new-name | blocker | 18.75 | 1 | 18.75 | — |
-| placement-sub-orchestrator | major | 12.5 | 1 | 12.5 | — |
+| placement-sub-orchestrator | major | 12.5 | 0.75 | 9.38 | share its checkout |
 | probe-no-report | major | 6.25 | 1 | 6.25 | — |
 | timeout-end-turn | blocker | 18.75 | 1 | 18.75 | — |
 | brief-output-rules | major | 12.5 | 1 | 12.5 | — |

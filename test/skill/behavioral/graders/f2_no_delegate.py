@@ -71,20 +71,36 @@ def get_assert(output, context=None):
         ok = not bad and fb
         reason = f"F2 manual-ritual: spawn prescription={bad}, fallback named={fb}"
     elif route == "shared-only":
-        wt = bool(WORKTREE_RX.search(text))
         sh = bool(SHARED_RX.search(text))
-        forbidden_mention = bool(re.search(
-            r"worktree (?:is |placement )?(?:forbidden|not allowed|rejected?)"
-            r"|no worktree|cannot.{0,30}worktree|can't.{0,30}worktree"
-            r"|only a root", text, re.I))
-        ok = (not wt or forbidden_mention) and sh
-        reason = (f"F2 shared-only: worktree prescribed={wt and not forbidden_mention}, "
+        # Negation-aware (the L0 harness P3 lesson): a sentence that says
+        # worktrees are forbidden/rejected/out of reach does NOT prescribe
+        # them. Only a worktree sentence with no negation cue prescribes.
+        worktree_prescribed = False
+        for sentence in re.split(r"(?<=[.!:])\s+|\n", text):
+            if not WORKTREE_RX.search(sentence):
+                continue
+            if re.search(r"forbidden|not allowed|rejected|no worktree"
+                         r"|cannot|can't|only a root|sub-orchestrator"
+                         r"|\bshared\b|MUST NOT", sentence, re.I):
+                continue
+            worktree_prescribed = True
+        ok = (not worktree_prescribed) and sh
+        reason = (f"F2 shared-only: worktree prescribed={worktree_prescribed}, "
                   f"shared route named={sh}")
     elif route == "probe-direct":
         pr = bool(PROBE_RX.search(text))
-        bc = bool(BRIEF_CONTRACT.search(text))
-        ok = pr and not bc
-        reason = f"F2 probe-direct: probe named={pr}, brief contract applied={bc}"
+        # Negation-aware: 'no B1-B7' / 'MUST NOT follow B1-B7' / 'forbid
+        # B1-B7' NEGATE the contract; only an affirmative draw applies it.
+        brief_applied = False
+        for sentence in re.split(r"(?<=[.!:])\s+|\n", text):
+            if not BRIEF_CONTRACT.search(sentence):
+                continue
+            if re.search(r"\bno\b|\bnot\b|forbid|without|exempt"
+                         r"|MUST NOT|probe semantics|probe mode", sentence, re.I):
+                continue
+            brief_applied = True
+        ok = pr and not brief_applied
+        reason = f"F2 probe-direct: probe named={pr}, brief contract applied={brief_applied}"
     elif route == "outside-loop":
         bc = bool(BRIEF_CONTRACT.search(text))
         ok = not bc

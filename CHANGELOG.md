@@ -56,6 +56,18 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Fixed
 
+- **skill-quality check repaired to the ratified v2.x texts (texts are the
+  truth; the check had drifted).** Q1 budget assertion now accepts the
+  three-file budget set (SKILL.md, REFERENCE.md, BRIEF.md) and the
+  constants.ts contract comment states the three-file truth; six stale Q3
+  expect anchors (release:on-settle, turn:end-after-fleet,
+  brief:diagnosed-retry, report:status-fail-honored, wait:wake-tool,
+  brief:file-first) re-derived from the current wordings, each kept at
+  tripwire strength; Q5 dictated-shape golden now pins the L4 metrics
+  structure as `L4_BUDGETS.length * 2` instead of the stale literal 4.
+  Static L2 scenario mean back to 100; check-side only — skill texts
+  byte-identical to base.
+
 - **README drift: 9 of 112 audited claims corrected (audit reports in
   /tmp/exchange/delegate-v2-pilot/).** Three root causes fixed: the releaseOn
   default framing was stale pre-flip text (4 spans, EN+RU — the code default is

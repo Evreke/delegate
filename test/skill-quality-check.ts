@@ -19,7 +19,8 @@
  *
  * Covers:
  *   Q1  constants — L1 threshold ≥ 90; Q weights sum to exactly 1; bands
- *       90/80; budgets cover both files with positive caps.
+ *       90/80; budgets cover all three skill files (SKILL.md, REFERENCE.md,
+ *       BRIEF.md) with positive caps.
  *   Q2  L1 scorer — synthetic contracts: full match → 100/meets/no blocker;
  *       fractional keyword match weighted exactly; weight ≥ 10 at score 0 →
  *       blocker; weight < 10 at 0 → reported but not blocking;
@@ -106,10 +107,12 @@ check(
 	JSON.stringify(Q_WEIGHTS),
 );
 check("Q1: bands are ship ≥ 90, debt ≥ 80", Q_BANDS.ship === 90 && Q_BANDS.debt === 80);
+const BUDGET_FILES = ["SKILL.md", "REFERENCE.md", "BRIEF.md"] as const;
 check(
-	"Q1: budgets cover both skill files with positive caps",
-	L4_BUDGETS.length === 2 &&
-		L4_BUDGETS.every((b) => b.bytes > 0 && b.lines > 0 && (b.file === "SKILL.md" || b.file === "REFERENCE.md")),
+	"Q1: budgets cover the three skill files with positive caps",
+	L4_BUDGETS.length === BUDGET_FILES.length &&
+		L4_BUDGETS.every((b) => b.bytes > 0 && b.lines > 0 && (BUDGET_FILES as readonly string[]).includes(b.file)) &&
+		new Set(L4_BUDGETS.map((b) => b.file)).size === BUDGET_FILES.length,
 );
 check("Q1: L2 threshold re-exported from the stage-1 rubric is 70", L2_PASS_THRESHOLD === 70);
 
@@ -414,7 +417,7 @@ function scoreBearing(report: QualityReport): string {
 				typeof a.l1.score === "number" &&
 				a.l2.threshold === L2_PASS_THRESHOLD &&
 				typeof a.l3.normalized === "number" &&
-				a.l4.metrics.length === 4 &&
+				a.l4.metrics.length === L4_BUDGETS.length * 2 &&
 				["ship", "debt", "reject"].includes(a.q.band),
 			JSON.stringify({ l0: a.l0.pinsChecked, l1: a.l1.score, l2: a.l2.threshold, l3: a.l3.normalized, l4: a.l4.metrics.length, band: a.q.band }),
 		);

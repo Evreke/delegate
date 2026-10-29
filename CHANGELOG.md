@@ -23,6 +23,13 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   KPI — "Log the question count per worker beside the verdicts. Two or more
   questions flag the brief, not the worker" (the ask-before-work round-trip is
   the cheapest failure point; question rate grades the brief, not the asker).
+  Behavioral tier (F1/F2) landed LOCAL-ONLY: test/skill/behavioral/ holds the
+  target (one headless primed pi call per case — decides, never executes),
+  the runner (run-f1f2.ts, majority verdict with flaky detection) and the
+  report template; never wired into CI. First full F2 gate on v2.2: HOLD —
+  5/7 routes correct, 1 flaky; two anchoring weaknesses surfaced
+  (sub-orchestrator shared-placement red-line; smoke-test tasks still drawing
+  the brief contract). Report committed with this change.
   Evals: the F3.1-F3.7 graders and a new F3.8 brief-contract grader
   (B1-B7 skeleton + language rules + B1 measurability; template and brief
   modes, red-proof bitten) landed in test/skill/language-graders/ behind the

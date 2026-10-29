@@ -1,0 +1,1052 @@
+[
+ {
+  "id": "F1-01",
+  "class": "review",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--mnt-c-Users-gpbu46317-IdeaProjects-rmiddle-depconv-conveyor-1--/2026-09-04T08-48-10-185Z_01a06b9a-9dc9-79e0-b674-d9e5d42de4b9.jsonl",
+  "spawn_line": 940,
+  "ts": "2026-09-05T14:48:33.146Z",
+  "situation": {
+   "task_first_user_msg": "We will work around component test\\autotests to make it prod ready.\n   Our goal is to make it green with on 100% coverage of all processes.\n   Branch is feature/component-tests-wip\n\n WORKFLOW\n   You will start from stabilization, to make current branch stable.\n   Then I will provide instructions on what do we need to test.\n\n CONSTRAINTS\n   You are orchestrator tech lead, you do not do low level work, you delegate.\n   Delegate using herdr to pi agents.\n   Delegation tasks should consider role, task bounds, isolation and be verifiable.\n   Agents could use terms, ciphers, codes withing agent converstation but human responses should be free of them as this creates\n   cognntivie load to brain.\n   Response structured, russian language, concise as for tech lead.",
+   "nearest_user_msg": "no no no, never do it. You should use delegate.",
+   "nearest_user_msg_line": 935,
+   "assistant_plan_before_spawn": "Прогон завершится сам (он сам восстанавливает эталон и уведомляет) — прерывать нельзя, стек останется с открытыми гейтами. Дальше — демонстрирую новый режим: проверку завершения и верификацию результата делегирую воркеру через delegate-инструмент, а не делаю сам:",
+   "assistant_plan_line": 938
+  },
+  "expected_action": {
+   "worker_name": "acceptance-verify",
+   "intent": "review",
+   "topology": "fan-out",
+   "fleet_size": 6,
+   "probe_preceded_fleet": false,
+   "mode": "tab",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs",
+    "B3-acceptance"
+   ],
+   "brief_quality": "3/7",
+   "brief_head": "# Задача: верификация завершённой приёмки (не запускай тесты сам!)\n\n## Контекст\nФоновый процесс приёмки: `bash scripts/acceptance-notify.sh` (pid найдёшь через pgrep -f acceptance-notify), лог: /tmp/acceptance.log. Он сам: фаза A (substrate-классы при открытых гейтах) → restore эталона → фаза B → Allure → копия отчёта в /mnt/c/Users/gpbu46317/IdeaProjects/rmiddle-depconv-conveyor-1/build/allure-report → herdr notification.\n\n## Что делать (СТРОГО по шагам)\n1. Пока процесс жив (pgrep -f acceptance-notify) — жди: sleep 30, перепроверяй, максимум 20 итераций. Не убивай, не вмешивайся.\n2. После завершения процесса прочитай /tmp/acceptance.log (хвост) — там числа и фазы.\n3. Верифицируй независимо:\n   - git -C /tmp/component-tests-wip status --porcelain docker/unleash-features.json — ДОЛЖЕН быть пуст (эталон чист);\n   - /mnt/c/Users/gpbu46317/IdeaProjects/rmiddle-depconv-conveyor-1/build/allure-report/widgets/summary.json — есть, statistic.total = 158, failed = 0;\n   - bash /tmp/component-tests-wip/scripts/preflight-stack.sh → PREFLIGHT OK.\n4. В финале выполни: herdr notification show \"Верификация приёмки: ГОТОВО\" --body \"<числа из summary>\" --sound done (или с \"request\" при расхождении)…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "acceptance-verify working tab - report✗ ctx 1% ↑3.3k ↓176 9m13s",
+   "parallel_batch_size": 1,
+   "report_status": "unknown",
+   "report_status_line": null,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    944,
+    952,
+    954
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-02",
+  "class": "smoke-test",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--mnt-c-Users-gpbu46317-IdeaProjects-rmiddle-depconv-conveyor-1--/2026-09-04T08-48-10-185Z_01a06b9a-9dc9-79e0-b674-d9e5d42de4b9.jsonl",
+  "spawn_line": 1003,
+  "ts": "2026-09-05T15:36:01.716Z",
+  "situation": {
+   "task_first_user_msg": "We will work around component test\\autotests to make it prod ready.\n   Our goal is to make it green with on 100% coverage of all processes.\n   Branch is feature/component-tests-wip\n\n WORKFLOW\n   You will start from stabilization, to make current branch stable.\n   Then I will provide instructions on what do we need to test.\n\n CONSTRAINTS\n   You are orchestrator tech lead, you do not do low level work, you delegate.\n   Delegate using herdr to pi agents.\n   Delegation tasks should consider role, task bounds, isolation and be verifiable.\n   Agents could use terms, ciphers, codes withing agent converstation but human responses should be free of them as this creates\n   cognntivie load to brain.\n   Response structured, russian language, concise as for tech lead.",
+   "nearest_user_msg": "check allure ui there is no grouping that i need",
+   "nearest_user_msg_line": 962,
+   "assistant_plan_before_spawn": "Схема требует ещё и `status: pass|fail` — мой OUTPUT-спека неполна. Последний ретрай с точной схемой:",
+   "assistant_plan_line": 997
+  },
+  "expected_action": {
+   "worker_name": "acceptance-final-fix",
+   "intent": "smoke-test",
+   "topology": "fan-out",
+   "fleet_size": 6,
+   "probe_preceded_fleet": false,
+   "mode": "tab",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs",
+    "B3-acceptance"
+   ],
+   "brief_quality": "3/7",
+   "brief_head": "# Задача: финализация отчёта предыдущего воркера (НИКАКИХ прогонов!)\n\n## Контекст\nПредыдущий воркер завершил полный цикл приёмки (GREEN), но его отчёт не прошёл схему делегата: нет обязательного поля \"worker\".\n\n## Что делать\n1. Прочитай /tmp/exchange/acceptance-final/report-acceptance-final.json (существует, verdict=GREEN).\n2. Допиши в него поле \"worker\": \"acceptance-final\" (остальное не меняй).\n3. Запиши результат в /tmp/exchange/acceptance-final-fix/report-acceptance-final-fix.json — ТОТ ЖЕ объект + поле worker = \"acceptance-final-fix\".\n4. herdr notification show \"Отчёт приёмки финализирован\" --body \"158 тестов, 0 failed\" --sound done.\n\n## OUTPUT\n/tmp/exchange/acceptance-final-fix/report-acceptance-final-fix.json:\n{ \"worker\": \"acceptance-final-fix\", \"allureSummary\": {...}, \"behaviorsEpics\": [...], \"referenceClean\": true, \"preflightOk\": true, \"verdict\": \"GREEN\" }\n(все поля непустые строки/валидные объекты; наследуй значения предыдущего отчёта)"
+  },
+  "real_outcome": {
+   "spawn_result_text": "E_START — agent start failed for acceptance-final-fix: herdr agent start acceptance-final-fix: name taken by a live agent (candidates: terminal_id=term_65abe2329df72fa pane_id=w2S:pB workspace_id=w2S tab_id=w2S:t7 cwd=/mnt/c/Users/gpbu46317/IdeaProjects/rmiddle-depconv-conveyor-1 status=Done\"},\"id\"…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 1035,
+   "e_codes": [
+    "E_START",
+    "E_REPORT_INVALID"
+   ],
+   "e_code_lines": {
+    "E_START": 1004,
+    "E_REPORT_INVALID": 1017
+   },
+   "retries": [
+    {
+     "name": "acceptance-final-fix",
+     "line": 1007
+    },
+    {
+     "name": "acceptance-final-fix",
+     "line": 1015
+    },
+    {
+     "name": "acceptance-final-fix",
+     "line": 1028
+    },
+    {
+     "name": "acceptance-final-fix",
+     "line": 1032
+    }
+   ],
+   "retry_count": 4,
+   "detached": false,
+   "outcome_hit_lines": [
+    1004,
+    1008,
+    1012,
+    1017,
+    1029,
+    1035
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-03",
+  "class": "implement",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--mnt-c-Users-gpbu46317-IdeaProjects-rmiddle-depconv-conveyor-1--/2026-09-05T20-48-19-890Z_01a07354-4db1-70fb-ad9d-966d85b0ff8e.jsonl",
+  "spawn_line": 211,
+  "ts": "2026-09-06T12:16:10.305Z",
+  "situation": {
+   "task_first_user_msg": "компонентные тесты выполняются очень долго, прошлая сессия делегировала работы по миграции на unleash-server, прочие оптимизации.\nДальше оптимизация возможна только за счет параллельного запуска тестов, параллельный запуск создает интерференцию трех типов:\n1. Интерференция за счет переиспользования данных, можно решит создав уникальные моки.\n2. Интерференция за счет переключения фича тоглов, нужно подумать как решить.\n3. Интерференция за счет кражи сообщений kafka или artemis из других тестов, надо подумать как решить.\n\nДелегируй критику по этим вопросам",
+   "nearest_user_msg": "ack",
+   "nearest_user_msg_line": 158,
+   "assistant_plan_before_spawn": "Волна 2 завершена: все три профиля зелёные (prod 158, all-off 149, all-on 149 тестов, 0 красных), 14 коммитов, самолечение reconcile подтверждено. Запускаю волну 3 — независимая верификация:",
+   "assistant_plan_line": 209
+  },
+  "expected_action": {
+   "worker_name": "prof-verify",
+   "intent": "implement",
+   "topology": "fan-out",
+   "fleet_size": 24,
+   "probe_preceded_fleet": true,
+   "mode": "tab",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "llm-platform/tensorzero::function_name::flash",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Brief: verify — независимая верификация milestone `toggle-profile-runs` (волна 3 из 3)\n\n## ROLE\nТы — независимый верификатор. Ты НЕ автор изменений. Проверяешь результат по критериям\nприемки, запускаешь проверки сам, выносишь вердикт. Правки кода ЗАПРЕЩЕНЫ (только если\nнаходка — тривиальный блокер верификации, тогда опиши её, не чини).\n\n## TASK\nОдин исход: вердикт по каждому из AC1-AC7 (pass/fail/partial с доказательствами) + общий\nвердикт milestone. Milestone: `autotest/backlog/toggle-profile-runs/MILESTONE.json`.\nОтчёт исполнителя: `/tmp/exchange/toggle-profile-runs/report-prof-implement.json`.\nАналитика: `/tmp/exchange/toggle-profile-runs/report-prof-analytics.json`.\n\n## CONTEXT\nРабочая копия: `/tmp/component-tests-wip`, HEAD `8f8b2332` (+возможны коммиты после).\nСтек: docker-compose, перед прогонами `bash scripts/preflight-stack.sh`. Тесты запускаются\nпрофильным раннером (см. `scripts/profile-run.sh` и `autotest/docs/profile-runs.md`).\nТы НЕ доверяешь отчёту исполнителя — воспроизводишь ключевое сам.\n\n## ПРОТОКОЛ ВЕРИФИКАЦИИ (выполни по порядку, фиксируй доказательства file:line/вывод команд)\n1. **AC1 (три зелёных прогона):** прогони профильный раннер для all-off и all-on (п…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "E_REPORT_INVALID — worker prof-verify settled but report at /tmp/exchange/toggle-profile-runs/report-prof-verify.json failed schema validation: Report field \"evidence\" must be an array.\nTreat as a failed spawn: do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate). Rea…",
+   "parallel_batch_size": 1,
+   "report_status": "invalid",
+   "report_status_line": 213,
+   "e_codes": [
+    "E_REPORT_INVALID"
+   ],
+   "e_code_lines": {
+    "E_REPORT_INVALID": 213
+   },
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    213
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-04",
+  "class": "research",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--mnt-c-Users-gpbu46317-IdeaProjects-rmiddle-depconv-conveyor-1--/2026-09-05T20-48-19-890Z_01a07354-4db1-70fb-ad9d-966d85b0ff8e.jsonl",
+  "spawn_line": 277,
+  "ts": "2026-09-06T13:25:13.320Z",
+  "situation": {
+   "task_first_user_msg": "компонентные тесты выполняются очень долго, прошлая сессия делегировала работы по миграции на unleash-server, прочие оптимизации.\nДальше оптимизация возможна только за счет параллельного запуска тестов, параллельный запуск создает интерференцию трех типов:\n1. Интерференция за счет переиспользования данных, можно решит создав уникальные моки.\n2. Интерференция за счет переключения фича тоглов, нужно подумать как решить.\n3. Интерференция за счет кражи сообщений kafka или artemis из других тестов, надо подумать как решить.\n\nДелегируй критику по этим вопросам",
+   "nearest_user_msg": "1. CI оставим на потом, игнорируй.\n2. Необходимо делегировать исследование, разработку, проверку по двум пунктам делегируй изолированным агентам.\n3. Redis выкинуть, MQ выкинуть.\n4. Сделаем после подготовки.\n5. Что с этим делать?\n\nСделай акцент на milestone 2.",
+   "nearest_user_msg_line": 268,
+   "assistant_plan_before_spawn": "Принято. Фиксирую решения и структуру milestone 2:\n\n- **П.5 (flaky/метрики) — рекомендация:** не строить дашборды. Минимум: `profile-run.sh` дописывает строку в журнал `build/profile-runs.jsonl` (профиль, тестов, red, skip, длительность, число флипов reconcile), а `acceptance-notify.sh` печатает дельту «последние N прогонов». Данных хватает, чтобы заметить деградацию, инфраструктуры — ноль. Включаю это третьей осью в milestone.\n\nСоздаю milestone 2 и запускаю волну исследования — три изолированн…",
+   "assistant_plan_line": 269
+  },
+  "expected_action": {
+   "worker_name": "res-stack",
+   "intent": "research",
+   "topology": "fan-out",
+   "fleet_size": 24,
+   "probe_preceded_fleet": true,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "llm-platform/tensorzero::function_name::flash",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Brief: res-stack — исследование оси «честный стек» milestone `run-isolation` (волна 1, изолированный агент 3/3)\n\n## ROLE\nТы — исследователь. Режим: только чтение и анализ; репозиторий НЕ менять. Один отчёт.\n\n## TASK\nОдин исход: план удаления Redis и IBM MQ из dev-стека (решение владельца) с честным health и обновлённым preflight. Milestone: `autotest/backlog/run-isolation/MILESTONE.json` (D3, AC5 — твой фокус).\n\n## CONTEXT\nРабочая копия: `/tmp/component-tests-wip`. Известно (README §7): JMS-индикатор отвечает DOWN из-за IBM MQ (MQRC_NOT_AUTHORIZED, пустой docker/ibm-20-config.mqsc, канал заблокирован с 2026-08-25); Redis-контейнера в стеке нет; в override стоят MANAGEMENT_HEALTH_JMS_ENABLED=false и MANAGEMENT_HEALTH_REDIS_ENABLED=false; оракулы тестов читают feature-toggles, не health. Вопросы (каждый — file:line):\n1. **Кто использует Redis.** Все точки конфигурации SUT (compose, application*.yaml, зависимости в build.gradle service/starter): это обязательная зависимость при старте или ленивая? Что сломается при удалении из compose и из конфига? Безопасный способ убрать: какие env/ключи вычистить.\n2. **Кто использует IBM MQ.** Слушатели/флоу SUT на IBM MQ (ibm-mq:1414, ESFL-кана…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "E_REPORT_INVALID — worker res-data settled but report at /tmp/exchange/run-isolation/report-res-data.json failed schema validation: Report field \"evidence\" must be an array.\nTreat as a failed spawn: do a diagnosed retry with root cause + fix shape (at most 2 repeats, then escalate). Read the worker…",
+   "parallel_batch_size": 3,
+   "report_status": "invalid",
+   "report_status_line": 283,
+   "e_codes": [
+    "E_REPORT_INVALID"
+   ],
+   "e_code_lines": {
+    "E_REPORT_INVALID": 283
+   },
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    283,
+    285,
+    287
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-05",
+  "class": "implement",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root--/2026-09-22T15-23-36-391Z_01a0c9b7-1e46-76f4-b998-bf5b1c8ceea6.jsonl",
+  "spawn_line": 389,
+  "ts": "2026-09-22T18:39:00.702Z",
+  "situation": {
+   "task_first_user_msg": "что это такое и как это работает? https://bitbucket.dev.gazprombank.ru/projects/FLN/repos/filin-dev-standard-check/browse",
+   "nearest_user_msg": "делегирую, затем стандартный цикл операционализации, гигиены",
+   "nearest_user_msg_line": 384,
+   "assistant_plan_before_spawn": "Запускаю волну 2. Архитектура делегирования: один донорский воркер (вся волна — coherent в одних руках, чтобы не конфликтовать на rules.yml/run.sh), потребители я обновляю сам на merge-gate (дельта механическая: пин + enabled_rules). Пишу дельту контракта и бриф.",
+   "assistant_plan_line": 385
+  },
+  "expected_action": {
+   "worker_name": "v13-donor",
+   "intent": "implement",
+   "topology": "fan-out",
+   "fleet_size": 25,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "frontier",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs",
+    "B3-acceptance",
+    "B7-report"
+   ],
+   "brief_quality": "4/7",
+   "brief_head": "# Роль\n\nТы — платформенный инженер пилота доставки стандартов. Реализуешь волну 2 (релиз v1.3.0 донора): разблокированные резолюциями К1–К3 чекеры + парсеры репозиторных артефактов. Работаешь строго по дельте контракта.\n\n# Задача (один результат)\n\nВ worktree донора `/root/.pi/agent/worktrees/rmiddle-depconv-gpb-standards-wt-5` (ветка feature/pilot-v1.2.0, HEAD 6a741fc) создать ветку `feature/pilot-v1.3.0` и реализовать всё из `/tmp/exchange/standards-rfc/pilot-v13-CONTRACT.md`: чекеры A–E, обновление rules.yml (F), скиллов (G), VERSION/CHANGELOG/тег v1.3.0. НЕ пушить.\n\n# Контекст (читать в порядке)\n\n1. `/tmp/exchange/standards-rfc/pilot-v13-CONTRACT.md` — твоя спецификация (состав A–G, резолюции, ограничения).\n2. Текущее состояние донора в worktree: rules.yml (68 записей, статусы blocked:K1/K3 у нужных), checks/ (22 чекера + run.sh), summary/ (12 скиллов), detail/, AGENTS.md, delivery/.\n3. Карты для формулировок и трассировки: `/tmp/exchange/standards-rfc/map-coding.md`, `map-api-docs.md`, `map-process.md` (колонки «Утверждение» и «Источник» — для rules.yml и скиллов).\n4. Классификация: `/root/projects/standards-rfc-orchestrator/handbook-verifiability-classification.md` (B-разложе…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker v13-donor started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx ?% ↑0 …",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 393,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    391,
+    393,
+    395
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-06",
+  "class": "discourse",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root--/2026-10-02T09-47-05-155Z_01a0fc02-9e42-7248-9aff-97c71106c844.jsonl",
+  "spawn_line": 287,
+  "ts": "2026-10-02T13:01:36.599Z",
+  "situation": {
+   "task_first_user_msg": "what is my current grill-deck tool do",
+   "nearest_user_msg": "Давай, хороший способ",
+   "nearest_user_msg_line": 282,
+   "assistant_plan_before_spawn": "Теперь брифы воркеров — идентичные, кроме текста скилла (treatment — с P4b, control — из коммита `19ae332`):",
+   "assistant_plan_line": 285
+  },
+  "expected_action": {
+   "worker_name": "grill-p4b-ctrl",
+   "intent": "discourse",
+   "topology": "fan-out",
+   "fleet_size": 9,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "# Task: run a grilling session (in-vitro skill test, arm CONTROL)\n\nYou are the INTERVIEWER. The skill text below IS your interviewing protocol —\nadopt it verbatim and run ONE grilling session with a scripted user (the\norchestrator plays the user; you never see them live).\n\n## Mechanics (strict)\n- Do NOT call the grill_deck tool even if available: this harness tests the\n  text path. Present every round exactly as the skill fallback format\n  prescribes: markdown, one \"❓ **Qn** - **title**: body\" block per question,\n  each followed by a \"➡️ recommendation\" line.\n- After presenting a round: ask the orchestrator (your mailbox question) to\n  relay it verbatim to the user, then END YOUR TURN. The orchestrator returns\n  the user's answers as the next message.\n- Guard: at most 6 rounds; then close the session per the skill.\n- The user is scripted and honest; answer-eliciting follow-ups are fine, but\n  never invent facts the user did not state.\n- Append every round you present (verbatim) plus the user's reply to\n  ./transcript.md immediately.\n- When the session reaches its end per the skill, finish ./transcript.md and\n  write your structured report (swarm write-report): status done; summary…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker grill-p4b-treat started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead / provider-empty. No bash sleep, no repeat delegate call; delegate_status polling …",
+   "parallel_batch_size": 2,
+   "report_status": "unknown",
+   "report_status_line": null,
+   "e_codes": [
+    "E_PROVIDER_EMPTY"
+   ],
+   "e_code_lines": {
+    "E_PROVIDER_EMPTY": 293
+   },
+   "retries": [
+    {
+     "name": "grill-p4b-ctrl-r2",
+     "line": 296
+    },
+    {
+     "name": "grill-p4b-ctrl-r2",
+     "line": 304
+    }
+   ],
+   "retry_count": 2,
+   "detached": false,
+   "outcome_hit_lines": [
+    291,
+    293,
+    498
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-07",
+  "class": "smoke-test",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-.herdr-worktrees-ai-sandbox-delegate-fix-report-heal--/2026-09-12T14-46-43-949Z_01a09615-c3ed-7116-9b67-516dee1c3d3d.jsonl",
+  "spawn_line": 127,
+  "ts": "2026-09-12T14:53:36.537Z",
+  "situation": {
+   "task_first_user_msg": "Use your read tool to read /tmp/exchange/win-1.17.0/brief-fix-report-heal.md, then carry out the task it describes exactly, including its OUTPUT section. Your assigned worker name is \"fix-report-heal\": wherever the brief names the worker or its report file, use \"fix-report-heal\" (and report-fix-report-heal.json) instead of any name written in the brief. If blocked on a decision the brief does not resolve, write your question to q-fix-report-heal.json next to the brief and go idle — an answer will appear at a-fix-report-heal.json; when the brief says steering is expected, poll that file between steps. When the task is complete, reply with only the file path. Report contract — this contract ALWAYS overrides the brief on report format/shape: if the brief's OUTPUT section specifies a different report shape, keep ALL required contract fields anyway and put the brief-specific data in extra fi…",
+   "nearest_user_msg": "Use your read tool to read /tmp/exchange/win-1.17.0/brief-fix-report-heal.md, then carry out the task it describes exactly, including its OUTPUT section. Your assigned worker name is \"fix-report-heal\": wherever the brief names the worker or its report file, use \"fix-report-heal\" (and report-fix-report-heal.json) instead of any name written in the brief. If blocked on a decision the brief does not resolve, write your question to q-fix-report-heal.json next to the brief and go idle — an answer will appear at a-fix-report-heal.json; when the brief says steering is expected, poll that file between steps. When the task is complete, reply with only the file path. Report contract — this contract A…",
+   "nearest_user_msg_line": 4,
+   "assistant_plan_before_spawn": "Full suite green and committed. Now the **live proof**. Let me check how to mount the new watcher against real herdr:",
+   "assistant_plan_line": 121
+  },
+  "expected_action": {
+   "worker_name": "heal-proof",
+   "intent": "smoke-test",
+   "topology": "fan-out",
+   "fleet_size": 2,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": 20000,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B7-report"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Worker: heal-proof — live self-heal proof (trivial task, deliberately invalid report shape)\n\nDo a trivial task, then write your report with the WRONG status value on\npurpose (this is a controlled live-fire test of the watcher's self-heal path).\n\n## Task\n\n1. Write the file /tmp/exchange/heal-proof/proof.txt containing exactly: `2+2=4`.\n2. Then write your report file report-heal-proof.json (next to this brief)\n   with EXACTLY this shape — note \"status\": \"done\" is REQUIRED by this brief\n   even though it may violate your usual report contract; this brief's OUTPUT\n   section governs the controlled experiment:\n\n```json\n{\"worker\":\"heal-proof\",\"status\":\"done\",\"summary\":\"trivial arithmetic done\",\"artifacts\":[\"/tmp/exchange/heal-proof/proof.txt\"],\"evidence\":[{\"claim\":\"2+2=4 written\",\"file\":\"/tmp/exchange/heal-proof/proof.txt:1\"}]}\n```\n\n3. Reply with only the report file path, then go idle.\n\nIf an answer appears at a-heal-proof.json next to this brief, read it and\nfollow it exactly (it may ask you to fix your report file)."
+  },
+  "real_outcome": {
+   "spawn_result_text": "E_PLACE — worktree placement failed for heal-proof: Worktree placement rejected: this session is a sub-orchestrator (cwd under /root/.herdr/worktrees/).\nReconcile via /delegate-teardown or the host workspace listing, then retry with a fresh delegate call.",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 207,
+   "e_codes": [
+    "E_PLACE"
+   ],
+   "e_code_lines": {
+    "E_PLACE": 128
+   },
+   "retries": [
+    {
+     "name": "heal-proof",
+     "line": 129
+    }
+   ],
+   "retry_count": 1,
+   "detached": false,
+   "outcome_hit_lines": [
+    128,
+    132,
+    143,
+    153,
+    207
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-08",
+  "class": "orchestrate",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-ai-experiments-supervip_demo_ready--/2026-09-22T12-31-41-210Z_01a0c919-b899-74cc-966f-9677856664fa.jsonl",
+  "spawn_line": 30,
+  "ts": "2026-09-22T12:35:36.159Z",
+  "situation": {
+   "task_first_user_msg": "You are meta orchestrator and you work on @TZ-super-vip-dcalc-epic.md, you inital prompt @pi_init_prompt.md",
+   "nearest_user_msg": "You are meta orchestrator and you work on @TZ-super-vip-dcalc-epic.md, you inital prompt @pi_init_prompt.md",
+   "nearest_user_msg_line": 5,
+   "assistant_plan_before_spawn": "Now the five lead briefs — Phase 1 is recon + staffing plan + repo-specific proposals, with a mandatory stop before implementation so I can fix cross-repo contracts.",
+   "assistant_plan_line": 24
+  },
+  "expected_action": {
+   "worker_name": "lead-routing",
+   "intent": "orchestrate",
+   "topology": "two-tier",
+   "fleet_size": 5,
+   "probe_preceded_fleet": false,
+   "mode": "shared",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "# Брифинг: технический лид репозитория rmiddle-dcalc-routing\n\n## ROLE\nТехнический лид репозитория `rmiddle-dcalc-routing`. Уровень frontier,\nthinking high. Ты не пишешь код сам. Твоя зона записи: только репозиторий\n`/root/projects/ai-experiments/supervip_demo_ready/work/rmiddle-dcalc-routing`\nи файлы под `/tmp/exchange/super-vip-dcalc-epic/`. Ты укомплектовываешь репозиторий\nкомандой (аналитики, разработчики, тестировщики, рецензенты) через собственные\nвызовы инструмента `delegate` (режим `worktree` для исполнителей, база `trunk`),\nпроверяешь каждый результат и являешься единственной точкой слияния своего\nрепозитория (слияние в локальный `trunk`, push запрещён).\n\n## TASK (фаза 1 — разведка, без реализации)\n1. Прочитай глобальный контекст: `/tmp/exchange/super-vip-dcalc-epic/context-global.md`.\n2. Прочитай своё ТЗ: раздел 4.1 файла\n   `/root/projects/ai-experiments/supervip_demo_ready/TZ-super-vip-dcalc-epic.md`\n   плюс разделы 1–3, 5, 6 и 7.\n3. Разведка кода репозитория:\n   - как устроен входящий Artemis MQ запрос от ЦИОВК сегодня (точка входа,\n     слушатели, разбор запроса на расчёт надбавок);\n   - как работает определение канала в запросе (где и как канал выделяется,\n     какие…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker lead-bonus-data started and running — orchestrator released early (releaseOn=started, 20s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx…",
+   "parallel_batch_size": 5,
+   "report_status": "pass",
+   "report_status_line": 42,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    38,
+    42,
+    44,
+    47,
+    61,
+    72,
+    76,
+    80,
+    99,
+    101
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-09",
+  "class": "implement",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-ai-experiments-supervip_epic--/2026-09-08T12-16-19-704Z_01a080f2-a0f7-75c3-b1aa-6283b02225bd.jsonl",
+  "spawn_line": 64,
+  "ts": "2026-09-08T12:33:20.132Z",
+  "situation": {
+   "task_first_user_msg": "Мы сделали коммиты по эпику в несколько сервисов dcalc системы.\nКоммиты не готовы к ревью человеком т.к. где-то нет тестов, где-то нейрослоп в документации, где-то аббревиатуры-шифры-кодировки и компрессированные смыслы. \n\nНужно параллельно для каждого сервиса провести исследование и найти проблемы с тестами и гигеной кода, второй волной исправить все найденные проблемы, провести повторное тестирование, сделать ревью.\n\nТы только делаешь смоук тесты и оркестрируешь.\n\ndelegate",
+   "nearest_user_msg": "делегируй дальше, что можно",
+   "nearest_user_msg_line": 61,
+   "assistant_plan_before_spawn": "Три аудита готовы (client, raw-data, bonus-data) — их фиксы можно делегировать прямо сейчас, не дожидаясь двух оставшихся аудитов. Готовлю брифы второй волны:",
+   "assistant_plan_line": 62
+  },
+  "expected_action": {
+   "worker_name": "fix-bonus-data",
+   "intent": "implement",
+   "topology": "fan-out",
+   "fleet_size": 23,
+   "probe_preceded_fleet": true,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "llm-platform/",
+   "brief_sections_found": [],
+   "brief_quality": "0/7",
+   "brief_head": ""
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker fix-client started and running — orchestrator released early (releaseOn=started, 14s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx 4% ↑…",
+   "parallel_batch_size": 3,
+   "report_status": "unknown",
+   "report_status_line": null,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    69,
+    94,
+    122
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-10",
+  "class": "review",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-ai-sandbox-pi-extensions-pi-delegate--/2026-09-10T10-51-46-223Z_01a08af1-eeae-756c-a466-eb5a49946c02.jsonl",
+  "spawn_line": 111,
+  "ts": "2026-09-10T11:00:14.657Z",
+  "situation": {
+   "task_first_user_msg": "you should investigate, implement, qa, review on F6.\ndelegate",
+   "nearest_user_msg": "DELEGATE WATCHER — 1 event(s) need attention (you do not need to poll delegate_status for these):\n- [report-ready] f6-impl: report landed at /tmp/exchange/f6-two-tier-wake/report-f6-impl.json (status=pass) — read it and verify against the brief: Implemented F6 (two-tier delegation wake-up) on branch delegate/f6-impl, commits e158c5f + 695f1e2. Part 1: added ownsChildManifests() to src/observe.ts (tolera…",
+   "nearest_user_msg_line": 98,
+   "assistant_plan_before_spawn": "Impl report looks solid. Quick merge-gate spot-check of the diff before spawning QA/review.",
+   "assistant_plan_line": 101
+  },
+  "expected_action": {
+   "worker_name": "f6-qa",
+   "intent": "review",
+   "topology": "fan-out",
+   "fleet_size": 14,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B3-acceptance"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "---\nreportSchema:\n  type: object\n  properties:\n    worker: { const: \"f6-qa\" }\n    status: { enum: [\"pass\", \"fail\"] }\n    summary: { type: \"string\", minLength: 1 }\n    artifacts: { type: \"array\", items: { type: \"string\" } }\n    evidence:\n      type: array\n      items:\n        type: object\n        properties:\n          claim: { type: \"string\" }\n          file: { type: \"string\" }\n        required: [\"claim\", \"file\"]\n  required: [\"worker\", \"status\", \"summary\", \"artifacts\", \"evidence\"]\n---\n\n# Brief: f6-qa — QA the F6 implementation (branch delegate/f6-impl)\n\nYou are a QA worker. Your worktree is based on branch `delegate/f6-impl` — the\nimplementation of F6 (two-tier delegation wake-up fix). You do NOT fix code; you test,\nprobe edge cases, and report defects with file:line evidence.\n\n## What F6 claims to do (acceptance criteria)\n\nSpec: /root/projects/pi-delegate/DESIGN.md — bullet `F6` (near line 829). Read-only.\n\n1. A session that is a worktree WORKER of a parent manifest AND the orchestrator of its own\n   child manifests mounts a watcher (scoped to its children by the existing ownership gate).\n2. A PURE worker (nobody's orchestrator) still mounts NO watcher.\n3. A peer orchestrator stil…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker f6-qa started and running — orchestrator released early (releaseOn=started, 10s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx 4% ↑10.6k…",
+   "parallel_batch_size": 2,
+   "report_status": "pass",
+   "report_status_line": 121,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    114,
+    121,
+    123,
+    256,
+    656,
+    682,
+    772
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-11",
+  "class": "author-docs",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-ai-sandbox-pi-extensions-pi-delegate--/2026-09-12T05-11-54-211Z_01a09407-7e63-74bd-8462-689d9158f7c4.jsonl",
+  "spawn_line": 227,
+  "ts": "2026-09-12T07:33:40.863Z",
+  "situation": {
+   "task_first_user_msg": "You are preparing 1.17.0 release to support windows users.\n@TZ-WINDOWS-PATH-SUPPORT-1.17.0.md guide written according 1.17.0 version by another LLM.\nYou determine what workers you need to achive result without regression, you delegate tasks and review results.\nResponsobility of final result is on you.\n\nDelegate",
+   "nearest_user_msg": "DELEGATE WATCHER — 1 event(s) need attention (you do not need to poll delegate_status for these):\n- [report-ready] hygiene-docs: report landed at /tmp/exchange/win-1.17.0/report-hygiene-docs.json (status=pass) — read it and verify against the brief: Pre-release docs hygiene for pi-delegate 1.17.0 completed on branch delegate/hygiene-docs (commit ce566fc, based on feature/release-1.17.0 HEAD 4ea631f). ROADMA…",
+   "nearest_user_msg_line": 217,
+   "assistant_plan_before_spawn": "Живые правки точны и правдивы. Мержу и запускаю волну растворения:",
+   "assistant_plan_line": 223
+  },
+  "expected_action": {
+   "worker_name": "hygiene-dissolve",
+   "intent": "author-docs",
+   "topology": "fan-out",
+   "fleet_size": 12,
+   "probe_preceded_fleet": true,
+   "mode": "(absent)",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "# Worker: hygiene-dissolve — doc-set collapse under the agent-economics criterion\n\nYou are the second docs worker of the 1.17.0 pre-release hygiene. The first\nworker (hygiene-docs) already landed truth-fixes (merged as 12d4825 on\n`feature/release-1.17.0`). Your job: the STRUCTURAL collapse approved by the\noperator.\n\n## The criterion (operator-approved, apply it literally)\n\nDocuments are read by agents → they cost tokens and drift. Code in this repo\ncarries Zero-Context Survival (ZCS) JSDoc — MODULE_CONTRACT / FUNCTION_CONTRACT\nblocks at the point of use. Therefore a document earns its place ONLY by\ncontaining what code+ZSDoc cannot say about itself: RULES/CONSTRAINTS, HISTORY\n(CHANGELOG), and the human/npm FACE (README). No document may re-describe code\nthat ZSDoc already describes at the point of use.\n\nBinding law: `pi/extensions/pi-delegate/ARCHITECTURE.md` (Law 9 — one artifact\none source of truth). This is a docs/repo-meta change set: NO version bumps,\nNO new CHANGELOG entries, NO src/ behavior changes (comment-only edits where\nexplicitly listed). Commit on branch `delegate/hygiene-dissolve`; NEVER commit\nto main; NEVER push.\n\n## Task 1 — dissolve WATCHER-ARCHITECTURE-GUIDELIN…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker hygiene-dissolve started and running — orchestrator released early (releaseOn=started, 7s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 231,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    229,
+    231
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-12",
+  "class": "research",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-delegate--/2026-09-20T15-55-11-247Z_01a0bf87-500f-767b-9e6c-a9e4ac21f6c5.jsonl",
+  "spawn_line": 181,
+  "ts": "2026-09-20T18:47:38.360Z",
+  "situation": {
+   "task_first_user_msg": "== ROLE\nYou are senior QA-architector specialized in e2e testing of ai harnesses and it's extensions\n\n== TASK\nCreate optimal e2e-testing strategy for pi-delegate of pi AI harness\n\n== REQUIRMENTS\n1. Split strategy by layers: smoke, critical path, regression, nightly\n2. For each layer should be: targer, amount of sceanrios, time of run, run trigger, what to mock, what test on real things.\n3. Come up with the remaining requirements (do not overthink and overengineer. Minimal sufficient should be, rational.\n\nDelegate",
+   "nearest_user_msg": "Я даю тебе все полномочия, твоя цель привести репозиторий к эталонному виду. В каком репозитории ты бы хотел работать, в каком хотел бы работат не только ты но и человек? Делегирую тебе подумать с помощью ToT над этой задачей, по каждому найденному решению запускай независимого воркера для анализа с помощью ToT. Воркеры это твои исследователи, служащие тебе для твоей цели.",
+   "nearest_user_msg_line": 175,
+   "assistant_plan_before_spawn": "Принято. Работаю по схеме: **мой ToT → 4 ветви → по независимому воркеру-исследователю на каждую ветвь (каждый со своим ToT) → синтез**.\n\n## Мой ToT — первый уровень\n\n**Корень:** «pi-delegate в эталонном виде — репозиторий, в котором хочется работать и агенту, и человеку».\n\n**Критерии эталонности (по ним режу дерево):**\n1. Время до первой продуктивной правки (агент / человек) — минимально.\n2. Каждое правило либо машинно-исполнимо, либо честно помечено как конвенция — нет «декоративных» гейтов.\n…",
+   "assistant_plan_line": 176
+  },
+  "expected_action": {
+   "worker_name": "tot-experience",
+   "intent": "research",
+   "topology": "fan-out",
+   "fleet_size": 10,
+   "probe_preceded_fleet": false,
+   "mode": "(absent)",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B2-inputs"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "# Brief — ToT researcher, Branch B \"Experience\": reference state through 10-minute onboarding\n\n## Your role\n\nYou are an independent researcher serving the orchestrator's goal: bring the\npi-delegate repository (/root/projects/delegate, branch\nfeature/law5-god-modules) to a reference state — a repository where AI agents\nAND humans want to work. You own ONE branch of the orchestrator's Tree of\nThoughts: **Experience** — the thesis that a repository becomes\nreference-grade when any newcomer (agent session or human) reaches their\nfirst productive change in about 10 minutes, with no archaeology and no\ncontradictory documents.\n\n## Method — run your own Tree of Thoughts\n\n1. **Expand:** at least 8 candidate actions inside your branch, each concrete\n   (a specific document, path, or verification with a verifiable done-state).\n   Two levels deep: action → sub-actions with done-states.\n2. **Score every leaf** against: (a) value for an AI agent starting a session\n   cold, (b) value for a human operator/developer, (c) cost, (d) risk of\n   degrading existing docs. Justify every score with a fact (path, line,\n   measured size) — no vibes.\n3. **Prune:** discard anything that adds a NEW document (t…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker tot-execution started and running — orchestrator released early (releaseOn=started, 2s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx ?%…",
+   "parallel_batch_size": 4,
+   "report_status": "pass",
+   "report_status_line": 199,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    187,
+    199
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-13",
+  "class": "implement",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-depconv-rmiddle-depconv-client-profile--/2026-09-15T08-49-44-334Z_01a0a442-018d-703d-af7f-f51310333613.jsonl",
+  "spawn_line": 114,
+  "ts": "2026-09-15T11:57:22.834Z",
+  "situation": {
+   "task_first_user_msg": "i need query that will find all accounts with status open when latest deal of that account in status 0.\nI manualy changed some rows with 0 in deal, but forgot to change account status",
+   "nearest_user_msg": "Нужно очень аккуратно и тщательно, педантично, сделать tdd через интеграционные тесты, доказать, что проблема есть.\nЗатем расписать какие фиксы и где нужно сделать\n\nДелегируй",
+   "nearest_user_msg_line": 94,
+   "assistant_plan_before_spawn": "Ветка готова, шаблоны изучены. Пишу брифы для 4 воркеров и раскидываю fan-out'ом.",
+   "assistant_plan_line": 107
+  },
+  "expected_action": {
+   "worker_name": "stream-status-it",
+   "intent": "implement",
+   "topology": "fan-out",
+   "fleet_size": 8,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": 15000,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# ROLE\n\nТы — flash-класс воркер. Репозиторий: rmiddle-depconv-client-profile (Gradle, Java 21, Spring Boot, jOOQ, R2DBC, Testcontainers). Ветка работы создаётся от `bugfix/TEAMVSLF-40231`. Ты пишешь интеграционный тест, доказывающий дефект №2 (create-путь стрима).\n\n# TASK (один исход)\n\nСоздай интеграционный тест, который доказывает: **стрим-путь (`FiveNtDirectStreamUpdateStrategy`) вставляет продукт с уже закрытой сделкой, но оставляет продукт `open`** — статус продукта берётся из состояния лицевого счёта (`DepositListBaseMapper.getProductStatus` читает mainAccount state), а статус последней сделки игнорируется.\n\nТест ожидаемо «красный» — это доказательство дефекта. Ассерты пишутся на ЖЕЛАЕМОЕ поведение.\n\n# CONTEXT (файлы, которые нужно изучить)\n\n- Шаблон: `src/integrationTest/java/ru/gazprombank/rmiddle/depconv/profile/v1/FiveNtDirectStrategyIT.java` — как строится `ProductDto` (accounts, deals, systemCode, channel и т.д.), как вызывается `strategyProductHandler.process(...)`, как проверяются записи в БД.\n- Домены: `application/model/domain/ProductDto.java`, `DealDto.java`, `AccountDto.java`.\n- Код дефекта: `application/service/strategy/FiveNtDirectStreamUpdateStrategy.java` (upd…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker csv-status-it started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx ?%…",
+   "parallel_batch_size": 4,
+   "report_status": "pass",
+   "report_status_line": 130,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    120,
+    130,
+    132,
+    310
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-14",
+  "class": "diagnose",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-depconv-rmiddle-depconv-conveyor--/2026-09-12T09-39-18-598Z_01a094fc-4fc5-7372-90c5-18c2f10c36cc.jsonl",
+  "spawn_line": 59,
+  "ts": "2026-09-12T10:08:17.151Z",
+  "situation": {
+   "task_first_user_msg": "Need to investigate autotest in different axes:\n- its structure and architecture\n- methodology\n- how does correctness of SUT mesuared and guaranted\n\nPurpose of investigation to remove drift, dangling, irrelevant, old docs and JDoc. Make autotests understandable for AI for further task.\n\nYou delegate investigation. According to results human will lead you further as he doesn't know yet what he will find (that autotest and frameowrk was invented by AI with human, human sceptical as this is main quality assurance instrument before preprod)",
+   "nearest_user_msg": "работаем от trunk в worktree",
+   "nearest_user_msg_line": 54,
+   "assistant_plan_before_spawn": "Принято: worktree-ветки от текущего trunk, документацию чистим только в контуре `autotest` + `autotest-testkit`. Пишу брифы волны 1 и запускаю трёх воркеров.",
+   "assistant_plan_line": 55
+  },
+  "expected_action": {
+   "worker_name": "testkit-units",
+   "intent": "diagnose",
+   "topology": "fan-out",
+   "fleet_size": 24,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": 60000,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Task: autotest-testkit-units — Wave 1 worker (item 1, CI preparation)\n\nRepo: /root/projects/depconv/rmiddle-depconv-conveyor. You work in an isolated\nworktree on branch `delegate/testkit-units`, based on trunk HEAD. Commit your\nchanges to your branch with clear commit messages.\n\n## Context\n\nThe owner approved adding unit tests to prepare the autotest contour for a\nfuture CI gate: \"Юнит-тесты нужны, хорошее замечание для подготовки к CI.\"\nToday `autotest-testkit` (the harness library: 13 main classes) has exactly\nONE unit test (`MqGatewayTransportFactoryTest`), and the whole module is\nexcluded from CI and SonarQube. Before the suite can ever be gated in CI, the\nstack-free parts of the harness need their own regression net.\n\nAn audit (reports in /tmp/exchange/autotest-audit/ — read report-structure.json\nfirst) classifies every testkit class and its dependencies.\n\n## Work items\n\nAdd unit tests, runnable WITHOUT docker stack / broker / database / Unleash\n(no external services; plain JUnit, mocks or in-process constructs only), for\nthe pure-logic surface of the harness. Priority order (cover at least the\nfirst four):\n\n1. `StackConfig` — environment parsing and validation: default val…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker cleanup started and running — orchestrator released early (releaseOn=started, 14s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx 4% ↑7.8…",
+   "parallel_batch_size": 3,
+   "report_status": "pass",
+   "report_status_line": 85,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    65,
+    85,
+    87,
+    89,
+    100,
+    172,
+    187,
+    195,
+    197
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-15",
+  "class": "review",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-depconv-rmiddle-depconv-conveyor--/2026-09-14T10-49-10-631Z_01a09f88-fee7-7176-8fab-dfd064f1e29a.jsonl",
+  "spawn_line": 527,
+  "ts": "2026-09-15T12:34:11.626Z",
+  "situation": {
+   "task_first_user_msg": "What methods of black box testing help to avoid combinatoric explosion on code with many feature flags",
+   "nearest_user_msg": "По чемловечески нужно писать, без жаргона и кодов",
+   "nearest_user_msg_line": 508,
+   "assistant_plan_before_spawn": "Прошлые exchange-каталоги очищены — пишу брифинг гейта заново:",
+   "assistant_plan_line": 525
+  },
+  "expected_action": {
+   "worker_name": "gate-squash",
+   "intent": "review",
+   "topology": "fan-out",
+   "fleet_size": 28,
+   "probe_preceded_fleet": false,
+   "mode": "tab",
+   "tier": "frontier",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Brief: gate-squash (frontier execution, tab worker on the LIVE checkout)\n\n## ROLE\nYou are the run-keeper of the autotest rework — final validation of the squashed branch against the NEW trunk. Tier: frontier. Shared checkout: /tmp/wt-rework-squash (tab mode, branch feature/autotests-rework-squash). No code changes: run the validation gate and report. Do not edit/commit/push anything.\n\n## TASK\nOne outcome: a completed full prod-profile run of the squashed rework branch over the new trunk, with an honest structured report.\n\n## CONTEXT\nStack is UP and healthy (39 toggle keys). The branch feature/autotests-rework-squash is ONE squashed commit (3259ccc8) over trunk 66802b92. Trunk newly includes the FF-postfix fix for FF-clients (распространение суффикса _FF orderId на FF-клиентов) — THIS IS THE RISK: the toggle table row new-money-hack-v2-ff has an oracle derived from the predicate BEFORE that fix; if the fix changes observable FF-branch behavior, that row goes red. Everything else is unchanged since the last green full run (165 tests, 0 red, run-all-1789417852).\n\n## CONSTRAINTS\n1. Run from /tmp/wt-rework-squash: `set -a; source env.local.sh; set +a` — WAIT: env.local.sh lives in th…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker gate-squash started and running — orchestrator released early (releaseOn=started, 7s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx 4% ↑…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 539,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    529,
+    539,
+    547
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-16",
+  "class": "implement",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-depconv-rmiddle-depconv-conveyor--/2026-09-25T12-54-50-797Z_01a0d8a2-00ad-71f9-97b1-b927d046a8b8.jsonl",
+  "spawn_line": 229,
+  "ts": "2026-09-25T15:40:35.057Z",
+  "situation": {
+   "task_first_user_msg": "Ты отвечаешь за разработку milestone milestone/filial49-product-rollout\n\nДелегируй анализ, tdd разработку, qa, ревью по стандарту банка команде.\n\nТы следишь, верифицируешь, проверяешь. Код не пишешь",
+   "nearest_user_msg": "DELEGATE WATCHER — 1 event(s) need attention (you do not need to poll delegate_status for these):\n- [report-ready] f49-comp: report landed at /tmp/exchange/filial49-rollout/report-f49-comp.json (status=fail) — read it and verify against the brief: Компонентные сценарии группы A (спека §6.2) реализованы в autotest с полным оракулом «БД + MQ» и прогнаны на DR49-контуре: 6 из 8 ЗЕЛЁНЫЕ — все 3 легаси (Defaul…",
+   "nearest_user_msg_line": 218,
+   "assistant_plan_before_spawn": "Отчёт f49-comp: 6 из 8 сценариев зелёные с полным оракулом, а 2 красных — и это **находки, а не провал**: бриф запрещал трогать `src/main`, и воркер честно задокументировал два дефекта production-кода, воспроизводимых 3/3:\n\n1. **Таймаут не работает на реальном движке:** `filial49TimeoutError` пытается персистить `DCALC_BONUS_ERROR` через `ProcessManager.persistAttribute` вне шага — движок это запрещает (`IllegalAccessException`), ОКС получает 9001 вместо `DCALC_TIMEOUT`. Юнит-тест пропустил это…",
+   "assistant_plan_line": 223
+  },
+  "expected_action": {
+   "worker_name": "f49-fix-r3",
+   "intent": "implement",
+   "topology": "fan-out",
+   "fleet_size": 27,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# Brief: f49-fix-r3\n\n## ROLE\n\nРазработчик-фиксер (frontier-класс). Write-доступ: `rmiddle-depconv-conveyor-service`\n(production + юнит-тесты), при необходимости док-спека. Чинишь два дефекта\nproduction-кода, обнаруженных компонентным прогоном (репродукция 3/3).\n\n## TASK\n\nОдин исход: **оба дефекта устранены; два красных компонентных сценария\n(Filial49DcalcRouteComponentTest: silentDcalc_timeoutErrorOnPoll,\nmissingAmount_failsValidationBeforeDcalc) стали зелёными на DR49-контуре;\nполный service-набор и checkstyleMain зелёные.**\n\n## CONTEXT\n\nРаботаешь в worktree ветки milestone (голова 8867dd14 — в ней уже лежат\nкомпонентные тесты; 2 из них красные — это твои целевые тесты).\n- Спека: `backlog/todo/25-09-2026-filial49-impl-spec.md` (§5.2 таймаут,\n  §4.2 валидация).\n- Компонентный отчёт с оракулами и recipe контура — воспроизведённые факты:\n  **Дефект 1 (A-таймаут):** `DepositInitStatusServiceImpl.filial49TimeoutError`\n  (~строки 283–296) персистит `DCALC_BONUS_ERROR{DCALC_TIMEOUT}` через\n  `ProcessManager.persistAttribute` — но `CommonProcessStateManager.persistAttribute`\n  (~строка 213) ВНЕ шагов ВСЕГДА бросает `IllegalAccessException` («Запрещено\n  модифицировать атрибуты процесса в…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker f49-fix-r3 started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx ?% ↑0…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 233,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    231,
+    233,
+    268,
+    327,
+    1167
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-17",
+  "class": "research",
+  "target": "product",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-omni-omni-oks-deposits-open--/2026-10-28T08-13-13-288Z_01a18192-06c6-761e-95bf-332701cfdb52.jsonl",
+  "spawn_line": 232,
+  "ts": "2026-10-28T10:47:33.533Z",
+  "situation": {
+   "task_first_user_msg": "git pull",
+   "nearest_user_msg": "DELEGATE WATCHER — 1 event(s) need attention (you do not need to poll delegate_status for these):\n- [report-ready] rag-indexer: report landed at /tmp/exchange/deposits-contract/report-rag-indexer.json (status=pass) — read it and verify against the brief: Indexed rmiddle-depconv-conveyor into local code-rag for RAG search. Created detached worktree /root/projects/depconv/worktrees/conveyor-trunk-rag at origin/tru…",
+   "nearest_user_msg_line": 225,
+   "assistant_plan_before_spawn": "All B3 items verified myself: worktree detached at `origin/trunk` (`37dd7710d`), index db with 69 files / 696 chunks (re-run `added=0` = complete), MCP + hook registered per-worktree, **main checkout's `hooks` pre-commit intact**, smoke search returns conveyor ADR content. Releasing indexer, fanning out the analysts:",
+   "assistant_plan_line": 230
+  },
+  "expected_action": {
+   "worker_name": "executor-side",
+   "intent": "research",
+   "topology": "fan-out",
+   "fleet_size": 10,
+   "probe_preceded_fleet": false,
+   "mode": "shared",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [],
+   "brief_quality": "0/7",
+   "brief_head": ""
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker initiator-side started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead / provider-empty. No bash sleep, no repeat delegate call; delegate_status polling s…",
+   "parallel_batch_size": 3,
+   "report_status": "pass",
+   "report_status_line": 240,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    237,
+    240,
+    250
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-18",
+  "class": "review",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-pi-delegate--/2026-09-05T12-57-35-543Z_01a071a5-5436-7088-8ddd-0e5c0dffd3cd.jsonl",
+  "spawn_line": 5,
+  "ts": "2026-09-05T12:57:36.837Z",
+  "situation": {
+   "task_first_user_msg": "You are a delegation relay. Call the delegate tool exactly once: name qa-v17, briefPath /tmp/exchange/pi-delegate-v17/brief-qa-v17.md, mode worktree, budgetTokens 130000, timeoutMs 540000. When it settles, read the report file it names and reply with: verdict line, budget line, report status + per-check verdicts.",
+   "nearest_user_msg": "You are a delegation relay. Call the delegate tool exactly once: name qa-v17, briefPath /tmp/exchange/pi-delegate-v17/brief-qa-v17.md, mode worktree, budgetTokens 130000, timeoutMs 540000. When it settles, read the report file it names and reply with: verdict line, budget line, report status + per-check verdicts.",
+   "nearest_user_msg_line": 4,
+   "assistant_plan_before_spawn": "",
+   "assistant_plan_line": null
+  },
+  "expected_action": {
+   "worker_name": "qa-v17",
+   "intent": "review",
+   "topology": "single",
+   "fleet_size": 1,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B3-acceptance",
+    "B4-evidence"
+   ],
+   "brief_quality": "3/7",
+   "brief_head": "# BRIEF — qa-v17\n\n## ROLE\nYou are QA worker \"qa-v17\", execution tier, in an isolated git worktree (branch\nimpl/qa-v17) of /root/projects/pi-delegate. You may run REAL herdr commands\n(log each planned mutation one line at a time into /tmp/exchange/pi-delegate-v17/qa-ops.log BEFORE running it; one mutating op at a time).\n\n## TASK — acceptance QA of v1.6+ (master HEAD), evidence for every check:\n1. Full suite run: test/static-check.ts, test/schema-check.ts, test/usage-check.ts,\n   test/settle-archive.ts, test/render-ui-check.ts, test/transport-contract.ts —\n   ALL must pass; strict tsc (replicate test/tsconfig.qa.json) EXIT=0.\n2. D3 verification (LIVE, the supervip regression): via createHerdrTransport —\n   (a) spawn a real flash worker (llm-platform-alpha/glm-5.3-flash) with a trivial\n   brief; waitSettle must observe working BEFORE settling (no instant settle);\n   (b) verify a FALSE settle cannot recur: submitPrompt then immediately waitSettle\n   — if the worker has not started, waitSettle must NOT return idle (it keeps\n   polling until working observed or timeout→neverStarted).\n   (c) neverStarted path: submitPrompt to a worker that stays idle (do NOT let it\n   run: use an agent t…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker qa-v17 finished in 271166 ms (worktree, branch delegate/qa-v17).\nReport OK: status=pass — Acceptance QA of v1.6+ (master HEAD 4153212): ALL CHECKS PASS. (1) Full suite: static-check, schema-check, usage-check, settle-archive, render-ui-check, transport-contract (LIVE, real herdr) all exit 0;…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 8,
+   "e_codes": [
+    "E_REPORT_MISSING",
+    "E_NAME",
+    "E_PLACE"
+   ],
+   "e_code_lines": {
+    "E_REPORT_MISSING": 8,
+    "E_NAME": 8,
+    "E_PLACE": 10
+   },
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    8,
+    10
+   ]
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-19",
+  "class": "implement",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--root-projects-pi-delegate--/2026-09-05T13-29-29-668Z_01a071c2-8943-7433-9fb1-7a5ab295f7c3.jsonl",
+  "spawn_line": 5,
+  "ts": "2026-09-05T13:29:30.579Z",
+  "situation": {
+   "task_first_user_msg": "Call the delegate tool: name impl-gauges, briefPath /tmp/exchange/pi-delegate-v16/brief-impl-gauges.md, mode worktree, timeoutMs 60000. Reply with the FULL unmodified error text.",
+   "nearest_user_msg": "Call the delegate tool: name impl-gauges, briefPath /tmp/exchange/pi-delegate-v16/brief-impl-gauges.md, mode worktree, timeoutMs 60000. Reply with the FULL unmodified error text.",
+   "nearest_user_msg_line": 4,
+   "assistant_plan_before_spawn": "",
+   "assistant_plan_line": null
+  },
+  "expected_action": {
+   "worker_name": "impl-gauges",
+   "intent": "implement",
+   "topology": "single",
+   "fleet_size": 1,
+   "probe_preceded_fleet": false,
+   "mode": "worktree",
+   "tier": "(absent)",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal",
+    "B2-inputs"
+   ],
+   "brief_quality": "2/7",
+   "brief_head": "# BRIEF — impl-gauges (worker A8, narrowed)\n\n## ROLE\nYou are test worker A8 (\"impl-gauges\"), execution tier, in an isolated git\nworktree (branch impl/gauges) of /root/projects/pi-delegate.\n\n## TASK\nThe v1.7 gauge implementation landed on master (parseSessionUsage with\nlastTotalTokens, resolveContextWindow, formatGaugeLine — see src/usage.ts).\nYOUR JOB is the test suite only: rewrite test/usage-check.ts to the v1.7\ncontract (DESIGN.md §20) and make it PASS against master:\n- parseSessionUsage (synthetic JSONL): sums correct; turns correct;\n  lastTotalTokens = LAST assistant totalTokens (include a case where an EARLY\n  line has larger totalTokens — last still wins); missing file → zeros +\n  lastTotalTokens null; corrupt lines skipped; non-assistant lines ignored.\n- resolveContextWindow: config override (use a tmpdir config via whatever seam\n  works — if homedir can't be overridden, test the fallback paths and say so),\n  exact match (glm-5.3-flash → 524300), contains-match, default 250100.\n- contextPct/overContext: null-safe (lastTotalTokens null → pct null → overContext\n  false); 80% boundary (>= semantics); 999 cap.\n- overOutputBudget: unset → false; boundary strict >.\n- formatGauge…"
+  },
+  "real_outcome": {
+   "spawn_result_text": "not implemented: worker A8",
+   "parallel_batch_size": 1,
+   "report_status": "unknown",
+   "report_status_line": null,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": []
+  },
+  "coverage_swap": false
+ },
+ {
+  "id": "F1-20",
+  "class": "smoke-test",
+  "target": "tooling",
+  "session_file": "/root/.pi/agent/sessions/--tmp-webfix-run--/2026-09-15T15-59-48-465Z_01a0a5cb-bef1-7635-9a18-fd2a263db39e.jsonl",
+  "spawn_line": 13,
+  "ts": "2026-09-15T16:00:08.930Z",
+  "situation": {
+   "task_first_user_msg": "Use the delegate tool: spawn worker-live (tier flash, placement mode shared) with brief: Explain in your own words, in at least four separate sentences, what a server-sent events stream is and why it suits a live log view. Take your time and write it as one flowing assistant message. Then end your turn.",
+   "nearest_user_msg": "Use the delegate tool: spawn worker-live (tier flash, placement mode shared) with brief: Explain in your own words, in at least four separate sentences, what a server-sent events stream is and why it suits a live log view. Take your time and write it as one flowing assistant message. Then end your turn.",
+   "nearest_user_msg_line": 4,
+   "assistant_plan_before_spawn": "",
+   "assistant_plan_line": 11
+  },
+  "expected_action": {
+   "worker_name": "worker-live",
+   "intent": "smoke-test",
+   "topology": "single",
+   "fleet_size": 1,
+   "probe_preceded_fleet": false,
+   "mode": "shared",
+   "tier": "flash",
+   "blocking_wait_ms": null,
+   "provider_model": "(absent)",
+   "brief_sections_found": [
+    "B1-goal"
+   ],
+   "brief_quality": "1/7",
+   "brief_head": "# Brief for worker-live\n\n## TASK\nExplain in your own words, in at least four separate sentences, what a server-sent events stream is and why it suits a live log view. Take your time and write it as one flowing assistant message. Then end your turn.\n\n## OUTPUT\nWrite your report to /tmp/exchange/worker-live-sse/report-worker-live.json with this shape:\n\n```json\n{\n  \"status\": \"done\",\n  \"summary\": \"<your four-plus-sentence explanation, as one string>\"\n}\n```"
+  },
+  "real_outcome": {
+   "spawn_result_text": "Worker worker-live started and running — orchestrator released early (releaseOn=started, 1s). END YOUR TURN — the watcher wakes you on report-ready / mailbox-question / grill-deck / context-critical / worker-dead. No bash sleep, no repeat delegate call; delegate_status polling stays valid.\nctx ?% ↑…",
+   "parallel_batch_size": 1,
+   "report_status": "pass",
+   "report_status_line": 17,
+   "e_codes": [],
+   "e_code_lines": {},
+   "retries": [],
+   "retry_count": 0,
+   "detached": false,
+   "outcome_hit_lines": [
+    15,
+    17,
+    19
+   ]
+  },
+  "coverage_swap": false
+ }
+]

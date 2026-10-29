@@ -54,6 +54,13 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   Q=96.72 band=ship, L0 29/29, F3 graders 7/7, SKILL.md 774 words,
   BRIEF.md 398 words.
 
+- **exchange.ts transition facade removed.** The Wave 3a re-export block is
+  gone: every moved symbol (archive, manifest-store, report-schema,
+  mailbox-store, watch-store, watch-cursor, expaths constants) now resolves
+  only from its owning module, and every import site in src/ and test/
+  imports the owner directly. One release of grace was kept after the
+  consumer flip, per the plan's no-big-bang rule; zero behavior change.
+
 ### Fixed
 
 - **skill-quality check repaired to the ratified v2.x texts (texts are the

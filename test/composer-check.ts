@@ -37,7 +37,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mountSessionWatcher } from "../src/compose.ts";
-import type { ExchangeManifest } from "../src/exchange.ts";
+import type { ExchangeManifest } from "../src/manifest-store.ts";
 import type { Transport } from "../src/host.ts";
 
 // this check tests the file-format contracts; it pins files mode

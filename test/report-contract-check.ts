@@ -28,7 +28,7 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateReport } from "../src/exchange.ts";
+import { validateReport } from "../src/report-schema.ts";
 import {
 	REPORT_EXAMPLE,
 	SWARM_CLI_PATH,

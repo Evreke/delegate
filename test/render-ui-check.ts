@@ -10,7 +10,7 @@
  */
 
 import { renderDelegateLines } from "../src/ui-text.ts";
-import { archiveRoot } from "../src/exchange.ts";
+import { archiveRoot } from "../src/archive.ts";
 import { clampLines, visibleWidth } from "../src/ui-text.ts";
 
 let failures = 0;

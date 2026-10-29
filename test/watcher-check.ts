@@ -116,17 +116,16 @@ import {
 	type WatchSnapshot,
 	type WatchWorker,
 } from "../src/observe.ts";
+import { reportPathFor } from "../src/exchange.ts";
+import { questionPathFor } from "../src/mailbox-store.ts";
+import { type ExchangeManifest, type ManifestWorker } from "../src/manifest-store.ts";
+import { watcherKeyFor } from "../src/watch-store.ts";
 import {
-	questionPathFor,
-	reportPathFor,
-	watcherKeyFor,
 	commitWatchCursor,
 	cursorRecordKey,
-	watchCursorPathFor,
 	readWatchCursor,
-	type ExchangeManifest,
-	type ManifestWorker,
-} from "../src/exchange.ts";
+	watchCursorPathFor,
+} from "../src/watch-cursor.ts";
 import { countSessionToolCall, sessionToolCallNames } from "../src/usage.ts";
 import { answerPathFor, nudgeFailedPathFor } from "../src/mailbox-store.ts";
 import type { AgentStatus, PromptReq, Transport } from "../src/host.ts";

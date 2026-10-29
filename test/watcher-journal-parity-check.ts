@@ -35,16 +35,15 @@ import {
 	type WatchEvent,
 	type WatchSnapshot,
 } from "../src/observe.ts";
+import { reportPathFor } from "../src/exchange.ts";
+import { questionPathFor } from "../src/mailbox-store.ts";
+import { type ExchangeManifest, type ManifestWorker } from "../src/manifest-store.ts";
+import { watcherKeyFor } from "../src/watch-store.ts";
 import {
 	cursorRecordKey,
-	questionPathFor,
 	readWatchCursor,
-	reportPathFor,
-	watcherKeyFor,
 	watchCursorPathFor,
-	type ExchangeManifest,
-	type ManifestWorker,
-} from "../src/exchange.ts";
+} from "../src/watch-cursor.ts";
 import type { AgentStatus, Transport } from "../src/host.ts";
 import { journalAudienceMatch, ownerFieldsFromJournalRows } from "../src/watch-role.ts";
 import { resolveSwarmStorage, swarmSessionIdFor } from "../src/swarm/storage.ts";

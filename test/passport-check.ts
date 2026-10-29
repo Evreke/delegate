@@ -21,7 +21,7 @@ import {
 	readPostRunGitDelta,
 	readPreRunGitSnapshot,
 } from "../src/passport.ts";
-import { readManifest, updateManifest } from "../src/exchange.ts";
+import { readManifest, updateManifest } from "../src/manifest-store.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {

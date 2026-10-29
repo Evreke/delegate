@@ -22,16 +22,13 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { progressPathFor, readLastProgress } from "../src/exchange.ts";
 import {
 	loadLibrarySchema,
-	progressPathFor,
-	readLastProgress,
-	readManifest,
 	resolveReportSchema,
 	resolveReportSchemaInDir,
-	updateManifest,
-	type ManifestWorker,
-} from "../src/exchange.ts";
+} from "../src/report-schema.ts";
+import { readManifest, updateManifest, type ManifestWorker } from "../src/manifest-store.ts";
 
 let failures = 0;
 

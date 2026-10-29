@@ -44,7 +44,7 @@ import {
 	type Transport,
 	type TransportCapabilities,
 } from "../host.ts";
-import { manifestStore, type ManifestWorker } from "../exchange.ts";
+import { manifestStore, type ManifestWorker } from "../manifest-store.ts";
 
 const SETTLED: readonly AgentStatusName[] = ["idle", "done", "blocked"];
 const STARTED: readonly AgentStatusName[] = ["working", "blocked", "done"];

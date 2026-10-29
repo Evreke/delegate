@@ -34,7 +34,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { COLLECT_DEFAULT_TEARDOWN_AFTER_COLLECT, resolveCollectConfig } from "../src/observe.ts";
-import { TEARDOWN_LOG_NAME, teardownLogLine } from "../src/exchange.ts";
+import { TEARDOWN_LOG_NAME } from "../src/expaths.ts";
+import { teardownLogLine } from "../src/exchange.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {

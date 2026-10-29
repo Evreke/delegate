@@ -23,7 +23,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { readManifest, scanAllManifests, updateManifest, type ManifestWorker } from "../src/exchange.ts";
+import { readManifest, scanAllManifests, updateManifest, type ManifestWorker } from "../src/manifest-store.ts";
 import { registerDelegateTool } from "../src/spawn.ts";
 import { FakeWorkerHost } from "../src/host/fake.ts";
 import type { Transport, Placement } from "../src/host.ts";

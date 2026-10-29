@@ -45,17 +45,18 @@ import {
 } from "../src/observe.ts";
 import {
 	answerPathFor,
-	mergeRetireStamps,
 	questionPathFor,
-	readWatchStampLayers,
 	releasePathFor,
+	writeRelease,
+} from "../src/mailbox-store.ts";
+import {
+	mergeRetireStamps,
+	readWatchStampLayers,
 	updateWatchStamps,
 	watcherKeyFor,
-	writeRelease,
-	type ExchangeManifest,
-	type ManifestWorker,
-} from "../src/exchange.ts";
-import { archiveRoot } from "../src/exchange.ts";
+} from "../src/watch-store.ts";
+import { type ExchangeManifest, type ManifestWorker } from "../src/manifest-store.ts";
+import { archiveRoot } from "../src/archive.ts";
 import type { AgentStatus, Placement, TeardownReq, Transport } from "../src/host.ts";
 
 let failures = 0;

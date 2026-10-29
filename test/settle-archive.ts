@@ -21,7 +21,7 @@ import {
 import {
 	createHerdrTransport,
 } from "../src/herdr/host.ts";
-import { archiveReport, archiveRoot, listArchivedTasks, pruneArchive } from "../src/exchange.ts";
+import { archiveReport, archiveRoot, listArchivedTasks, pruneArchive } from "../src/archive.ts";
 import { resolvePiSessionCandidates } from "../src/usage.ts";
 import type { StartReq } from "../src/host.ts";
 

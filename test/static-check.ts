@@ -86,7 +86,9 @@ import {
 import {
 	placementFromTabResult,
 } from "../src/herdr/host.ts";
-import { validateReport, TEARDOWN_LOG_NAME, teardownLogLine } from "../src/exchange.ts";
+import { TEARDOWN_LOG_NAME } from "../src/expaths.ts";
+import { teardownLogLine } from "../src/exchange.ts";
+import { validateReport } from "../src/report-schema.ts";
 import { SWARM_EDGE_KINDS } from "../src/swarm/edges.ts";
 import { registerDelegateTool, RETRY_MANDATE } from "../src/spawn.ts";
 import { registerCommands, registerStatusTool } from "../src/observe.ts";

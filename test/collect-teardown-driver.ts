@@ -15,7 +15,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { readManifest, reportPathFor, updateManifest } from "../src/exchange.ts";
+import { reportPathFor } from "../src/exchange.ts";
+import { readManifest, updateManifest } from "../src/manifest-store.ts";
 import { registerDelegateTool } from "../src/spawn.ts";
 import type { Transport } from "../src/host.ts";
 

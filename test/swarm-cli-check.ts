@@ -30,7 +30,8 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { answerPathFor, progressPathFor, questionPathFor, reportPathFor } from "../src/expaths.ts";
 import { readQuestionState, writeAnswer } from "../src/mailbox-store.ts";
-import { readLastProgress, validateReport } from "../src/exchange.ts";
+import { readLastProgress } from "../src/exchange.ts";
+import { validateReport } from "../src/report-schema.ts";
 
 // Top-level watchdog (a hanging check is a bug in the check).
 const watchdog = setTimeout(() => {

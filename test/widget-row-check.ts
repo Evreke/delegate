@@ -32,7 +32,8 @@ import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { buildWidgetRows } from "../src/fleet-widget.ts";
 import { type WorkerView } from "../src/worker-view.ts";
-import { progressPathFor, reportPathFor, PROBE_DIR_SUFFIX } from "../src/exchange.ts";
+import { PROBE_DIR_SUFFIX } from "../src/expaths.ts";
+import { progressPathFor, reportPathFor } from "../src/exchange.ts";
 import { DEFAULT_CONTEXT_WINDOW, type Placement } from "../src/host.ts";
 
 // this check tests the file-format contracts; it pins files mode

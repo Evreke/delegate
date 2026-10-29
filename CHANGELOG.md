@@ -19,7 +19,14 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   report is the deliverable" (the merge gate never fires on read-only runs);
   (3) BRIEF.md B2 gains "Pin the base commit when the work depends on repo
   state" — the changelog auditor had to re-anchor mid-run when the checkout
-  moved; a pinned base is now contractual. Quality after amendment:
+  moved; a pinned base is now contractual; (4) Verify gains the brief-quality
+  KPI — "Log the question count per worker beside the verdicts. Two or more
+  questions flag the brief, not the worker" (the ask-before-work round-trip is
+  the cheapest failure point; question rate grades the brief, not the asker).
+  Evals: the F3.1-F3.7 graders and a new F3.8 brief-contract grader
+  (B1-B7 skeleton + language rules + B1 measurability; template and brief
+  modes, red-proof bitten) landed in test/skill/language-graders/ behind the
+  new test/skill-language-gate.ts CI check (L0.5). Quality after amendment:
   Q=96.72 band=ship, L0 29/29, F3 graders 7/7, SKILL.md 774 words,
   BRIEF.md 398 words.
 

@@ -1,12 +1,12 @@
 {
 	"version": 1,
-	"generatedAt": "2026-10-29T08:21:49.226Z",
-	"gitRev": "1156f0bdf1eaf6b7236e296d3d96f57dadc523a5",
+	"generatedAt": "2026-10-29T09:07:29.426Z",
+	"gitRev": "f73b1e5bcf4a6287d85e723b1bd0339ae84f4e5f",
 	"inputs": {
 		"skillDir": "skills/delegate",
 		"fixture": "test/skill/tool-contract.json",
 		"scenariosDir": "test/skill/scenarios",
-		"before": "e7d1cea5e357a7692fb2953a3a05086c0f31fce4"
+		"before": "c524523606e3582d076ff8dacaf65b26fa71f3a5"
 	},
 	"l0": {
 		"pass": true,
@@ -227,15 +227,17 @@
 		"regressions": [],
 		"warnings": [],
 		"files": {
-			"changed": 1,
-			"added": 1,
+			"changed": 2,
+			"added": 0,
 			"removed": 0,
 			"unchanged": 1
 		},
 		"detail": [
 			{
 				"path": "BRIEF.md",
-				"status": "added"
+				"status": "changed",
+				"deltaBytes": 57,
+				"deltaLines": 1
 			},
 			{
 				"path": "REFERENCE.md",
@@ -244,8 +246,8 @@
 			{
 				"path": "SKILL.md",
 				"status": "changed",
-				"deltaBytes": -883,
-				"deltaLines": 33
+				"deltaBytes": 226,
+				"deltaLines": 3
 			}
 		],
 		"normalized": 100
@@ -255,14 +257,14 @@
 			{
 				"file": "SKILL.md",
 				"metric": "bytes",
-				"actual": 4953,
+				"actual": 5062,
 				"budget": 6400,
 				"pass": true
 			},
 			{
 				"file": "SKILL.md",
 				"metric": "lines",
-				"actual": 122,
+				"actual": 123,
 				"budget": 160,
 				"pass": true
 			},

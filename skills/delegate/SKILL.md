@@ -67,7 +67,8 @@ Done when: every planned worker is started or its failure triaged.
 
 Check every report against its brief's B3 items; demand file:line evidence. On
 conflicting reports, spawn one tie-breaker verifier with both as context, or
-resolve from source.
+resolve from source. Log the question count per worker beside the verdicts.
+Two or more questions flag the brief, not the worker.
 
 Done when: every report has a per-item, evidence-backed verdict.
 

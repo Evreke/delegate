@@ -28,7 +28,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createRpcTransport } from "../src/host/rpc.ts";
-import { validateReport } from "../src/exchange.ts";
+import { validateReport } from "../src/report-schema.ts";
 
 const execFileP = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

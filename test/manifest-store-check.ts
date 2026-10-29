@@ -35,7 +35,7 @@ import {
 	createMemoryManifestStore,
 	type ExchangeManifest,
 	type ManifestWorker,
-} from "../src/exchange.ts";
+} from "../src/manifest-store.ts";
 import { atomicWriteFileSync } from "../src/manifest-store.ts";
 
 let failures = 0;

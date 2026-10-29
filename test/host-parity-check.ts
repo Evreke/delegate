@@ -22,7 +22,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { readManifest, updateManifest, type ManifestWorker } from "../src/exchange.ts";
+import { readManifest, updateManifest, type ManifestWorker } from "../src/manifest-store.ts";
 import { FakeWorkerHost } from "../src/host/fake.ts";
 import { createHerdrTransport } from "../src/herdr/host.ts";
 import { createRpcTransport } from "../src/host/rpc.ts";

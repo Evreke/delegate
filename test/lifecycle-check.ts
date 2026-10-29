@@ -46,7 +46,7 @@ import {
 	
 	type WorkerLifecycleState,
 } from "../src/lifecycle.ts";
-import type { ManifestWorker } from "../src/exchange.ts";
+import type { ManifestWorker } from "../src/manifest-store.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {

@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capWorkerText } from "../src/text-cap.ts";
-import { updateManifest } from "../src/exchange.ts";
+import { updateManifest } from "../src/manifest-store.ts";
 import { questionPathFor } from "../src/expaths.ts";
 import { registerMailboxTool } from "../src/mailbox-tool.ts";
 import type { Transport } from "../src/host.ts";

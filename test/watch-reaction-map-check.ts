@@ -39,7 +39,9 @@ import {
 } from "../src/watch-detect.ts";
 import type { DueWake, SchedulePort } from "../src/watch-schedule.ts";
 import type { AgentStatus, Transport } from "../src/host.ts";
-import { releasePathFor, reportPathFor, type ExchangeManifest, type ManifestWorker } from "../src/exchange.ts";
+import { reportPathFor } from "../src/exchange.ts";
+import { releasePathFor } from "../src/mailbox-store.ts";
+import { type ExchangeManifest, type ManifestWorker } from "../src/manifest-store.ts";
 import { answerPathFor, writeAnswer } from "../src/mailbox-store.ts";
 import { answerPendingUnread, detectEvents } from "../src/watch-detect.ts";
 

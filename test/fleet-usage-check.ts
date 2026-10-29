@@ -34,11 +34,13 @@ import {
 	applyFleetTaskFields,
 	describeFleet,
 	persistTaskUsageSnapshot,
+} from "../src/exchange.ts";
+import {
 	readManifest,
 	updateManifest,
 	type ExchangeManifest,
 	type TaskUsageSnapshot,
-} from "../src/exchange.ts";
+} from "../src/manifest-store.ts";
 import { formatFleetUsageLine } from "../src/observe.ts";
 
 // this check tests the file-format contracts; it pins files mode

@@ -19,7 +19,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { updateManifest, type ManifestWorker } from "../src/exchange.ts";
+import { updateManifest, type ManifestWorker } from "../src/manifest-store.ts";
 import { registerStatusTool, STATUS_MAX_ROWS } from "../src/status-tool.ts";
 import type { Transport } from "../src/host.ts";
 

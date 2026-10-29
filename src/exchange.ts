@@ -1,9 +1,10 @@
 /**
- * pi-delegate — src/exchange.ts (Wave 3a: exchange-root conventions module
- * + the transition facade).
+ * pi-delegate — src/exchange.ts (the exchange-root conventions module).
  *
  * MODULE_CONTRACT — the exchange dir conventions and the F1 fleet
- * accounting; facade for the extracted exchange-layer modules.
+ * accounting. The Wave 3a transition facade is REMOVED: every moved
+ * symbol resolves only from its owning module (the decomposition list
+ * below); import sites import the owner directly.
  *
  * Purpose: /tmp/exchange/<task>/ conventions — the exchange root rule
  * (exchangeRoot, incl. the $PI_DELEGATE_EXCHANGE_ROOT test override and the
@@ -28,12 +29,10 @@
  *   - src/watch-store.ts — the watcher satellite persistence (retire-stamp
  *     layers + the durable delivered-facts store).
  *
- * TEMPORARY TRANSITION FACADE: every symbol moved by Wave 3a is re-exported
- * from here (see the facade block below the imports), so existing import
- * sites keep resolving unchanged. All src/ sites are already flipped to the
- * new modules; the facade remains for the test suite and any external
- * consumers and goes away one release after the flip (the plan's
- * no-big-bang rule). New code must import from the owning module.
+ * The facade re-export block is gone (one release after the flip, per the
+ * plan's no-big-bang rule): no moved symbol is re-exported here, so no
+ * symbol has two exporting modules (ARCHITECTURE.md Law 9 — one source of
+ * truth). New code must import from the owning module.
  *
  * Dependencies: @earendil-works/pi-coding-agent (withFileMutationQueue via
  * updateManifest — through the manifest-store module), node builtins,
@@ -113,103 +112,6 @@ import {
 	type ExchangeManifest,
 	type TaskUsageSnapshot,
 } from "./manifest-store.ts";
-
-// Shared exchange-dir name conventions (migration stage 1): the constants
-// moved to src/expaths.ts (the path-builder module owns their ONE spelling
-// so builders and classifiers cannot drift); re-exported here — the
-// exchange.ts export surface is unchanged for every consumer.
-export {
-	PROBE_DIR_SUFFIX,
-	TEARDOWN_LOG_NAME,
-} from "./expaths.ts";
-
-// Wave 3a transition facade (temporary, one release per the plan): the
-// archive module moved verbatim to src/archive.ts — re-exported here so
-// every existing import site keeps resolving unchanged; sites flip to the
-// new module in the follow-up commit.
-export {
-	ARCHIVE_TTL_MS,
-	archiveReport,
-	archiveRoot,
-	listArchivedTasks,
-	pruneArchive,
-} from "./archive.ts";
-
-// Wave 3a transition facade (temporary, one release per the plan): the
-// manifest store moved verbatim to src/manifest-store.ts — re-exported here
-// so every existing import site keeps resolving unchanged; sites flip to
-// the new module in the follow-up commit.
-export type {
-	ExchangeManifest,
-	ManifestStore,
-	ManifestWorker,
-	TaskUsageSnapshot,
-} from "./manifest-store.ts";
-export {
-	createFileManifestStore,
-	createJournalManifestStore,
-	createMemoryManifestStore,
-	manifestStore,
-	readManifest,
-	scanAllManifests,
-	updateManifest,
-} from "./manifest-store.ts";
-
-// Wave 3a transition facade (temporary, one release per the plan): report
-// validation + the schema library moved verbatim to src/report-schema.ts —
-// re-exported here so every existing import site keeps resolving unchanged;
-// sites flip to the new module in the follow-up commit.
-export {
-	loadLibrarySchema,
-	parseBriefSchema,
-	resolveReportSchema,
-	resolveReportSchemaInDir,
-	validateReport,
-	validateReportAgainstSchema,
-} from "./report-schema.ts";
-
-// Wave 3a transition facade (temporary, one release per the plan): the
-// mailbox file lifecycle moved verbatim to src/mailbox-store.ts —
-// re-exported here so every existing import site keeps resolving unchanged;
-// sites flip to the new module in the follow-up commit. The wire format
-// (file names, envelope shapes) is FROZEN — byte-identical move.
-export type { NudgeFailedEnvelope, QuestionRead, ReleaseEnvelope } from "./mailbox-store.ts";
-export {
-	answerPathFor,
-	readNudgeFailedMarker,
-	readQuestion,
-	readQuestionState,
-	writeAnswer,
-	writeRelease,
-} from "./mailbox-store.ts";
-export {
-	nudgeFailedPathFor,
-	questionPathFor,
-	releasePathFor,
-} from "./mailbox-store.ts";
-
-// Wave 3a transition facade (temporary, one release per the plan): the
-// watcher satellite persistence (retire-stamp layers) moved verbatim to
-// src/watch-store.ts, and the durable delivery dedup moved to the journal
-// cursor (src/watch-cursor.ts, issue #26 — `delivered-*.json` retired).
-// Re-exported here so every existing import site keeps resolving unchanged.
-export type { RetireStamps, WatchStampLayer } from "./watch-store.ts";
-export {
-	mergeRetireStamps,
-	readWatchStampLayers,
-	updateWatchStamps,
-	watchStampsPathFor,
-	watcherKeyFor,
-} from "./watch-store.ts";
-export type { CursorRecord, WatchCursorFile } from "./watch-cursor.ts";
-export {
-	WATCH_CURSOR_SCHEMA_VERSION,
-	commitWatchCursor,
-	cursorRecordKey,
-	deleteWorkerCursorRecords,
-	readWatchCursor,
-	watchCursorPathFor,
-} from "./watch-cursor.ts";
 
 // ============================================================================
 // SECTION 1 — src/exchange.ts (verbatim, incl. its review-verified headers)

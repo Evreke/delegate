@@ -40,6 +40,7 @@ function check(name: string, ok: boolean, detail = "") {
 const ROOT = resolve(import.meta.dir, "..");
 const SKILL = readFileSync(join(ROOT, "skills/delegate/SKILL.md"), "utf8");
 const REFERENCE = readFileSync(join(ROOT, "skills/delegate/REFERENCE.md"), "utf8");
+const BRIEF = readFileSync(join(ROOT, "skills/delegate/BRIEF.md"), "utf8");
 
 // ---------------------------------------------------------------------------
 // P1 — engine semantics
@@ -143,7 +144,7 @@ const GUARD_LINES = [
 	const emptySkill = SKILL.replace(/`delegate`/g, "").replace(/[^\n]/g, (c) => (c === "\n" ? "\n" : "x"));
 	for (const pin of L0_PINS) {
 		if (pin.kind !== "require") continue;
-		const real = pin.target === "SKILL.md" ? SKILL : REFERENCE;
+		const real = pin.target === "SKILL.md" ? SKILL : pin.target === "BRIEF.md" ? BRIEF : REFERENCE;
 		check(`P4: ${pin.id} satisfied by the real ${pin.target}`, runPin(pin, real).length === 0, pin.fire.map((r) => String(r)).join(" "));
 		// Blanked text (spaces preserve line structure) must fail every require.
 		check(`P4: ${pin.id} fails on anchor-free text`, runPin(pin, emptySkill).length === 1);
@@ -155,7 +156,7 @@ const GUARD_LINES = [
 // ---------------------------------------------------------------------------
 
 {
-	const result = runPins(SKILL, REFERENCE);
+	const result = runPins(SKILL, REFERENCE, BRIEF);
 	check(
 		`P5: real skill passes all ${result.pinsChecked} L0 pins`,
 		result.verdictPass,
@@ -175,8 +176,8 @@ const GUARD_LINES = [
 // ---------------------------------------------------------------------------
 
 {
-	const a = JSON.stringify(runPins(SKILL, REFERENCE));
-	const b = JSON.stringify(runPins(SKILL, REFERENCE));
+	const a = JSON.stringify(runPins(SKILL, REFERENCE, BRIEF));
+	const b = JSON.stringify(runPins(SKILL, REFERENCE, BRIEF));
 	check("P6: repeated runs byte-identical", a === b);
 }
 

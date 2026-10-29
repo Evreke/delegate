@@ -1,89 +1,128 @@
 ---
 name: delegate
-description: Orchestration playbook for multi-worker fan-outs via the pi-delegate extension — topology and tier choice, brief anatomy, verify and recovery judgment, merge-gate discipline. NOT for single one-shot tasks — the tool alone suffices. Load when planning a multi-worker run (per-ticket, per-axis, per-hypothesis, per-repo) or diagnosing failed delegation.
+description: Orchestration judgment for multi-worker runs on the pi-delegate delegate tool — topology, tiers, briefs, verification, recovery, merging. NOT for single one-shot tasks (the tool alone suffices) or lone pipeline probes. Load when planning a fan-out, acting as a sub-orchestrator, or recovering a failed delegation.
 ---
 
-# Delegate — the orchestrator's judgment layer
+# Delegate — orchestrator judgment
 
-The `delegate` tool owns all mechanics — its schema and result texts are the truth, and
-this skill never repeats them. The skill owns the judgment around the tool: cutting the
-work, briefing, verifying, recovering, merging, teardown.
+The `delegate` tool owns all mechanics; its schema and result texts are the truth.
+This skill owns judgment.
 
-You are the orchestrator. Success is a validated report file, never an agent's status. A
-valid report with `status: "fail"` is an honest completion: read it as a result, not a
-tool error.
+Success is a validated report file, never an agent status; a fail
+status is honest data.
 
-## The loop — judgment at every step
+## Route first
 
-1. **Decompose** into bounded, single-outcome tasks — one ticket = one worker = one
-   outcome. Pick the topology to fit the problem:
-   - **Ticket fan-out** — independent implementation tickets.
-   - **File-slice fan-out** — mass mechanical edits: one shared checkout, disjoint file
-     lists per brief.
-   - **Axis fan-out** — reviews: one reviewer per axis, you synthesize.
-   - **Hypothesis fan-out** — diagnosis over orthogonal hypotheses (hold the
-     superposition until evidence collapses it).
-   - **Role chain** — feature delivery: investigator → planner → developer → verifier →
-     narrator over one artifact.
-   - **Two-tier swarm** — multi-repo epics (cap depth at 3).
-   Pick the tier: execution work → flash-class. Decision, review, synthesis work →
-   frontier-class.
-2. **Brief** — one file per worker under the exchange dir. A real-worker brief MUST
-   carry all seven Brief-Minimum sections (B1–B7), non-empty — do NOT dispatch without
-   them (probe workers are exempt):
-   - **B1 Goal** — 1–2 sentences, a measurable outcome.
-   - **B2 Inputs** — explicit paths/refs (file pointers only).
-   - **B3 Acceptance** — a numbered checklist of acceptance criteria only. Each item is
-     pass/fail-testable without the worker's summary.
-   - **B4 Evidence required** — files/commands the report must cite to prove B3 (no
-     proof, no pass).
-   - **B5 Out of scope** — what lies outside the worker's mandate.
-   - **B6 Stop conditions** — when to `ask` instead of guessing. MUST include E1 (the
-     brief contradicts itself / two acceptance items cannot both hold), E2 (the next
-     step needs authority you lack), E3 (cannot state pass or scope in one sentence).
-     Mailbox: questions only, never a status channel.
-   - **B7 Report contract** — the tool's prompt owns the exact report contract. Briefs
-     stay name-agnostic — never paste report JSON.
-   MAY add ROLE / BUDGET / Method — B1–B7 is the floor.
-3. **Spawn** via parallel `delegate` calls, one per worker. A fan-out of ≥3 workers:
-   run the first worker alone. Its structured spawn failure is the cheap smoke check
-   that gates the rest — the tool owns how. Respect worktree authority: only a root
-   orchestrator (session cwd outside any worktree) gets worktree isolation. A
-   sub-orchestrator's workers share its checkout — disjoint file lists per brief. A
-   minutes-short task with nothing else to do: blocking until the worker settles is
-   fine. The release windows are the tool's business.
-4. **Verify** every report against the brief's acceptance criteria, demanding file:line
-   evidence. Conflicting reports → spawn one tie-breaker verifier with both reports as
-   CONTEXT, or resolve from source yourself. A failed worker's output is input for the
-   retry, not waste.
-5. **Merge** — you are the single merge gate. Workers commit in their own scope. They
-   never merge, never push. You own merge order. Before merging a `status=pass`, check
-   the verify triggers. **V1** — ephemeral proof: all/critical evidence under `/tmp`,
-   build outputs, or live state. **V2** — branch-ephemeral proof: feature branch
-   merged+deleted, no surviving commit SHA. **V3** — unversioned deliverable: in
-   neither VCS nor delegate-archive. Any V1–V3 → hold the merge. Run a
-   `verify-<executorName>` worker — or record the same per-B3 checks + commit SHA
-   yourself — and merge only on a verify pass. The verify worker MUST NOT implement
-   features — only per-B3 verdicts `pass|fail|unverifiable`, re-checked paths, commit
-   SHA. No trigger → merge.
-6. **Teardown** — close what you opened (`/delegate-teardown`). Leave no worktree
-   placement behind.
+- Implementation, review, research, diagnosis, docs: the loop below.
+- A smoke-test task: probe semantics. It MUST NOT carry the brief contract.
+- A scripted role (debate, interview): outside this loop.
 
-## Recovery policy
+Smoke tests and scripted roles never take briefs; a sub-orchestrator never
+takes worktrees.
 
-- **Diagnosed retry, never verbatim.** When a worker settles without a valid report,
-  read its console output and find the root cause. Retry under a NEW worker name with a
-  new brief naming the wrong path, the cause and the fix shape. The settled agent keeps
-  the old name. At most 2 repeats per issue, then escalate to the user.
-- **End your turn on timeouts.** After a spawn timeout or a detach, the worker is alive
-  and the background watcher owns the wait. End your turn: you are woken when the
-  report lands, a question arrives or the worker dies. Never bash-sleep and never
-  re-call the tool to wait — status polling is the look-now alternative.
-- **Answer blocked workers.** A worker paused on a question asks through the mailbox.
-  Read the pending question, reply, let it continue.
-- **Two-tier fleets.** If YOU are a worker that spawns its own fleet, end your turn
-  right after the fleet is out. Your watcher wakes you as each child's report lands,
-  exactly as your orchestrator's does. And never end a turn having taken zero actions.
+## The loop
 
-Fallback: if the `delegate` tool is absent from your session, follow the manual ritual
-in [REFERENCE.md](REFERENCE.md).
+### 1. Decompose
+
+Cut the work into bounded tasks: one worker, one outcome. Choose the smallest
+topology that fits.
+
+- **Ticket fan-out** — independent tickets or questions.
+- **File-slice fan-out** — mass mechanical edits; one shared checkout, disjoint
+  file lists per brief.
+- **Axis fan-out** — reviews; one reviewer per axis, you synthesize.
+- **Hypothesis fan-out** — diagnosis; one worker per candidate cause, open until
+  a report confirms or eliminates it.
+- **Role chain** — one artifact passes through
+  investigator→planner→developer→verifier→narrator.
+- **Two-tier swarm** — multi-repo epics; a sub-orchestrator plans, spawns a named
+  3–4 team, verifies, integrates. Cap nesting depth at three.
+
+Pick the tier class: execution→flash-class; judgment→frontier-class. Name a tier
+only to correct a wrong default.
+
+Done when: every worker has one outcome, a topology, and a tier decision.
+
+### 2. Brief
+
+Write one brief per worker under the exchange dir. Read [BRIEF.md](BRIEF.md)
+first; it owns the template, the language rules, and the anchors. A real-worker
+brief MUST carry all seven template sections non-empty: B1 — Goal; B2 — Inputs;
+B3 — Acceptance; B4 — Evidence required; B5 — Out of scope; B6 — Stop
+conditions; B7 — Report contract. You MUST NOT dispatch without them.
+
+Done when: every brief follows BRIEF.md with all seven sections non-empty.
+
+### 3. Spawn
+
+Issue one delegate call per worker, in parallel. For a fan-out of three or more,
+run one probe worker first; its structured failure gates the rest. A probe worker
+uses the tool's probe semantics; it MUST NOT follow B1–B7 and MUST NOT receive a
+brief file.
+
+Placement authority: a root orchestrator (cwd outside any worktrees directory)
+grants worktree isolation. If the cwd sits under a worktrees directory, you are
+a sub-orchestrator: you MUST place workers shared. Sub-orchestrator workers
+share the checkout with disjoint file lists per brief. Read-only workers need
+no isolation; place them shared.
+
+Done when: every planned worker is started or its failure triaged.
+
+### 4. Verify
+
+Check every report against its brief's B3 items; demand file:line evidence. On
+conflicting reports, spawn one tie-breaker verifier with both as context, or
+resolve from source. Log the question count per worker beside the verdicts.
+Two or more questions flag the brief, not the worker.
+
+Done when: every report has a per-item, evidence-backed verdict.
+
+### 5. Merge
+
+You are the single merge gate. A read-only run has no merge; the report is the
+deliverable.
+
+Authority: workers commit in their own scope; they never merge or push. You own
+merge order.
+
+Triggers: before you merge a pass report, check for proof that will not survive.
+V1: proof lives only in /tmp, build outputs, or live state. V2: proof lived only on
+a branch now merged and deleted. V3: the deliverable is in neither version control
+nor the delegate archive.
+
+Verify worker: on any trigger, run a verify-<executor> worker. It returns
+per-criterion verdicts (pass, fail, unverifiable), re-checked paths, and the commit
+SHA; or run the same checks yourself. It MUST NOT implement features.
+
+Decision: no trigger, merge; any trigger, merge only on a verify pass.
+
+Done when: every accepted change is merged or rejected, and the decision is recorded.
+
+### 6. Teardown
+
+Close what you opened. Done when: no worktree placement you created remains.
+
+## Supervise
+
+From first spawn to last report, the tool wakes you when a worker needs
+attention; act on the mailbox:
+
+- Steer a working worker: one short correction, state plus next instruction.
+- Answer a blocked worker: read, reply, let it continue.
+- Release a finished worker: report valid, mailbox drained.
+
+Discovery comes from wakes, not from tool results.
+
+## Recovery
+
+- Diagnosed retry, never verbatim: when a worker settles without a valid report,
+  read its console output for the root cause. Retry under a new worker name; the
+  new brief MUST name the wrong path, the cause, and the fix shape. Cap two repeats
+  per issue, then escalate to the user.
+- Timeout or detach: end your turn; the watcher owns the wait. Never bash-sleep;
+  never re-call the tool to wait.
+- Your own fleet: end your turn after your fleet is out. Never end a turn having
+  taken zero actions.
+
+Fallback: if the delegate tool is absent, follow the manual ritual in
+[REFERENCE.md](REFERENCE.md).

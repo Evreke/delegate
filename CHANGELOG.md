@@ -8,6 +8,88 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Changed
+
+- **delegate skill v2.1: three pilot-derived amendments.** From the first live
+  in-vitro pilot of the v2 skill (2 review workers + 2 fixer workers,
+  /tmp/exchange/delegate-v2-pilot/PILOT-LOG.md): (1) Spawn step gains the
+  read-only placement rule — "Read-only workers need no isolation; place them
+  shared" (the pilot placed read-only reviewers shared with no stated rule);
+  (2) Merge step gains the scope line — "A read-only run has no merge; the
+  report is the deliverable" (the merge gate never fires on read-only runs);
+  (3) BRIEF.md B2 gains "Pin the base commit when the work depends on repo
+  state" — the changelog auditor had to re-anchor mid-run when the checkout
+  moved; a pinned base is now contractual; (4) Verify gains the brief-quality
+  KPI — "Log the question count per worker beside the verdicts. Two or more
+  questions flag the brief, not the worker" (the ask-before-work round-trip is
+  the cheapest failure point; question rate grades the brief, not the asker).
+  Behavioral tier (F1/F2) landed LOCAL-ONLY: test/skill/behavioral/ holds the
+  target (one headless primed pi call per case — decides, never executes),
+  the runner (run-f1f2.ts, majority verdict with flaky detection) and the
+  report template; never wired into CI. First full F2 gate on v2.2: HOLD —
+  5/7 routes correct, 1 flaky; two anchoring weaknesses surfaced
+  (sub-orchestrator shared-placement red-line; smoke-test tasks still drawing
+  the brief contract). Report committed with this change.
+  v2.3: the two F2 failures were traced to grader negation-blindness, not the
+  skill (the L0 P3 lesson re-learned: 'worktree placement is rejected' and
+  'no B1-B7' counted as prescriptions). f2_no_delegate.py is now
+  sentence-level negation-aware (proof pairs: negation passes, prescription
+  fails, both routes); SKILL.md gains the observable placement cue ('cwd
+  under a worktrees directory = sub-orchestrator; MUST place shared'), a
+  Route-first MUST on the probe negative, and the no-brief-file rule for
+  probe workers. Full F2 re-gate on v2.3: SHIP-OK — 7/7 routes correct
+  (4 flaky at majority 2/3 — run-to-run model variance, reported per case).
+  v2.4: three flakiness levers from the raw-output evidence — (1) the
+  outside-loop grader branch went negation-aware too (third instance of the
+  same bug class); (2) Route first closes with a recency anchor: "Smoke tests
+  and scripted roles never take briefs; a sub-orchestrator never takes
+  worktrees"; (3) the eval prime names only the route taken (mirrors the
+  terse production tool surface) and case situations state environment facts
+  explicitly (no invented context). Full F2 gate x5 reps: SHIP-OK 7/7,
+  flakiness halved — 2 cases at 4/5, none at 2/3.
+  Evals: the F3.1-F3.7 graders and a new F3.8 brief-contract grader
+  (B1-B7 skeleton + language rules + B1 measurability; template and brief
+  modes, red-proof bitten) landed in test/skill/language-graders/ behind the
+  new test/skill-language-gate.ts CI check (L0.5). Quality after amendment:
+  Q=96.72 band=ship, L0 29/29, F3 graders 7/7, SKILL.md 774 words,
+  BRIEF.md 398 words.
+
+### Fixed
+
+- **README drift: 9 of 112 audited claims corrected (audit reports in
+  /tmp/exchange/delegate-v2-pilot/).** Three root causes fixed: the releaseOn
+  default framing was stale pre-flip text (4 spans, EN+RU — the code default is
+  `releaseOn: 'started'`, src/watch-config.ts:182); the `defaults.budgetTokens`
+  config key is dead — nothing reads it (4 spans removed, EN+RU;
+  src/usage.ts:300-317); the Russian section still offered the removed
+  `/delegate-fleet` overlay (1 span). Plus: the 4-line orphan fragment after the
+  settle bullet deleted (editing artifact), the EN/RU mirror restored on the
+  early-release bullet (README.md:413 now mirrors the English "Blocking
+  opt-in"), and 2 superseded Unreleased entries annotated as historical
+  (the stage-2 quality verdict; the #22 single-database journal bullet).
+
+### Changed
+
+- **delegate skill swapped to v2 (SKILL.md 899→755 words + new BRIEF.md
+  template, load-on-demand).** The orchestration skill was rebuilt from
+  session-corpus evidence (2930 sessions, 1428 spawn calls: usage stats,
+  intent histogram, friction catalog) by a designer/critic round with a
+  promptfoo eval gate. New: a `Route first` gate (smoke-tests → probe
+  semantics, scripted roles out), a top-level `Supervise` section (mailbox
+  round-trips are the top-1 friction), defaults-first tier rule (tier is
+  omitted in 71.2 % of live calls), per-step `Done when:` completion lines,
+  brief language rules (imperative, RFC 2119 keywords, condition before
+  command) moved into `skills/delegate/BRIEF.md` which step 2 mandates
+  reading before each brief. Anti-drift: zero tool flags, zero E_* code
+  enumeration (18 of 41 codes never fired live), zero herdr in SKILL.md
+  (REFERENCE.md stays the tool-absent fallback). Harness re-derived in the
+  same commit per HOW-TO: L0 pins R4/R5/R13 re-anchored to v2 wording,
+  R11/R12 retargeted to BRIEF.md (`runPins` gained a briefText parameter),
+  L4 budgets re-derived with 30 % headroom over v2 (SKILL 6400 B / 160 lines,
+  BRIEF 3072 B / 96 lines), fixture claims `completion-report-file` and
+  `timeout-end-turn` re-keyed to the critic-resolved v2 wording. Quality:
+  Q=96.72 band=ship (L0 29/29, L1 100, L2 90.63, L3 clean, L4 100).
+
 ### Added
 
 - **The journal store is now PER-TASK SHARDS (the sharding decision, store
@@ -414,7 +496,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   ≥90 ship / 80–89 debt / else reject) lands in the committed report
   artifact `test/skill/quality-report.{json,md}` (regenerate with
   `bun test/skill/quality/build.ts`; how-to: `test/skill/HOW-TO.md`).
-  Current verdict, recorded not gated: L0 pass, L1 78.75 (bar 90), L2 100,
+  Verdict at stage-2 landing (historical — superseded by the fixture-v2 regeneration below; final verdict Q 100 ship): L0 pass, L1 78.75 (bar 90), L2 100,
   L3 blocker regression (norm 0 — the rewrite dropped fixture vocabulary
   `started`/`releaseOn`/`r2`/`E_PLACE`/`E_TIMEOUT` the pre-rewrite skill
   carried), L4 100 → Q 74.69 reject.
@@ -696,7 +778,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   is the worker contract. Phase A output is byte-identical to the file
   writers it replaces (golden/parity checks); raw-path worker prompts keep
   working unchanged.
-- **Fleet event journal — SQLite, single-writer, append-only (#22).** One
+- **Fleet event journal — SQLite, single-writer, append-only (#22; pre-shard design — superseded by the per-task shard store above).** One
   shared database at `<agentDir>/delegate-journal/events.db` (WAL,
   `synchronous = FULL`, `user_version = 1` — the Law 7 version gate); the
   closed fourteen-kind set (including `report` — payload = the validated

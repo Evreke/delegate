@@ -91,3 +91,21 @@ in the report artifact.
   replay traces (`test/skill/runner/`), not to this harness.
 - The L3 layer reuses the stage-1 delta (`test/skill/l3/skill-delta.ts`);
   `--before` needs the git rev present locally (no network fetch).
+
+## Behavioral evals (local-only) — F1 replay + F2 red-line
+
+`test/skill/behavioral/` holds the behavioral tier: the thing under test is an
+LLM primed with the skill text, not the text itself. **Never wire it into CI**:
+run-checks.sh discovers only flat `test/*.ts` files, and this suite must stay
+out of that glob — every case costs a live model call.
+
+Run on demand, on every version change of SKILL.md/BRIEF.md:
+
+```bash
+bun test/skill/behavioral/run-f1f2.ts --suite f2 --limit 3   # smoke
+bun test/skill/behavioral/run-f1f2.ts --suite all            # full gate (27 cases)
+```
+
+The runner writes `test/skill/behavioral/reports/behavioral-report-<sha>-<date>.md`
+from `EVAL-REPORT-TEMPLATE.md`; commit that report with the skill change.
+Gate: hold on any F2 failure or any F1 "worse" verdict.

@@ -30,7 +30,7 @@
 import { firesOn } from "../text-match.ts";
 
 /** Which text a pin targets — the primary path vs the fallback reference. */
-export type PinTarget = "SKILL.md" | "REFERENCE.md";
+export type PinTarget = "SKILL.md" | "REFERENCE.md" | "BRIEF.md";
 
 export interface Pin {
 	/** Stable id — cited by checks and reports; never rename (frozen). */
@@ -131,11 +131,11 @@ export function runPin(pin: Pin, text: string): Violation[] {
 	return out;
 }
 
-/** Run the full L0 table against the two skill texts. Pure and deterministic. */
-export function runPins(skillText: string, referenceText: string): L0Result {
+/** Run the full L0 table against the skill texts. Pure and deterministic. */
+export function runPins(skillText: string, referenceText: string, briefText = ""): L0Result {
 	const violations: Violation[] = [];
 	for (const pin of L0_PINS) {
-		const text = pin.target === "SKILL.md" ? skillText : referenceText;
+		const text = pin.target === "SKILL.md" ? skillText : pin.target === "BRIEF.md" ? briefText : referenceText;
 		violations.push(...runPin(pin, text));
 	}
 	return {
@@ -274,7 +274,7 @@ export const L0_PINS: readonly Pin[] = [
 		kind: "require",
 		target: "SKILL.md",
 		description: "SKILL.md: success is never an agent's status",
-		fire: [/never an agent'?s status/],
+		fire: [/never an agent('?s)? status/],
 		source: "fixture claim completion-report-file (src/spawn.ts:543)",
 	},
 	{
@@ -282,7 +282,7 @@ export const L0_PINS: readonly Pin[] = [
 		kind: "require",
 		target: "SKILL.md",
 		description: "SKILL.md: a status-fail report is an honest completion",
-		fire: [/honest completion/],
+		fire: [/honest (completion|data)/],
 		source: "fixture claim completion-report-file (src/spawn.ts:543)",
 	},
 	{
@@ -328,16 +328,16 @@ export const L0_PINS: readonly Pin[] = [
 	{
 		id: "R11-output-acceptance-only",
 		kind: "require",
-		target: "SKILL.md",
-		description: "SKILL.md: a brief's OUTPUT carries acceptance criteria only",
-		fire: [/acceptance criteria only/i],
+		target: "BRIEF.md",
+		description: "BRIEF.md: a brief's acceptance items are pass/fail-testable",
+		fire: [/pass\/fail-testable/],
 		source: "fixture claim brief-output-rules (src/host.ts:611)",
 	},
 	{
 		id: "R12-brief-name-agnostic",
 		kind: "require",
-		target: "SKILL.md",
-		description: "SKILL.md: briefs stay name-agnostic",
+		target: "BRIEF.md",
+		description: "BRIEF.md: briefs stay name-agnostic",
 		fire: [/name-agnostic/],
 		source: "fixture claim brief-output-rules (src/host.ts:611)",
 	},
@@ -347,7 +347,7 @@ export const L0_PINS: readonly Pin[] = [
 		target: "SKILL.md",
 		description:
 			"SKILL.md: a fan-out of ≥3 triggers the negative load check (smoke first)",
-		fire: [/≥\s?3/, /at least 3/],
+		fire: [/≥\s?3/, /at least 3/, /three or more/],
 		source: "issue #110 (negative load trigger)",
 	},
 	{

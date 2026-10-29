@@ -6,8 +6,8 @@
  * MODULE_CONTRACT — owns (single source of truth, Law 9):
  *   - L1_THRESHOLD — the L1 alignment bar (issue #111 demands ≥ 90).
  *   - L4_BUDGETS — the L4 size budgets per skill file (bytes + lines), set
- *     with ~30 % headroom over the v2 rewrite (SKILL 4648 B / 67 lines,
- *     REFERENCE 13695 B / 234 lines at commit 629a030) so the caps catch
+ *     with ~30 % headroom over the current text (delegate-v2 skill swap:
+ *     SKILL 4836 B / 120 lines, BRIEF 2284 B / 71 lines) so the caps catch
  *     drift, not the current text. Changing a budget is a deliberate act
  *     recorded in this file alone.
  *   - Q_WEIGHTS — the composite formula weights, summing to exactly 1:
@@ -34,14 +34,15 @@ export const L1_THRESHOLD = 90;
 
 /** L4 size budgets — bytes and lines per skill file (see header rationale). */
 export interface SizeBudget {
-	file: "SKILL.md" | "REFERENCE.md";
+	file: "SKILL.md" | "REFERENCE.md" | "BRIEF.md";
 	bytes: number;
 	lines: number;
 }
 
 export const L4_BUDGETS: readonly SizeBudget[] = [
-	{ file: "SKILL.md", bytes: 6144, lines: 90 },
+	{ file: "SKILL.md", bytes: 6400, lines: 160 },
 	{ file: "REFERENCE.md", bytes: 16384, lines: 280 },
+	{ file: "BRIEF.md", bytes: 3072, lines: 96 },
 ];
 
 /** Composite Q weights — sum to exactly 1 (issue #115 formula). */

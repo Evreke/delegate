@@ -260,7 +260,7 @@ export function buildReport(paths: BuildPaths): QualityReport {
 	const texts = readSkillTexts(skillDirAbs);
 
 	// L0 — static pins
-	const l0 = runPins(texts[0]!, texts[1]!);
+	const l0 = runPins(texts[0]!, texts[1]!, texts[2] ?? "");
 
 	// L1 — alignment vs the REAL fixture (schema v2; scoreAlignment applies
 	// the scope filter — tool-only claims land in excludedToolOnly)

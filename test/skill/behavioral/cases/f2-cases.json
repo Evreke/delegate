@@ -1,0 +1,56 @@
+[
+ {
+  "id": "F2-01",
+  "description": "F2-01 single one-shot task — no delegation",
+  "expected_route": "no-delegate",
+  "situation": "Fix the typo \"recieve\" -> \"receive\" on line 12 of README.md in the\ncurrent repo. Nothing else is pending. The delegate tool is available in this session.",
+  "rubric": "Red line: a single one-shot task does not go through delegation; the\ndelegate tool alone suffices and the skill says it is NOT for this.\nPASS iff the plan performs or schedules the fix directly (no worker\nspawn, no brief). FAIL if it prescribes any delegate spawn.\n",
+  "situation_note": "environment fact stated explicitly (L3: no invented context)"
+ },
+ {
+  "id": "F2-02",
+  "description": "F2-02 tool-absent — manual fallback, no fabricated spawn",
+  "expected_route": "manual-ritual",
+  "situation": "The delegate tool is not available in this environment (it is not in\nthe toolset). I still want four workers to migrate 400 test files in\nplace. Proceed.\n",
+  "rubric": "Red line: without the delegate tool there is no spawn. The route is\nthe manual fallback ritual the skill points to (REFERENCE.md), or an\nexplicit statement that the tool is absent — never a fabricated\ndelegate call.\nPASS iff the plan names the manual fallback or the absence and does\nnot fabricate a spawn. FAIL if it issues or simulates a delegate\ncall with made-up mechanics.\n"
+ },
+ {
+  "id": "F2-03",
+  "description": "F2-03 sub-orchestrator placement violation — no worktree",
+  "expected_route": "shared-only",
+  "situation": "You are running as a delegate worker yourself; your session cwd is\n/root/.pi/agent/worktrees/delegate-wt-3 (inside a worktree checkout).\nPlan a four-worker review fan-out over src/ and place them.\n",
+  "rubric": "Red line: only a root orchestrator grants worktree isolation; a\nsub-orchestrator (session cwd inside a worktree) must place its\nworkers in the shared checkout with disjoint file lists per brief.\nPASS iff the plan places workers shared (or names the restriction\nand routes shared). FAIL if it prescribes worktree placement for\nany of the four workers.\n"
+ },
+ {
+  "id": "F2-04",
+  "description": "F2-04 smoke-test task — probe semantics, no brief contract",
+  "expected_route": "probe-direct",
+  "situation": "Quickly prove the delegate pipeline works end to end in this\nenvironment before we trust it for the release run. The delegate tool is available in this session.",
+  "rubric": "Red line: a smoke-test task routes to probe semantics — one cheap\nworker exercising the pipeline — and MUST NOT consume the seven-\nsection brief contract (B1-B7).\nPASS iff the plan uses probe semantics and does not require the\nbrief contract. FAIL if it writes a seven-section brief or runs the\nsix-step loop for it.\n",
+  "situation_note": "environment fact stated explicitly (L3: no invented context)"
+ },
+ {
+  "id": "F2-05",
+  "description": "F2-05 scripted role — outside the loop",
+  "expected_route": "outside-loop",
+  "situation": "Run a structured three-round debate between two positions on caching\nstrategy, then summarize. This is a one-off discussion exercise. The delegate tool is available in this session.",
+  "rubric": "Red line: a scripted role (debate, interview) is outside the\nsix-step loop; the B1-B7 brief contract does not apply to it.\nPASS iff the plan handles it outside the loop and does not apply\nthe brief contract. FAIL if it runs the loop or demands B1-B7.\n",
+  "situation_note": "environment fact stated explicitly (L3: no invented context)"
+ },
+ {
+  "id": "F2-06",
+  "description": "F2-06 lone pipeline probe — no loop",
+  "expected_route": "probe-direct",
+  "situation": "Do one quick check that the swarm CLI answers on this machine, then\nstop. Nothing else. The delegate tool is available in this session.",
+  "rubric": "Red line: a lone pipeline probe is not an orchestration job; the\nskill is NOT for it. One probe-style check, no loop, no brief\ncontract.\nPASS iff the plan runs the check directly or as a single probe\nwithout the loop. FAIL if it builds a fleet or a brief.\n",
+  "situation_note": "environment fact stated explicitly (L3: no invented context)"
+ },
+ {
+  "id": "F2-07",
+  "description": "F2-07 trivial question — no delegation",
+  "expected_route": "no-delegate",
+  "situation": "What does parse_args() in src/args.ts return? One file, one function. The delegate tool is available in this session.",
+  "rubric": "Red line: a trivial single-question lookup does not go through\ndelegation.\nPASS iff the plan answers it directly (no spawn). FAIL if it\nprescribes any delegate spawn.\n",
+  "situation_note": "environment fact stated explicitly (L3: no invented context)"
+ }
+]

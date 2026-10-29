@@ -8,6 +8,21 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Changed
+
+- **delegate skill v2.1: three pilot-derived amendments.** From the first live
+  in-vitro pilot of the v2 skill (2 review workers + 2 fixer workers,
+  /tmp/exchange/delegate-v2-pilot/PILOT-LOG.md): (1) Spawn step gains the
+  read-only placement rule — "Read-only workers need no isolation; place them
+  shared" (the pilot placed read-only reviewers shared with no stated rule);
+  (2) Merge step gains the scope line — "A read-only run has no merge; the
+  report is the deliverable" (the merge gate never fires on read-only runs);
+  (3) BRIEF.md B2 gains "Pin the base commit when the work depends on repo
+  state" — the changelog auditor had to re-anchor mid-run when the checkout
+  moved; a pinned base is now contractual. Quality after amendment:
+  Q=96.72 band=ship, L0 29/29, F3 graders 7/7, SKILL.md 774 words,
+  BRIEF.md 398 words.
+
 ### Fixed
 
 - **README drift: 9 of 112 audited claims corrected (audit reports in

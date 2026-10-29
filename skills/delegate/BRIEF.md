@@ -15,6 +15,7 @@ that defines done.
 ## B2 — Inputs
 
 Explicit paths and refs; file pointers only. Paste nothing the worker can read.
+Pin the base commit when the work depends on repo state.
 
 ## B3 — Acceptance
 

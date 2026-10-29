@@ -1,6 +1,6 @@
 # Skill quality report — skills/delegate
 
-Generated `2026-10-29T07:51:19.154Z` at `e7d1cea5e357a7692fb2953a3a05086c0f31fce4` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
+Generated `2026-10-29T08:21:49.226Z` at `1156f0bdf1eaf6b7236e296d3d96f57dadc523a5` by `bun test/skill/quality/build.ts` (see test/skill/HOW-TO.md).
 
 **Q = 96.72 — band: SHIP** (ship ≥ 90, debt ≥ 80, else reject)
 
@@ -9,8 +9,8 @@ Generated `2026-10-29T07:51:19.154Z` at `e7d1cea5e357a7692fb2953a3a05086c0f31fce
 | L0 pins | pass | 29 pins, 0 violations |
 | L1 alignment | 100 / 100 (bar 90) | all keywords present |
 | L2 projection | 90.63 / 100 (bar 70) | all scenarios 100/pass |
-| L3 delta | clean → norm 100 | regressions: none; warnings: none; files 2c/1a/0r |
-| L4 budgets | norm 100 | SKILL.md bytes 4836/6400; SKILL.md lines 120/160; REFERENCE.md bytes 11041/16384; REFERENCE.md lines 204/280; BRIEF.md bytes 2284/3072; BRIEF.md lines 71/96 |
+| L3 delta | clean → norm 100 | regressions: none; warnings: none; files 1c/1a/0r |
+| L4 budgets | norm 100 | SKILL.md bytes 4953/6400; SKILL.md lines 122/160; REFERENCE.md bytes 11041/16384; REFERENCE.md lines 204/280; BRIEF.md bytes 2341/3072; BRIEF.md lines 72/96 |
 
 Composite: Q = 0.25*L1 + 0.35*L2 + 0.20*L3_norm + 0.20*L4_norm (L0 fail => 0) with weights {"l1":0.25,"l2":0.35,"l3":0.2,"l4":0.2}.
 

@@ -58,7 +58,8 @@ uses the tool's probe semantics; it MUST NOT follow B1–B7.
 
 Placement authority: a root orchestrator (cwd outside any worktree) grants
 worktree isolation. Sub-orchestrator workers share its checkout
-with disjoint file lists per brief.
+with disjoint file lists per brief. Read-only workers need no isolation; place
+them shared.
 
 Done when: every planned worker is started or its failure triaged.
 
@@ -72,7 +73,8 @@ Done when: every report has a per-item, evidence-backed verdict.
 
 ### 5. Merge
 
-You are the single merge gate.
+You are the single merge gate. A read-only run has no merge; the report is the
+deliverable.
 
 Authority: workers commit in their own scope; they never merge or push. You own
 merge order.

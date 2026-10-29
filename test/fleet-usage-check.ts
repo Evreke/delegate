@@ -41,6 +41,9 @@ import {
 } from "../src/exchange.ts";
 import { formatFleetUsageLine } from "../src/observe.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 let failures = 0;
 
 function check(name: string, ok: boolean, detail = "") {

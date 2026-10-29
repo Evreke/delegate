@@ -24,6 +24,9 @@ import { questionPathFor } from "../src/expaths.ts";
 import { registerMailboxTool } from "../src/mailbox-tool.ts";
 import type { Transport } from "../src/host.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
 	if (ok) console.log(`PASS  ${name}`);

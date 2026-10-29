@@ -68,6 +68,12 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   opt-in"), and 2 superseded Unreleased entries annotated as historical
   (the stage-2 quality verdict; the #22 single-database journal bullet).
 
+- **Fixture-based checks made hermetic against the operator `swarm.storage`
+  config.** Seven file-format contract checks (composer, fleet-usage, mailbox,
+  status-cap, text-cap, watch-tick-cost, widget-row) now pin `files` mode at
+  their top, so raw `manifest.json` fixtures stay the store's truth when the
+  host config selects the journal-backed manifest store.
+
 ### Changed
 
 - **delegate skill swapped to v2 (SKILL.md 899→755 words + new BRIEF.md

@@ -28,6 +28,9 @@ import { type SessionToolCallCacheEntry } from "../src/usage.ts";
 import { readWatchStampLayersCached, type StampLayerCacheEntry, updateWatchStamps, watchStampsPathFor } from "../src/watch-store.ts";
 import { updateManifest } from "../src/manifest-store.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
 	if (ok) console.log(`PASS  ${name}`);

@@ -40,6 +40,9 @@ import { mountSessionWatcher } from "../src/compose.ts";
 import type { ExchangeManifest } from "../src/exchange.ts";
 import type { Transport } from "../src/host.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
 	if (ok) console.log(`PASS  ${name}`);

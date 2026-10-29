@@ -209,5 +209,5 @@ export function scoreScenariosAgainstTexts(
 
 /** Convenience: read the two skill texts from a skill dir. */
 export function readSkillTexts(skillDir: string): string[] {
-	return ["SKILL.md", "REFERENCE.md"].map((name) => readFileSync(join(skillDir, name), "utf8"));
+	return ["SKILL.md", "REFERENCE.md", "BRIEF.md"].map((name) => readFileSync(join(skillDir, name), "utf8"));
 }

@@ -8,6 +8,28 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Changed
+
+- **delegate skill swapped to v2 (SKILL.md 899→755 words + new BRIEF.md
+  template, load-on-demand).** The orchestration skill was rebuilt from
+  session-corpus evidence (2930 sessions, 1428 spawn calls: usage stats,
+  intent histogram, friction catalog) by a designer/critic round with a
+  promptfoo eval gate. New: a `Route first` gate (smoke-tests → probe
+  semantics, scripted roles out), a top-level `Supervise` section (mailbox
+  round-trips are the top-1 friction), defaults-first tier rule (tier is
+  omitted in 71.2 % of live calls), per-step `Done when:` completion lines,
+  brief language rules (imperative, RFC 2119 keywords, condition before
+  command) moved into `skills/delegate/BRIEF.md` which step 2 mandates
+  reading before each brief. Anti-drift: zero tool flags, zero E_* code
+  enumeration (18 of 41 codes never fired live), zero herdr in SKILL.md
+  (REFERENCE.md stays the tool-absent fallback). Harness re-derived in the
+  same commit per HOW-TO: L0 pins R4/R5/R13 re-anchored to v2 wording,
+  R11/R12 retargeted to BRIEF.md (`runPins` gained a briefText parameter),
+  L4 budgets re-derived with 30 % headroom over v2 (SKILL 6400 B / 160 lines,
+  BRIEF 3072 B / 96 lines), fixture claims `completion-report-file` and
+  `timeout-end-turn` re-keyed to the critic-resolved v2 wording. Quality:
+  Q=96.72 band=ship (L0 29/29, L1 100, L2 90.63, L3 clean, L4 100).
+
 ### Added
 
 - **The journal store is now PER-TASK SHARDS (the sharding decision, store

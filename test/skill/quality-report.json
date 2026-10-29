@@ -1,12 +1,12 @@
 {
 	"version": 1,
-	"generatedAt": "2026-10-20T07:23:27.868Z",
-	"gitRev": "df81acd9ae018d217f65f9decbe4d0e3dc08e53d",
+	"generatedAt": "2026-10-29T07:51:19.154Z",
+	"gitRev": "e7d1cea5e357a7692fb2953a3a05086c0f31fce4",
 	"inputs": {
 		"skillDir": "skills/delegate",
 		"fixture": "test/skill/tool-contract.json",
 		"scenariosDir": "test/skill/scenarios",
-		"before": "629a030^"
+		"before": "98654eb71d35a9ded7087828e2b4a4bf1bb48b33"
 	},
 	"l0": {
 		"pass": true,
@@ -33,7 +33,7 @@
 				"matched": [
 					"report file",
 					"completion criterion",
-					"honest completion",
+					"honest data",
 					"status"
 				],
 				"missing": [],
@@ -92,8 +92,7 @@
 				"matched": [
 					"end your turn",
 					"watcher",
-					"bash-sleep",
-					"look-now alternative"
+					"bash-sleep"
 				],
 				"missing": [],
 				"score": 1,
@@ -118,7 +117,7 @@
 		]
 	},
 	"l2": {
-		"mean": 100,
+		"mean": 90.63,
 		"threshold": 70,
 		"perScenario": [
 			{
@@ -144,9 +143,11 @@
 			},
 			{
 				"scenario": "S04",
-				"total": 100,
+				"total": 90,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"release:on-settle"
+				],
 				"forbiddenHits": []
 			},
 			{
@@ -158,9 +159,11 @@
 			},
 			{
 				"scenario": "S06",
-				"total": 100,
+				"total": 85,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"brief:diagnosed-retry"
+				],
 				"forbiddenHits": []
 			},
 			{
@@ -172,37 +175,48 @@
 			},
 			{
 				"scenario": "S08",
-				"total": 100,
+				"total": 85,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"report:status-fail-honored"
+				],
 				"forbiddenHits": []
 			},
 			{
 				"scenario": "S09",
-				"total": 100,
+				"total": 77.5,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"turn:end-after-fleet",
+					"brief:file-first"
+				],
 				"forbiddenHits": []
 			},
 			{
 				"scenario": "S10",
-				"total": 100,
+				"total": 85,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"brief:diagnosed-retry"
+				],
 				"forbiddenHits": []
 			},
 			{
 				"scenario": "S11",
-				"total": 100,
+				"total": 80,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"wait:wake-tool"
+				],
 				"forbiddenHits": []
 			},
 			{
 				"scenario": "S12",
-				"total": 100,
+				"total": 85,
 				"verdict": "pass",
-				"missed": [],
+				"missed": [
+					"brief:file-first"
+				],
 				"forbiddenHits": []
 			}
 		]
@@ -214,22 +228,26 @@
 		"warnings": [],
 		"files": {
 			"changed": 2,
-			"added": 0,
+			"added": 1,
 			"removed": 0,
 			"unchanged": 0
 		},
 		"detail": [
 			{
+				"path": "BRIEF.md",
+				"status": "added"
+			},
+			{
 				"path": "REFERENCE.md",
 				"status": "changed",
-				"deltaBytes": -2797,
-				"deltaLines": 42
+				"deltaBytes": -2654,
+				"deltaLines": -30
 			},
 			{
 				"path": "SKILL.md",
 				"status": "changed",
-				"deltaBytes": 531,
-				"deltaLines": 18
+				"deltaBytes": -1195,
+				"deltaLines": 35
 			}
 		],
 		"normalized": 100
@@ -239,15 +257,15 @@
 			{
 				"file": "SKILL.md",
 				"metric": "bytes",
-				"actual": 5836,
-				"budget": 6144,
+				"actual": 4836,
+				"budget": 6400,
 				"pass": true
 			},
 			{
 				"file": "SKILL.md",
 				"metric": "lines",
-				"actual": 89,
-				"budget": 90,
+				"actual": 120,
+				"budget": 160,
 				"pass": true
 			},
 			{
@@ -263,6 +281,20 @@
 				"actual": 204,
 				"budget": 280,
 				"pass": true
+			},
+			{
+				"file": "BRIEF.md",
+				"metric": "bytes",
+				"actual": 2284,
+				"budget": 3072,
+				"pass": true
+			},
+			{
+				"file": "BRIEF.md",
+				"metric": "lines",
+				"actual": 71,
+				"budget": 96,
+				"pass": true
 			}
 		],
 		"normalized": 100
@@ -275,7 +307,7 @@
 			"l3": 0.2,
 			"l4": 0.2
 		},
-		"value": 100,
+		"value": 96.72,
 		"band": "ship",
 		"l0GateApplied": false
 	}

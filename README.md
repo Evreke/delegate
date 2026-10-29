@@ -50,16 +50,13 @@ a **validated JSON report** is on disk — never when the agent status says done
 
 ### What you get
 
-- **Blocking by default.** A `delegate` call blocks the orchestrator session until the
-  worker settles, the settle gate expires (default `watch.settleGateMs` — 15 s, just enough
-  to prove the worker started), or you abort. Long blocking is explicit opt-in (`waitMs`).
+- **Started by default.** A `delegate` call returns as soon as the worker is proven started and working — the settle gate (default `watch.settleGateMs` — 15 s) bounds that proof wait. Blocking until the worker settles is explicit opt-in (`releaseOn: "settle"` or `waitMs`).
 - **Abort (Esc) cancels the wait, not the worker.** The call detaches; the worker keeps
   running. Recover via `delegate_status`, the mailbox, or the background watcher — the
   report file stays the completion criterion.
-- **Optional early release.** With `releaseOn: "started"` (config or per-call) the call
-  returns as soon as the worker is proven started and working — control passes to the
-  background watcher. That is "the spawn is proven", not "the task is collected": the
-  validated report still ends the job.
+- **Blocking opt-in.** With `releaseOn: "settle"` or `waitMs` (config or per-call) the call
+  blocks the orchestrator until the worker settles or the wait limit expires; a long task
+  outlives the limit — the watcher takes over and will wake you.
 - **Parallel fan-out = parallel tool calls.** Each call carries its own brief and
   collect discipline; parallelism never removes the per-call preparation.
 - **Event-driven watcher.** You are woken only when attention is needed: report ready or
@@ -143,14 +140,10 @@ or go about your business.
   15 seconds by default). A short task comes back with its result right in the same turn,
   which is convenient. A long one outlives the limit — the watcher takes over and will
   wake you.
-  only long enough to see the worker actually pick the task up (a couple of seconds).
-  Then the call ends and the orchestrator is free; the watcher stands guard from there —
-  it wakes the orchestrator the moment something needs a decision: the worker finished
-  and filed its report, asked a question, got stuck, or died without delivering anything.
 
-In practice: for short tasks, `settle` (the default) gives you the answer immediately,
-without an extra wake-up; for big fan-outs of several parallel workers, `started` is what
-you want — with `settle`, every call sits blocked for seconds doing nothing useful.
+In practice: for short tasks, `settle` gives you the answer immediately,
+without an extra wake-up; for big fan-outs of several parallel workers, `started`
+(the default) is what you want — with `settle`, every call sits blocked for seconds doing nothing useful.
 
 One thing neither mode changes: the success criterion. In both cases the job is done when
 a valid report file lands on disk. The modes only decide how long the orchestrator stands
@@ -290,8 +283,7 @@ would pass to pi itself):
 ```json
 {
   "defaults": {
-    "tier": "flash",
-    "budgetTokens": 150000
+    "tier": "flash"
   },
   "tiers": {
     "flash": {
@@ -319,8 +311,6 @@ What each section does:
   tier by name (`tier: "flash"`); per-call `provider` / `model` / `thinking` params beat the
   tier, and the tier beats `defaults`.
 - `defaults.tier` — the tier used when a call passes none.
-- `defaults.budgetTokens` — the default output-token budget per worker (used only for
-  accounting displays; hard enforcement requires an explicit `budgetTokens` per call).
 - All keys are optional and the file is read tolerantly (missing/corrupt/partial →
   defaults), but with no resolvable tier/provider/model the delegate call fails with
   `E_TIER` — the placeholders above are the minimum you must fill in.
@@ -416,17 +406,13 @@ done/idle.
 
 ### Что это даёт
 
-- **Блокирующий вызов по умолчанию.** Вызов `delegate` блокирует сессию оркестратора, пока
-  воркер не осядет, не истечёт settle-гейт (по умолчанию `watch.settleGateMs` — 15 с,
-  ровно чтобы доказать, что воркер стартовал), или вы не прервёте ожидание. Долгая
-  блокировка — явный opt-in через `waitMs`.
+- **По умолчанию — ранний возврат.** Вызов `delegate` возвращается, как только доказано, что воркер стартовал и работает; settle-гейт (по умолчанию `watch.settleGateMs` — 15 с) ограничивает это доказательное ожидание. Блокировка до осадки воркера — явный opt-in (`releaseOn: "settle"` или `waitMs`).
 - **Abort (Esc) отменяет ожидание, а не воркера.** Вызов отсоединяется (detach); воркер
   продолжает работать. Вернуться к нему можно через `delegate_status`, почтовый ящик или
   фоновый вотчер — критерий завершения по-прежнему файл отчёта.
-- **Опциональное раннее отпускание.** С `releaseOn: "started"` (в конфиге или в вызове)
-  вызов возвращается, как только доказано, что воркер стартовал и работает, — управление
-  переходит фоновому вотчеру. Это «спавн доказан», а не «задача собрана»: валидный отчёт
-  всё ещё является завершением работы.
+- **Блокировка — opt-in.** С `releaseOn: "settle"` или `waitMs` (в конфиге или в вызове)
+  вызов блокирует оркестратор до осадки воркера или до истечения лимита ожидания; лимит
+  переживает длинная задача — дальше эстафету берёт вотчер и разбудит вас.
 - **Параллельный фан-аут = параллельные tool calls.** Каждый вызов несёт свой бриф и свою
   collect-дисциплину; параллельность не отменяет подготовку каждого вызова.
 - **Event-driven вотчер.** Будит, только когда нужен ход: отчёт готов или бит, вопрос через
@@ -504,9 +490,9 @@ done/idle.
   секунд по умолчанию). Короткая задача возвращается с результатом прямо в этом же ходе —
   удобно. Длинная задача переживает лимит — дальше эстафету берёт вотчер и разбудит вас.
 
-На практике: для коротких задач удобен `settle` (по умолчанию) — ответ приходит сразу,
+На практике: для коротких задач удобен `settle` — ответ приходит сразу,
 без лишнего будильника; для больших фан-аутов из нескольких параллельных воркеров нужен
-`started` — с `settle` каждый вызов висит заблокированным по несколько секунд впустую.
+`started` (по умолчанию) — с `settle` каждый вызов висит заблокированным по несколько секунд впустую.
 
 Ни один из режимов не меняет критерий успеха: в обоих случаях задача считается
 выполненной, когда на диске лежит валидный файл-отчёт. Режимы решают лишь, как долго
@@ -618,8 +604,7 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
 ```json
 {
   "defaults": {
-    "tier": "flash",
-    "budgetTokens": 150000
+    "tier": "flash"
   },
   "tiers": {
     "flash": {
@@ -647,8 +632,6 @@ ln -s /путь/к/pi-delegate ~/.pi/agent/extensions/pi-delegate
   Вызов выбирает тир по имени (`tier: "flash"`); явные параметры `provider` / `model` /
   `thinking` вызова сильнее тира, тир сильнее `defaults`.
 - `defaults.tier` — тир по умолчанию, когда вызов не передал свой.
-- `defaults.budgetTokens` — бюджет output-токенов воркера по умолчанию (используется
-  только для учётных показов; жёсткое ограничение требует явного `budgetTokens` в вызове).
 - Все ключи необязательны, файл читается отказоустойчиво (нет файла / битый / частичный →
   значения по умолчанию), но если tier/provider/model не разрешаются, вызов `delegate`
   завершается с `E_TIER` — плейсхолдеры выше — это необходимый минимум.
@@ -705,7 +688,7 @@ exchange layout (`/tmp/exchange/<task>/brief-<имя>.md` на Linux/macOS). Е�
 разрешился, вызов вернёт структурную ошибку (`E_TIER`) с подсказкой; если `herdr`
 отсутствует при `"host": "herdr"`, инструменты откажут сразу.
 
-Команда `/delegate-teardown`, оверлей флота и инструмент `delegate_status` доступны сразу
+Команда `/delegate-teardown` и инструмент `delegate_status` доступны сразу
 после старта сессии.
 
 ---

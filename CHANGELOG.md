@@ -8,6 +8,20 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ## [Unreleased]
 
+### Fixed
+
+- **README drift: 9 of 112 audited claims corrected (audit reports in
+  /tmp/exchange/delegate-v2-pilot/).** Three root causes fixed: the releaseOn
+  default framing was stale pre-flip text (4 spans, EN+RU — the code default is
+  `releaseOn: 'started'`, src/watch-config.ts:182); the `defaults.budgetTokens`
+  config key is dead — nothing reads it (4 spans removed, EN+RU;
+  src/usage.ts:300-317); the Russian section still offered the removed
+  `/delegate-fleet` overlay (1 span). Plus: the 4-line orphan fragment after the
+  settle bullet deleted (editing artifact), the EN/RU mirror restored on the
+  early-release bullet (README.md:413 now mirrors the English "Blocking
+  opt-in"), and 2 superseded Unreleased entries annotated as historical
+  (the stage-2 quality verdict; the #22 single-database journal bullet).
+
 ### Changed
 
 - **delegate skill swapped to v2 (SKILL.md 899→755 words + new BRIEF.md
@@ -436,7 +450,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   ≥90 ship / 80–89 debt / else reject) lands in the committed report
   artifact `test/skill/quality-report.{json,md}` (regenerate with
   `bun test/skill/quality/build.ts`; how-to: `test/skill/HOW-TO.md`).
-  Current verdict, recorded not gated: L0 pass, L1 78.75 (bar 90), L2 100,
+  Verdict at stage-2 landing (historical — superseded by the fixture-v2 regeneration below; final verdict Q 100 ship): L0 pass, L1 78.75 (bar 90), L2 100,
   L3 blocker regression (norm 0 — the rewrite dropped fixture vocabulary
   `started`/`releaseOn`/`r2`/`E_PLACE`/`E_TIMEOUT` the pre-rewrite skill
   carried), L4 100 → Q 74.69 reject.
@@ -718,7 +732,7 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
   is the worker contract. Phase A output is byte-identical to the file
   writers it replaces (golden/parity checks); raw-path worker prompts keep
   working unchanged.
-- **Fleet event journal — SQLite, single-writer, append-only (#22).** One
+- **Fleet event journal — SQLite, single-writer, append-only (#22; pre-shard design — superseded by the per-task shard store above).** One
   shared database at `<agentDir>/delegate-journal/events.db` (WAL,
   `synchronous = FULL`, `user_version = 1` — the Law 7 version gate); the
   closed fourteen-kind set (including `report` — payload = the validated

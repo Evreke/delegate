@@ -46,6 +46,9 @@ import {
 import { registerMailboxTool } from "../src/mailbox-tool.ts";
 import type { AgentStatusName, Placement, PromptReq, Transport } from "../src/host.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 // Fixture hygiene (field lesson 2026-09-10): the exchange root is SANDBOXED
 // via $PI_DELEGATE_EXCHANGE_ROOT → a mkdtemp dir — test manifests never land
 // in the live /tmp/exchange root (a bystander orchestrator's fail-open legacy

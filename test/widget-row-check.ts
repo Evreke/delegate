@@ -35,6 +35,9 @@ import { type WorkerView } from "../src/worker-view.ts";
 import { progressPathFor, reportPathFor, PROBE_DIR_SUFFIX } from "../src/exchange.ts";
 import { DEFAULT_CONTEXT_WINDOW, type Placement } from "../src/host.ts";
 
+// this check tests the file-format contracts; it pins files mode
+process.env.SWARM_STORAGE = "files";
+
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
 	if (ok) console.log(`PASS  ${name}`);

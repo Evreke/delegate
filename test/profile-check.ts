@@ -264,6 +264,44 @@ function loadMerged(env: Record<string, string>): { ok: true; cfg: Record<string
 	writeFileSync(BASE, JSON.stringify(BASE_CFG)); // restore fixture
 }
 
+// --- P13: swarm.journalDb resolver (single-database journal mode) ------------
+{
+	const STORAGE = new URL("../src/swarm/storage.ts", import.meta.url).pathname;
+	const runStorage = (cfg: Record<string, unknown>, env: Record<string, string> = {}) => {
+		writeFileSync(BASE, JSON.stringify(cfg));
+		const src = `import {resolveSwarmStorage} from ${JSON.stringify(STORAGE)};
+			const c = resolveSwarmStorage();
+			console.log(JSON.stringify({ dbPath: c.dbPath ?? null, warnings: c.warnings }));`;
+		return runInChild(src, env);
+	};
+	const fromCfg = runStorage({ ...BASE_CFG, swarm: { journalDb: "/tmp/journal-all.db" } });
+	check(
+		"P13.1 swarm.journalDb resolves to the single-database override",
+		fromCfg.code === 0 && JSON.parse(fromCfg.stdout.trim()).dbPath === "/tmp/journal-all.db",
+		fromCfg.stdout + fromCfg.stderr,
+	);
+	const envWins = runStorage({ ...BASE_CFG, swarm: { journalDb: "/tmp/journal-all.db" } }, { SWARM_JOURNAL_DB: "/tmp/env-wins.db" });
+	check(
+		"P13.2 SWARM_JOURNAL_DB env beats swarm.journalDb (the env tier stays the sandbox)",
+		envWins.code === 0 && JSON.parse(envWins.stdout.trim()).dbPath === "/tmp/env-wins.db",
+		envWins.stdout + envWins.stderr,
+	);
+	const emptyEnv = runStorage({ ...BASE_CFG, swarm: { journalDb: "/tmp/journal-all.db" } }, { SWARM_JOURNAL_DB: "" });
+	check(
+		"P13.3 empty SWARM_JOURNAL_DB counts as unset → the config key selects",
+		emptyEnv.code === 0 && JSON.parse(emptyEnv.stdout.trim()).dbPath === "/tmp/journal-all.db",
+		emptyEnv.stdout + emptyEnv.stderr,
+	);
+	const bad = runStorage({ ...BASE_CFG, swarm: { journalDb: 42 } });
+	const badV = JSON.parse(bad.stdout.trim()) as { dbPath: string | null; warnings: string[] };
+	check(
+		"P13.4 garbage swarm.journalDb → per-task shards default + a recorded warning",
+		bad.code === 0 && badV.dbPath === null && badV.warnings.length > 0,
+		bad.stdout + bad.stderr,
+	);
+	writeFileSync(BASE, JSON.stringify(BASE_CFG)); // restore fixture
+}
+
 rmSync(AGENT_DIR, { recursive: true, force: true });
 
 if (failures > 0) {

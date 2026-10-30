@@ -37,12 +37,14 @@
  *
  * Precedence: env (SWARM_STORAGE / SWARM_PROJECTION / SWARM_MESSAGE_SHADOW /
  * SWARM_JOURNAL_DB / SWARM_SESSION_ID) beats the config file keys
- * (`swarm.storage` / `swarm.projection` / `swarm.messageShadow` in
- * pi-delegate.config.json), which beat the defaults. The env tier exists for
+ * (`swarm.storage` / `swarm.projection` / `swarm.messageShadow` / `swarm.journalDb`
+ * in pi-delegate.config.json), which beat the defaults. The env tier exists for
  * tests and scripting (the CLI is a separate bun process; the parity/E2E
  * checks drive it through env). Config read failures (incl. the named-profile
  * E_START throw) degrade to defaults — the storage flag is advisory to the
- * pipeline, never a new failure mode.
+ * pipeline, never a new failure mode. `swarm.journalDb` is the config spelling
+ * of the journal db override: one absolute path runs EVERY fleet on ONE
+ * journal database (single-database mode, not the default per-task shards).
  *
  * Session id (interim, until the spawn flow exports the true SwarmGraph
  * SessionId): SWARM_SESSION_ID when set, else a stable sha256 of the resolved
@@ -101,7 +103,7 @@ export interface SwarmStorageConfig {
 	 *  true: hand-built configs (the watcher/server session-id helpers) predate
 	 *  the field and never shadow-write — the resolver always sets it. */
 	messageShadow?: boolean;
-	/** Journal db override (SWARM_JOURNAL_DB — test sandboxing). */
+	/** Journal db override (SWARM_JOURNAL_DB, else `swarm.journalDb` — single-database mode). */
 	dbPath?: string;
 	/** Fleet session id override (SWARM_SESSION_ID). */
 	sessionId?: string;
@@ -171,7 +173,13 @@ export function resolveSwarmStorage(env: NodeJS.ProcessEnv = process.env): Swarm
 		else messageShadow = s;
 	}
 
-	const dbPath = typeof env.SWARM_JOURNAL_DB === "string" && env.SWARM_JOURNAL_DB.length > 0 ? env.SWARM_JOURNAL_DB : undefined;
+	let dbPath: string | undefined;
+	const envDb = typeof env.SWARM_JOURNAL_DB === "string" && env.SWARM_JOURNAL_DB.length > 0 ? env.SWARM_JOURNAL_DB : undefined;
+	const rawDb = envDb ?? (cfgSection.journalDb as unknown);
+	// Non-empty string wins (trimmed); an empty env value counts as unset;
+	// anything else degrades to the per-task-shard default with a warning.
+	if (typeof rawDb === "string" && rawDb.trim().length > 0) dbPath = rawDb.trim();
+	else if (rawDb !== undefined) warnings.push(`invalid swarm.journalDb ${JSON.stringify(rawDb)} — default per-task shards applied`);
 	const sessionId =
 		typeof env.SWARM_SESSION_ID === "string" && env.SWARM_SESSION_ID.length > 0 ? env.SWARM_SESSION_ID : undefined;
 	return { storage, projection, messageShadow, dbPath, sessionId, warnings };

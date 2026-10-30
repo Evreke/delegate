@@ -10,6 +10,15 @@ Version numbers are the semver `X.Y.Z` in `package.json` (runtime source: `src/v
 
 ### Changed
 
+- **`swarm.journalDb` config key: the journal database override leaves the env
+  tier.** `resolveSwarmStorage` now reads `swarm.journalDb` from
+  `pi-delegate.config.json` — one absolute path runs every fleet on ONE journal
+  database (single-database mode instead of the default per-task shards).
+  Precedence is unchanged: `SWARM_JOURNAL_DB` (the test/scripting tier) beats
+  the config key; an empty env value still counts as unset. An invalid config
+  value (not a non-empty string) degrades to the per-task-shard default with a
+  recorded warning, never a verb failure. Scenario coverage: profile-check
+  P13.1–P13.4.
 - **delegate skill v2.1: three pilot-derived amendments.** From the first live
   in-vitro pilot of the v2 skill (2 review workers + 2 fixer workers,
   /tmp/exchange/delegate-v2-pilot/PILOT-LOG.md): (1) Spawn step gains the
